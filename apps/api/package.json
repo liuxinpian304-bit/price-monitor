@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx --tsconfig tsconfig.json watch src/main.ts",
     "start": "tsx --tsconfig tsconfig.json src/main.ts",
-    "seed:demo": "node src/database/seed-demo.ts",
+    "seed:demo": "tsx --tsconfig tsconfig.json src/database/seed-demo.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

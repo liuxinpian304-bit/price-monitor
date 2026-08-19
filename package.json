@@ -7,6 +7,14 @@
     "node": ">=22"
   },
   "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "db:migrate": "prisma migrate deploy",
+    "dev:api": "pnpm --filter @stau-price-monitor/api dev",
+    "dev:web": "pnpm --filter @stau-price-monitor/web dev",
+    "seed:demo": "pnpm --filter @stau-price-monitor/api seed:demo",
     "db:generate": "prisma generate",
     "db:validate": "prisma validate",
     "infra:config": "docker compose -f infra/docker-compose.yml config",
