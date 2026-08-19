@@ -32,12 +32,15 @@ NODE_ENV=production
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm run doctor
 docker compose -f infra/docker-compose.yml up -d postgres redis
 pnpm db:generate
 pnpm prisma migrate deploy
 pnpm verify
 pnpm build
 ```
+
+项目环境诊断必须使用 `pnpm run doctor`。pnpm 11 会将裸 `pnpm doctor` 解析为 pnpm 内置命令，而不会运行仓库的 `scripts/doctor.mjs`。
 
 生产环境禁止运行 `seed:demo`。首次上线前应备份数据库，并确认 PostgreSQL 与 Redis 健康检查均为 `healthy`。
 
