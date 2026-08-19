@@ -74,7 +74,7 @@ export class PrismaAlertRepository implements AlertRepository {
   async create(
     input: Omit<PriceAlertRecord, "id" | "notifiedAt">
   ): Promise<PriceAlertRecord> {
-    const alert = await this.prisma.priceAlert.create({
+    const created = await this.prisma.priceAlert.create({
       data: {
         monitoredModelId: input.monitoredModelId,
         ownSnapshotId: input.ownSnapshotId,
@@ -89,6 +89,10 @@ export class PrismaAlertRepository implements AlertRepository {
         firstSeenAt: input.firstSeenAt,
         lastSeenAt: input.lastSeenAt
       },
+      select: { id: true }
+    });
+    const alert = await this.prisma.priceAlert.findUniqueOrThrow({
+      where: { id: created.id },
       include: alertInclude
     });
     return toRecord(alert);

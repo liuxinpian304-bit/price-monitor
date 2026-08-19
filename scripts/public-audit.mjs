@@ -23,12 +23,20 @@ function pathIssue(path) {
   const segments = normalized.split("/");
   const name = segments.at(-1);
 
+  if (segments.includes(".git")) {
+    return "disallowed Git metadata";
+  }
+
   if (name.startsWith(".env") && name !== ".env.example") {
     return "disallowed environment file";
   }
 
-  if (normalized.split("/").includes("node_modules")) {
+  if (segments.includes("node_modules")) {
     return "disallowed dependency path";
+  }
+
+  if (segments.some((segment, index) => segment === "generated" && segments[index + 1] === "prisma")) {
+    return "disallowed generated Prisma path";
   }
 
   if (normalized === "work" || normalized.startsWith("work/")) {

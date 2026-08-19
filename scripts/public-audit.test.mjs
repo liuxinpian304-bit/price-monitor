@@ -11,12 +11,16 @@ const templatePath = "outputs/tmall-price-monitor/天猫比价监控_运营录�
 
 test("rejects private and non-public paths across path separators", () => {
   const errors = auditPaths([
+    ".git/config",
+    "repository\\.git\\HEAD",
     ".env",
     "config/.env.production",
     ".env.example",
     templatePath,
     "node_modules/package/index.js",
     "apps\\web\\node_modules\\react\\index.js",
+    "generated/prisma/client.ts",
+    "apps/api/generated/prisma/models.ts",
     "work/meeting-notes.md",
     "tmp/cache.db",
     "outputs/meeting-notes.md",
@@ -28,10 +32,14 @@ test("rejects private and non-public paths across path separators", () => {
   ]);
 
   assert.deepEqual(errors, [
+    ".git/config: disallowed Git metadata",
+    "repository/.git/HEAD: disallowed Git metadata",
     ".env: disallowed environment file",
     "config/.env.production: disallowed environment file",
     "node_modules/package/index.js: disallowed dependency path",
     "apps/web/node_modules/react/index.js: disallowed dependency path",
+    "generated/prisma/client.ts: disallowed generated Prisma path",
+    "apps/api/generated/prisma/models.ts: disallowed generated Prisma path",
     "work/meeting-notes.md: disallowed local work path",
     "tmp/cache.db: disallowed temporary path",
     "outputs/meeting-notes.md: disallowed output file",

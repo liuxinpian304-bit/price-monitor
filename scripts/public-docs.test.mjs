@@ -45,6 +45,15 @@ test("public README states the product boundary, supported platforms, and provid
   assert.match(readme, /分别在两个(?:终端|窗口)/);
   assert.match(readme, /pnpm run doctor/);
   assert.match(readme, /pnpm 11.*(?:裸|bare).*pnpm doctor/);
+  const testing = section(readme, "## 测试", "## 真实数据源边界");
+  const testingCommands = testing.match(/```bash\n([\s\S]*?)\n```/);
+
+  assert.ok(testingCommands, "Testing must include a shell command block.");
+  assert.equal(testingCommands[1], [
+    "pnpm setup",
+    "pnpm db:generate",
+    "pnpm verify:portable"
+  ].join("\n"));
   assert.match(readme, /CommerceProvider/);
   assert.match(readme, /合规/);
   assert.match(readme, /固定样例|fixtures/);

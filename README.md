@@ -47,10 +47,12 @@ API 默认监听 `http://127.0.0.1:4100`；管理后台开发服务器会在启�
 ## 测试
 
 ```bash
+pnpm setup
+pnpm db:generate
 pnpm verify:portable
 ```
 
-`pnpm verify:portable` 运行不依赖 PostgreSQL 和 Redis 的跨平台测试、类型检查和前端生产构建。已启动本地基础设施并完成迁移后，可运行完整验证：
+全新克隆需先运行 `pnpm setup` 创建本地环境，再运行 `pnpm db:generate` 生成 Prisma Client。`pnpm verify:portable` 运行不依赖 PostgreSQL 和 Redis 的跨平台测试、类型检查和前端生产构建。已启动本地基础设施并完成迁移后，可运行完整验证：
 
 ```bash
 pnpm verify

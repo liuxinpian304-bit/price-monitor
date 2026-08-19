@@ -153,6 +153,40 @@ after(async () => {
   await prisma.$disconnect();
 });
 
+test("creates and hydrates an alert without overlapping pg client queries", async () => {
+  const warnings: Error[] = [];
+  const onWarning = (warning: Error) => {
+    if (
+      warning.name === "DeprecationWarning"
+      && warning.message.includes("client.query() when the client is already executing a query")
+    ) {
+      warnings.push(warning);
+    }
+  };
+  process.on("warning", onWarning);
+
+  try {
+    const offers = await seedOffers();
+    const service = new AlertService(new PrismaAlertRepository(prisma), new RecordingNotifier());
+    const alert = await service.evaluate(offers.own, offers.competitor, {
+      category: "BARE",
+      comparable: true,
+      bundleConfiguration: "NOT_APPLICABLE",
+      reasons: ["同品牌、同型号、同版本裸机"]
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.ok(alert);
+    assert.equal(alert.brand, "RME");
+    assert.equal(alert.ownShopName, "星空乐器专营店");
+    assert.equal(alert.competitorUrl, "https://detail.tmall.com/item.htm?id=competitor-1001");
+    assert.deepEqual(warnings, []);
+  } finally {
+    process.off("warning", onWarning);
+  }
+});
+
 test("persists, notifies and deduplicates a one-fen PostgreSQL alert", async () => {
   const offers = await seedOffers();
   const notifier = new RecordingNotifier();
