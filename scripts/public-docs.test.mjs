@@ -4,6 +4,25 @@ import test from "node:test";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
+function section(content, heading, nextHeading) {
+  const start = content.indexOf(heading);
+  const end = nextHeading ? content.indexOf(nextHeading, start) : content.length;
+
+  assert.notEqual(start, -1, `Missing section: ${heading}`);
+  assert.notEqual(end, -1, `Missing following section: ${nextHeading}`);
+  return content.slice(start, end);
+}
+
+function assertOrdered(content, commands) {
+  let previousIndex = -1;
+
+  for (const command of commands) {
+    const index = content.indexOf(command);
+    assert.ok(index > previousIndex, `Expected ${command} after the previous command.`);
+    previousIndex = index;
+  }
+}
+
 test("public README states the product boundary, supported platforms, and provider limit", async () => {
   const readme = await read("README.md");
 
@@ -11,12 +30,18 @@ test("public README states the product boundary, supported platforms, and provid
   assert.match(readme, /只监控、提醒和记录，不自动修改(?:电商平台|天猫)?价格/);
   assert.match(readme, /docs\/operations\/windows-setup\.md/);
   assert.match(readme, /docs\/operations\/macos-setup\.md/);
-  assert.match(readme, /pnpm install/);
-  assert.match(readme, /pnpm setup/);
-  assert.match(readme, /pnpm infra:up/);
-  assert.match(readme, /pnpm db:generate/);
-  assert.match(readme, /pnpm db:migrate/);
-  assert.match(readme, /pnpm seed:demo/);
+  const quickStart = section(readme, "## 快速启动", "## 测试");
+  const quickStartCommands = quickStart.match(/```bash\n([\s\S]*?)\n```/);
+
+  assert.ok(quickStartCommands, "Quick start must include a shell command block.");
+  assert.equal(quickStartCommands[1], [
+    "pnpm install",
+    "pnpm setup",
+    "pnpm infra:up",
+    "pnpm db:generate",
+    "pnpm db:migrate",
+    "pnpm seed:demo"
+  ].join("\n"));
   assert.match(readme, /pnpm dev:api/);
   assert.match(readme, /pnpm dev:web/);
   assert.match(readme, /分别在两个(?:终端|窗口)/);
@@ -47,18 +72,32 @@ test("platform setup guides and security policy use the public release conventio
 
 test("CI verifies portable platforms and the Linux integration environment", async () => {
   const workflow = await read(".github/workflows/ci.yml");
+  const portable = section(workflow, "  portable:\n", "  integration:\n");
+  const integration = section(workflow, "  integration:\n");
 
-  assert.match(workflow, /node-version:\s*["']?22["']?/);
-  assert.match(workflow, /version:\s*["']?11\.19\.0["']?/);
-  assert.match(workflow, /ubuntu-latest/);
-  assert.match(workflow, /macos-latest/);
-  assert.match(workflow, /windows-latest/);
-  assert.match(workflow, /postgres:16(?:-alpine)?/);
-  assert.match(workflow, /redis:7(?:-alpine)?/);
-  assert.match(workflow, /5433:5432/);
-  assert.match(workflow, /6380:6379/);
-  assert.match(workflow, /pnpm db:generate/);
-  assert.match(workflow, /pnpm db:migrate/);
-  assert.match(workflow, /pnpm verify:portable/);
-  assert.match(workflow, /pnpm verify/);
+  assert.match(portable, /os: \[ubuntu-latest, macos-latest, windows-latest\]/);
+  assert.match(portable, /node-version:\s*["']?22["']?/);
+  assert.match(portable, /version:\s*["']?11\.19\.0["']?/);
+  assert.match(portable, /DATABASE_URL: ["']?postgresql:\/\/placeholder:placeholder@127\.0\.0\.1:5433\/price_monitor\?schema=public["']?/);
+  assertOrdered(portable, [
+    "pnpm install --frozen-lockfile",
+    "pnpm db:generate",
+    "pnpm verify:portable"
+  ]);
+
+  assert.match(integration, /needs: portable/);
+  assert.match(integration, /image: postgres:16(?:-alpine)?/);
+  assert.match(integration, /image: redis:7(?:-alpine)?/);
+  assert.match(integration, /- 5433:5432/);
+  assert.match(integration, /- 6380:6379/);
+  assert.match(integration, /DATABASE_URL: postgresql:\/\/price_monitor:price_monitor_dev@127\.0\.0\.1:5433\/price_monitor\?schema=public/);
+  assert.match(integration, /REDIS_HOST: 127\.0\.0\.1/);
+  assert.match(integration, /REDIS_PORT: 6380/);
+  assert.match(integration, /SETTINGS_MASTER_KEY: placeholder-ci-master-key/);
+  assertOrdered(integration, [
+    "pnpm install --frozen-lockfile",
+    "pnpm db:generate",
+    "pnpm db:migrate",
+    "pnpm verify"
+  ]);
 });

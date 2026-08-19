@@ -1,5 +1,13 @@
 const masterKeyPattern = /^SETTINGS_MASTER_KEY=[^\r\n]*/m;
 
+export function commandSpawnOptions(platform = process.platform) {
+  return {
+    encoding: "utf8",
+    shell: platform === "win32",
+    windowsHide: true
+  };
+}
+
 export function createLocalEnv(template, masterKey) {
   return template.replace(masterKeyPattern, `SETTINGS_MASTER_KEY=${masterKey}`);
 }

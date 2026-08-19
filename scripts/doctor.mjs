@@ -3,10 +3,10 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve } from "node:path";
 
-import { checkNodeVersion } from "./local-env.mjs";
+import { checkNodeVersion, commandSpawnOptions } from "./local-env.mjs";
 
 function checkCommand(command, args, label) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
+  const result = spawnSync(command, args, commandSpawnOptions());
   const ok = result.status === 0 && !result.error;
 
   console.log(`${ok ? "OK" : "MISSING"} ${label}`);

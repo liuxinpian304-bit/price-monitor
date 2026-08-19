@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { checkNodeVersion, createLocalEnv } from "./local-env.mjs";
+import { checkNodeVersion, commandSpawnOptions, createLocalEnv } from "./local-env.mjs";
 
 test("creates a local env with a generated key and preserves all public settings", () => {
   const result = createLocalEnv(
@@ -15,4 +15,10 @@ test("creates a local env with a generated key and preserves all public settings
 test("requires Node 22 or newer", () => {
   assert.equal(checkNodeVersion("v22.12.0").ok, true);
   assert.equal(checkNodeVersion("v20.18.0").ok, false);
+});
+
+test("uses a shell for Windows command shims but not on other platforms", () => {
+  assert.equal(commandSpawnOptions("win32").shell, true);
+  assert.equal(commandSpawnOptions("darwin").shell, false);
+  assert.equal(commandSpawnOptions("linux").shell, false);
 });

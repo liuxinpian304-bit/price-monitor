@@ -13,6 +13,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      DATABASE_URL: "postgresql://placeholder:placeholder@127.0.0.1:5433/price_monitor?schema=public"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
