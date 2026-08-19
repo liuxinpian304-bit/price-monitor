@@ -15,10 +15,13 @@
     "test": "pnpm test:config && pnpm test:contracts && pnpm test:api && pnpm test:web",
     "test:config": "node --test packages/config/src/*.test.ts",
     "test:contracts": "node --test packages/contracts/src/*.test.ts",
-    "test:api": "node --test --test-concurrency=1 $(find apps/api/src -name '*.spec.ts' -print | sort)",
+    "test:api": "node scripts/run-api-tests.mjs",
+    "test:api:portable": "node scripts/run-api-tests.mjs --portable",
+    "test:portable": "pnpm test:config && pnpm test:contracts && pnpm test:api:portable && pnpm test:web",
     "test:web": "pnpm --filter @stau-price-monitor/web test",
     "test:e2e": "node --test --test-concurrency=1 tests/e2e/*.spec.ts",
-    "verify": "pnpm test && pnpm test:e2e && pnpm build"
+    "verify": "pnpm test && pnpm test:e2e && pnpm build",
+    "verify:portable": "pnpm test:portable && pnpm build"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.9.1",
