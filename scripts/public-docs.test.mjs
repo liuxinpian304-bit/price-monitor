@@ -13,14 +13,12 @@ function section(content, heading, nextHeading) {
   return content.slice(start, end);
 }
 
-function assertOrdered(content, commands) {
-  let previousIndex = -1;
+function runCommands(job) {
+  return Array.from(job.matchAll(/^\s*-\s+run:\s+([^\r\n]+)\s*$/gm), (match) => match[1]);
+}
 
-  for (const command of commands) {
-    const index = content.indexOf(command);
-    assert.ok(index > previousIndex, `Expected ${command} after the previous command.`);
-    previousIndex = index;
-  }
+function assertRunCommands(job, commands) {
+  assert.deepEqual(runCommands(job), commands);
 }
 
 test("public README states the product boundary, supported platforms, and provider limit", async () => {
@@ -79,7 +77,7 @@ test("CI verifies portable platforms and the Linux integration environment", asy
   assert.match(portable, /node-version:\s*["']?22["']?/);
   assert.match(portable, /version:\s*["']?11\.19\.0["']?/);
   assert.match(portable, /DATABASE_URL: ["']?postgresql:\/\/placeholder:placeholder@127\.0\.0\.1:5433\/price_monitor\?schema=public["']?/);
-  assertOrdered(portable, [
+  assertRunCommands(portable, [
     "pnpm install --frozen-lockfile",
     "pnpm db:generate",
     "pnpm verify:portable"
@@ -94,10 +92,27 @@ test("CI verifies portable platforms and the Linux integration environment", asy
   assert.match(integration, /REDIS_HOST: 127\.0\.0\.1/);
   assert.match(integration, /REDIS_PORT: 6380/);
   assert.match(integration, /SETTINGS_MASTER_KEY: placeholder-ci-master-key/);
-  assertOrdered(integration, [
+  assertRunCommands(integration, [
     "pnpm install --frozen-lockfile",
     "pnpm db:generate",
     "pnpm db:migrate",
     "pnpm verify"
   ]);
+});
+
+test("CI integration command contract rejects portable verification", async () => {
+  const workflow = await read(".github/workflows/ci.yml");
+  const integration = section(workflow, "  integration:\n");
+  const portableIntegration = integration.replace(
+    "- run: pnpm verify\n",
+    "- run: pnpm verify:portable\n"
+  );
+
+  assert.notEqual(portableIntegration, integration);
+  assert.throws(() => assertRunCommands(portableIntegration, [
+    "pnpm install --frozen-lockfile",
+    "pnpm db:generate",
+    "pnpm db:migrate",
+    "pnpm verify"
+  ]));
 });
