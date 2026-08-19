@@ -11,7 +11,7 @@ import { alerts, comparisons, models, schedule } from "./demo-data.ts";
 
 export const fallbackAlerts: ApiAlert[] = alerts.map((alert, index) => ({
   id: alert.id,
-  monitorCode: `MON-${String(index + 1).padStart(4, "0")}`,
+  monitorCode: alert.monitorCode,
   brand: alert.model.split(" ")[0] ?? "",
   model: alert.model,
   type: alert.type,
@@ -56,7 +56,7 @@ export const fallbackCatalog: CatalogModel[] = models.map((model) => ({
 
 export const fallbackComparisons: ComparisonRow[] = comparisons.map((row) => ({
   id: row.key,
-  monitorCode: `MON-${row.key.padStart(4, "0")}`,
+  monitorCode: row.monitorCode,
   model: row.model,
   sku: row.sku,
   ownPriceFen: row.own,
@@ -68,8 +68,8 @@ export const fallbackComparisons: ComparisonRow[] = comparisons.map((row) => ({
 }));
 
 export const fallbackManualCandidates: ManualCandidate[] = [
-  { id: "c1", model: "RME Babyface Pro FS", title: "RME Babyface Pro FS 专业录音声卡", sku: "Babyface Pro FS", shop: "录音设备中心", reason: "未识别到裸机或套装信号", foundAt: "2026-08-19T09:30:11+08:00", url: "https://example.com/demo/3" },
-  { id: "c2", model: "Kali LP-UNF", title: "Kali LP-UNF 监听音箱", sku: "黑色", shop: "音乐制作专营店", reason: "无法确认单只或一对", foundAt: "2026-08-19T09:30:16+08:00", url: "https://example.com/demo/4" }
+  { id: "c1", model: "RME Babyface Pro FS", title: "RME Babyface Pro FS 专业录音声卡", sku: "Babyface Pro FS", shop: "示例同行店A", reason: "未识别到裸机或套装信号", foundAt: "2026-08-19T09:30:11+08:00", url: "https://example.com/demo/3" },
+  { id: "c2", model: "Kali LP-UNF", title: "Kali LP-UNF 监听音箱", sku: "黑色", shop: "示例同行店B", reason: "无法确认单只或一对", foundAt: "2026-08-19T09:30:16+08:00", url: "https://example.com/demo/4" }
 ];
 
 export const fallbackHistory: HistoryRow[] = fallbackComparisons.map((row) => ({
@@ -78,7 +78,7 @@ export const fallbackHistory: HistoryRow[] = fallbackComparisons.map((row) => ({
   type: "BARE",
   sku: row.sku,
   payableFen: row.competitorPriceFen,
-  shop: row.competitorShop ?? "未知店铺",
+  shop: row.competitorShop ?? "示例同行店A",
   stock: row.stock,
   capturedAt: row.updatedAt,
   evidenceUrl: row.competitorUrl ?? ""

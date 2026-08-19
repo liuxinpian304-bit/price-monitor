@@ -2,6 +2,7 @@ export type AlertStatus = "PENDING" | "PRICE_CHANGED" | "NO_FOLLOW" | "FALSE_POS
 
 export interface DemoAlert {
   id: string;
+  monitorCode: string;
   model: string;
   type: "BARE" | "BUNDLE";
   sku: string;
@@ -18,6 +19,7 @@ export interface DemoAlert {
 export const alerts: DemoAlert[] = [
   {
     id: "alert-1",
+    monitorCode: "MON-0001",
     model: "RME Babyface Pro FS",
     type: "BARE",
     sku: "Babyface Pro FS单机",
@@ -32,11 +34,12 @@ export const alerts: DemoAlert[] = [
   },
   {
     id: "alert-2",
+    monitorCode: "MON-0003",
     model: "Sennheiser MK4",
     type: "BARE",
     sku: "MK4官方标配",
-    ownPriceFen: 855_000,
-    competitorPriceFen: 854_000,
+    ownPriceFen: 321_000,
+    competitorPriceFen: 320_000,
     competitorShop: "示例同行店C",
     competitorUrl: "https://example.com/demo/2",
     foundAt: "2026-08-19 09:15:21",
@@ -46,11 +49,12 @@ export const alerts: DemoAlert[] = [
   },
   {
     id: "alert-3",
+    monitorCode: "MON-0004",
     model: "Neumann KMS 105",
     type: "BARE",
     sku: "KMS 105镍色",
-    ownPriceFen: 321_000,
-    competitorPriceFen: 320_000,
+    ownPriceFen: 478_000,
+    competitorPriceFen: 477_000,
     competitorShop: "示例同行店A",
     competitorUrl: "https://example.com/demo/3",
     foundAt: "2026-08-19 08:57:42",
@@ -60,11 +64,12 @@ export const alerts: DemoAlert[] = [
   },
   {
     id: "alert-4",
+    monitorCode: "MON-0002",
     model: "RME Babyface Pro FS MK4录音套装",
     type: "BUNDLE",
     sku: "Babyface Pro FS+MK4套装",
-    ownPriceFen: 478_000,
-    competitorPriceFen: 477_000,
+    ownPriceFen: 855_000,
+    competitorPriceFen: 854_000,
     competitorShop: "示例同行店B",
     competitorUrl: "https://example.com/demo/4",
     foundAt: "2026-08-19 09:30:07",
@@ -74,6 +79,7 @@ export const alerts: DemoAlert[] = [
   },
   {
     id: "alert-5",
+    monitorCode: "MON-0005",
     model: "RME Babyface Pro FS MK8套装",
     type: "BUNDLE",
     sku: "Babyface Pro FS+MK8套装",
@@ -106,10 +112,10 @@ export const models = [
 ];
 
 export const comparisons = [
-  { key: "1", model: "RME Babyface Pro FS", sku: "单机 / FS新版", own: 264_000, competitor: 263_000, shop: "示例同行店A", stock: "有货", updated: "09:30:05" },
-  { key: "2", model: "Sennheiser MK4", sku: "官方标配 / 国行", own: 701_000, competitor: 700_999, shop: "示例同行店C", stock: "有货", updated: "09:15:21" },
-  { key: "3", model: "Neumann KMS 105", sku: "镍色 / 国行", own: 855_000, competitor: 854_000, shop: "示例同行店A", stock: "有货", updated: "08:57:42" },
-  { key: "4", model: "Kali Audio LP-UNF", sku: "黑色一对", own: 321_000, competitor: 320_000, shop: "示例同行店C", stock: "缺货", updated: "08:43:08" }
+  { key: "1", monitorCode: "MON-0001", model: "RME Babyface Pro FS", sku: "单机 / FS新版", own: 701_000, competitor: 700_999, shop: "示例同行店A", stock: "有货", updated: "09:30:05" },
+  { key: "2", monitorCode: "MON-0003", model: "Sennheiser MK4", sku: "官方标配 / 国行", own: 321_000, competitor: 320_000, shop: "示例同行店C", stock: "有货", updated: "09:15:21" },
+  { key: "3", monitorCode: "MON-0004", model: "Neumann KMS 105", sku: "镍色 / 国行", own: 478_000, competitor: 477_000, shop: "示例同行店A", stock: "有货", updated: "08:57:42" },
+  { key: "4", monitorCode: "MON-0006", model: "Kali Audio LP-UNF", sku: "黑色一对", own: 264_000, competitor: 263_000, shop: "示例同行店C", stock: "缺货", updated: "08:43:08" }
 ];
 
 export function formatFen(fen: number): string {

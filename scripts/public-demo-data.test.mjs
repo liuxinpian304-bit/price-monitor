@@ -5,6 +5,15 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { inflateRawSync } from "node:zlib";
 
+import { alerts, comparisons, models } from "../apps/web/src/data/demo-data.ts";
+import {
+  fallbackAlerts,
+  fallbackCatalog,
+  fallbackComparisons,
+  fallbackHistory,
+  fallbackManualCandidates,
+} from "../apps/web/src/data/api-fallbacks.ts";
+
 const WORKBOOK_PATH = "outputs/tmall-price-monitor/天猫比价监控_运营录入模板.xlsx";
 const TEXT_PATHS = [
   "apps/api/src/database/seed-demo.ts",
@@ -13,6 +22,8 @@ const TEXT_PATHS = [
 ];
 const FIXTURE_DIRECTORY = "tests/fixtures/providers";
 const DOCS_DIRECTORY = "docs";
+const ALLOWED_OWNERS = new Set(["运营A", "运营B", "运营C"]);
+const ALLOWED_COMPETITOR_SHOPS = new Set(["示例同行店A", "示例同行店B", "示例同行店C"]);
 
 // One-way fingerprints prevent the regression test itself from publishing legacy demo values.
 const LEGACY_FINGERPRINTS = {
@@ -45,7 +56,7 @@ function reportIfLegacyValue(issues, path, category, value) {
   }
 }
 
-function inspectText(path, content, issues) {
+function inspectText(path, content, issues, enforcePublicUrl = false) {
   for (const run of content.matchAll(/[\u3400-\u9fff]{2,}/g)) {
     for (let start = 0; start < run[0].length; start += 1) {
       for (let end = start + 2; end <= run[0].length; end += 1) {
@@ -58,6 +69,16 @@ function inspectText(path, content, issues) {
 
   for (const match of content.matchAll(/https?:\/\/([^/\s"'`]+)/g)) {
     reportIfLegacyValue(issues, path, "product or evidence domain", match[1]);
+    if (enforcePublicUrl && match[1] !== "example.com" && !match[1].startsWith("localhost")) {
+      issues.add(`${path}: public URL`);
+    }
+  }
+
+  for (const match of content.matchAll(/运营[A-Z]/g)) {
+    if (!ALLOWED_OWNERS.has(match[0])) issues.add(`${path}: owner`);
+  }
+  for (const match of content.matchAll(/示例同行店[A-Z]/g)) {
+    if (!ALLOWED_COMPETITOR_SHOPS.has(match[0])) issues.add(`${path}: competitor shop`);
   }
 }
 
@@ -120,14 +141,109 @@ function decodeXmlText(value) {
 
 function workbookStrings(entries) {
   const strings = [];
+  const tag = "(?:[A-Za-z_][\\w.-]*:)?";
+  const textNodes = (xml) => [...xml.matchAll(new RegExp(`<${tag}t(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}t>`, "g"))]
+    .map((match) => decodeXmlText(match[1]));
+  const sharedStrings = [];
+
+  const sharedXml = entries.get("xl/sharedStrings.xml")?.toString("utf8");
+  if (sharedXml) {
+    for (const match of sharedXml.matchAll(new RegExp(`<${tag}si(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}si>`, "g"))) {
+      sharedStrings.push(textNodes(match[1]).join(""));
+    }
+  }
+
   for (const [path, content] of entries) {
-    if (path === "xl/sharedStrings.xml" || /^xl\/worksheets\/sheet\d+\.xml$/.test(path)) {
-      for (const match of content.toString("utf8").matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) {
-        strings.push(decodeXmlText(match[1]));
+    const xml = content.toString("utf8");
+    if (/^xl\/worksheets\/sheet\d+\.xml$/.test(path)) {
+      for (const cell of xml.matchAll(new RegExp(`<${tag}c\\b([^>]*)>([\\s\\S]*?)<\\/${tag}c>`, "g"))) {
+        const cellType = /\bt=["']([^"']+)["']/.exec(cell[1])?.[1];
+        const body = cell[2];
+        for (const formula of body.matchAll(new RegExp(`<${tag}f(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}f>`, "g"))) {
+          strings.push(decodeXmlText(formula[1]));
+        }
+        if (cellType === "s") {
+          const sharedIndex = new RegExp(`<${tag}v(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}v>`).exec(body)?.[1];
+          const shared = sharedStrings[Number(sharedIndex)];
+          if (shared !== undefined) strings.push(shared);
+        } else if (cellType === "str") {
+          const value = new RegExp(`<${tag}v(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}v>`).exec(body)?.[1];
+          if (value !== undefined) strings.push(decodeXmlText(value));
+        } else if (cellType === "inlineStr") {
+          strings.push(...textNodes(body));
+        }
+      }
+    }
+    if (/^xl\/.*\.rels$/.test(path)) {
+      for (const relationship of xml.matchAll(/<(?:(?:[A-Za-z_][\w.-]*:)?Relationship)\b[^>]*\bTarget=["']([^"']+)["'][^>]*\/?>(?:<\/(?:[A-Za-z_][\w.-]*:)?Relationship>)?/g)) {
+        strings.push(decodeXmlText(relationship[1]));
       }
     }
   }
   return strings;
+}
+
+function isPublicDemoUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "example.com" && url.pathname !== "/";
+  } catch {
+    return false;
+  }
+}
+
+function collectStructuredIssues(path, records) {
+  const issues = new Set();
+  const report = (category) => issues.add(`${path}: ${category}`);
+
+  for (const record of records) {
+    if (record.owner && !ALLOWED_OWNERS.has(record.owner)) report("owner");
+    if (record.shop && !ALLOWED_COMPETITOR_SHOPS.has(record.shop)) report("competitor shop");
+    if (record.url && !isPublicDemoUrl(record.url)) report("public URL");
+  }
+
+  return issues;
+}
+
+function collectPriceConsistencyIssues(seedPairs) {
+  const issues = new Set();
+  const report = (path, category) => issues.add(`${path}: ${category}`);
+  const pairKey = (ownPriceFen, competitorPriceFen) => `${ownPriceFen}:${competitorPriceFen}`;
+  const alertPairs = new Map(alerts.map((alert) => [alert.monitorCode, pairKey(alert.ownPriceFen, alert.competitorPriceFen)]));
+  const comparisonPairs = new Map(comparisons.map((comparison) => [comparison.monitorCode, pairKey(comparison.own, comparison.competitor)]));
+
+  for (const alert of alerts) {
+    if (alert.competitorPriceFen >= alert.ownPriceFen) report("apps/web/src/data/demo-data.ts", "alert price relationship");
+    if (!alert.monitorCode || alertPairs.get(alert.monitorCode) !== seedPairs.get(alert.monitorCode)) {
+      report("apps/web/src/data/demo-data.ts", "seed snapshot price pair");
+    }
+  }
+
+  for (const comparison of comparisons) {
+    if (comparison.competitor >= comparison.own) report("apps/web/src/data/demo-data.ts", "comparison price relationship");
+    if (!comparison.monitorCode || comparisonPairs.get(comparison.monitorCode) !== seedPairs.get(comparison.monitorCode)) {
+      report("apps/web/src/data/demo-data.ts", "seed snapshot price pair");
+    }
+    const matchingAlert = alerts.find((alert) =>
+      alert.model === comparison.model && alert.foundAt.slice(11) === comparison.updated
+    );
+    if (matchingAlert && pairKey(matchingAlert.ownPriceFen, matchingAlert.competitorPriceFen) !== pairKey(comparison.own, comparison.competitor)) {
+      report("apps/web/src/data/demo-data.ts", "cross-view snapshot price pair");
+    }
+  }
+
+  for (const alert of fallbackAlerts) {
+    if (pairKey(alert.ownPriceFen, alert.competitorPriceFen) !== alertPairs.get(alert.monitorCode)) {
+      report("apps/web/src/data/api-fallbacks.ts", "alert snapshot price pair");
+    }
+  }
+  for (const comparison of fallbackComparisons) {
+    if (pairKey(comparison.ownPriceFen, comparison.competitorPriceFen) !== comparisonPairs.get(comparison.monitorCode)) {
+      report("apps/web/src/data/api-fallbacks.ts", "comparison snapshot price pair");
+    }
+  }
+
+  return issues;
 }
 
 test("public demo artifacts do not contain legacy personal, competitor, or product data", async () => {
@@ -140,13 +256,82 @@ test("public demo artifacts do not contain legacy personal, competitor, or produ
   ];
 
   for (const file of textFiles) {
-    inspectText(relative(root, file), await readFile(file, "utf8"), issues);
+    inspectText(
+      relative(root, file),
+      await readFile(file, "utf8"),
+      issues,
+      !file.startsWith(resolve(root, DOCS_DIRECTORY))
+    );
   }
 
   const workbookPath = resolve(root, WORKBOOK_PATH);
   for (const value of workbookStrings(readZipEntries(await readFile(workbookPath)))) {
-    inspectText(WORKBOOK_PATH, value, issues);
+    inspectText(WORKBOOK_PATH, value, issues, true);
   }
 
   assert.deepEqual([...issues].sort(), []);
+});
+
+test("extracts every XLSX string representation before applying privacy checks", () => {
+  const restrictedOwner = "运营D";
+  const restrictedUrl = "https://not-example.invalid/private";
+  const entries = new Map([
+    ["xl/sharedStrings.xml", Buffer.from(`<x:sst xmlns:x="urn:test"><x:si><x:t>${restrictedOwner}</x:t></x:si></x:sst>`)],
+    ["xl/worksheets/sheet1.xml", Buffer.from(`<x:worksheet xmlns:x="urn:test"><x:sheetData><x:row><x:c t="str"><x:v>${restrictedOwner}</x:v></x:c><x:c t="s"><x:v>0</x:v></x:c><x:c t="inlineStr"><x:is><x:t>${restrictedOwner}</x:t></x:is></x:c><x:c><x:f>CONCAT(&quot;${restrictedOwner}&quot;)</x:f></x:c></x:row></x:sheetData></x:worksheet>`)],
+    ["xl/worksheets/_rels/sheet1.xml.rels", Buffer.from(`<Relationships xmlns="urn:test"><Relationship Target="${restrictedUrl}" /></Relationships>`)],
+  ]);
+
+  const values = workbookStrings(entries);
+  assert.equal(values.filter((value) => value.includes(restrictedOwner)).length, 4);
+  assert.equal(values.filter((value) => value.includes(restrictedUrl)).length, 1);
+  const issues = new Set();
+  for (const value of values) inspectText("synthetic.xlsx", value, issues, true);
+  assert.deepEqual([...issues].sort(), ["synthetic.xlsx: owner", "synthetic.xlsx: public URL"]);
+});
+
+test("enforces public owner, shop, and URL allowlists without echoing rejected values", async () => {
+  const issues = new Set([
+    ...collectStructuredIssues("apps/web/src/data/demo-data.ts", [
+      ...alerts.map((alert) => ({ owner: alert.owner, shop: alert.competitorShop, url: alert.competitorUrl })),
+      ...models.map((model) => ({ owner: model.owner })),
+      ...comparisons.map((comparison) => ({ shop: comparison.shop })),
+    ]),
+    ...collectStructuredIssues("apps/web/src/data/api-fallbacks.ts", [
+      ...fallbackAlerts.map((alert) => ({ owner: alert.owner, shop: alert.competitorShop, url: alert.competitorUrl })),
+      ...fallbackCatalog.map((model) => ({ owner: model.owner, url: model.ownUrl })),
+      ...fallbackComparisons.map((comparison) => ({ shop: comparison.competitorShop, url: comparison.competitorUrl })),
+      ...fallbackHistory.map((entry) => ({ shop: entry.shop, url: entry.evidenceUrl })),
+      ...fallbackManualCandidates.map((candidate) => ({ shop: candidate.shop, url: candidate.url })),
+    ]),
+  ]);
+
+  for (const file of await filesUnder(resolve("tests/fixtures/providers"), ".json")) {
+    const fixture = JSON.parse(await readFile(file, "utf8"));
+    const records = fixture.data?.items ?? [fixture.data].filter(Boolean);
+    for (const issue of collectStructuredIssues(relative(process.cwd(), file), records.map((record) => ({
+      shop: record.shop_name,
+      url: record.url,
+    })))) {
+      issues.add(issue);
+    }
+    if (fixture.data?.evidence_url) {
+      for (const issue of collectStructuredIssues(relative(process.cwd(), file), [{ url: fixture.data.evidence_url }])) {
+        issues.add(issue);
+      }
+    }
+  }
+
+  assert.deepEqual([...issues].sort(), []);
+  assert.deepEqual(
+    [...collectStructuredIssues("synthetic.json", [{ owner: "运营D", shop: "示例同行店D", url: "https://not-example.invalid/private" }])].sort(),
+    ["synthetic.json: competitor shop", "synthetic.json: owner", "synthetic.json: public URL"]
+  );
+});
+
+test("uses one fictional lower price pair for each demo snapshot", async () => {
+  const source = await readFile("apps/api/src/database/seed-demo.ts", "utf8");
+  const seedPairs = new Map([...source.matchAll(/monitorCode:\s*"(MON-\d+)"[\s\S]*?ownPriceFen:\s*(\d[\d_]*)[\s\S]*?competitorPriceFen:\s*(\d[\d_]*)/g)]
+    .map((match) => [match[1], `${Number(match[2].replaceAll("_", ""))}:${Number(match[3].replaceAll("_", ""))}`]));
+
+  assert.deepEqual([...collectPriceConsistencyIssues(seedPairs)].sort(), []);
 });
