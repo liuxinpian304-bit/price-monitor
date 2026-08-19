@@ -13,6 +13,8 @@
 - 可访问 PostgreSQL、Redis、企业微信和合规商品数据 API。
 - 内网域名或 HTTPS 反向代理，以及公司统一身份认证。
 
+本地 macOS 和 Windows 初始化分别参阅《[macOS Terminal 设置指南](macos-setup.md)》和《[Windows PowerShell 设置指南](windows-setup.md)》。两者使用同一套 pnpm 命令与 Docker Compose 配置。
+
 ## 3. 环境变量
 
 复制 `.env.example` 为 `.env`，至少修改以下内容：
@@ -35,7 +37,7 @@ pnpm install --frozen-lockfile
 pnpm run doctor
 docker compose -f infra/docker-compose.yml up -d postgres redis
 pnpm db:generate
-pnpm prisma migrate deploy
+pnpm db:migrate
 pnpm verify
 pnpm build
 ```
