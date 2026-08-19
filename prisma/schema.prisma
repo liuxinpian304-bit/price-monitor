@@ -1,0 +1,284 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ComparisonType {
+  BARE
+  BUNDLE
+}
+
+enum AliasType {
+  EFFECTIVE
+  EXCLUDED
+}
+
+enum CandidateDecision {
+  PENDING
+  BARE
+  BUNDLE
+  REJECTED
+  MANUAL
+}
+
+enum StockState {
+  IN_STOCK
+  OUT_OF_STOCK
+  UNKNOWN
+}
+
+enum CollectionRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  PARTIAL_FAILED
+  FAILED
+}
+
+enum AlertStatus {
+  PENDING
+  PRICE_CHANGED
+  NO_FOLLOW
+  FALSE_POSITIVE
+  WATCHING
+}
+
+enum AlertSeverity {
+  CONFIRMED_LOW
+  MANUAL_REVIEW
+  SYSTEM_ERROR
+}
+
+model MonitoredModel {
+  id                String         @id @default(cuid())
+  monitorCode       String         @unique @db.VarChar(50)
+  enabled           Boolean        @default(true)
+  brand             String         @db.VarChar(120)
+  standardModel     String         @db.VarChar(200)
+  category          String         @db.VarChar(120)
+  searchQuery       String         @db.VarChar(500)
+  version           String?        @db.VarChar(200)
+  mustIncludeTerms  String[]       @default([])
+  excludedTerms     String[]       @default([])
+  comparisonType    ComparisonType
+  colorComparable   Boolean        @default(false)
+  owner             String         @db.VarChar(120)
+  notes             String?
+  bundleId          String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  bundle            Bundle?        @relation(fields: [bundleId], references: [id], onDelete: SetNull)
+  aliases           ModelAlias[]
+  ownListings       OwnListing[]
+  searchCandidates  SearchCandidate[]
+  collectionRuns    CollectionRun[]
+  alerts            PriceAlert[]
+
+  @@index([enabled])
+  @@index([brand, standardModel])
+  @@index([bundleId])
+}
+
+model ModelAlias {
+  id               String         @id @default(cuid())
+  monitoredModelId String
+  phrase           String         @db.VarChar(300)
+  type             AliasType
+  notes            String?
+  createdAt        DateTime       @default(now())
+  monitoredModel   MonitoredModel @relation(fields: [monitoredModelId], references: [id], onDelete: Cascade)
+
+  @@unique([monitoredModelId, phrase, type])
+  @@index([phrase])
+}
+
+model Bundle {
+  id              String           @id @default(cuid())
+  code            String           @unique @db.VarChar(50)
+  title           String?          @db.VarChar(300)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  items           BundleItem[]
+  monitoredModels MonitoredModel[]
+}
+
+model BundleItem {
+  id             String   @id @default(cuid())
+  bundleId       String
+  accessoryType  String   @db.VarChar(120)
+  brand          String?  @db.VarChar(120)
+  modelOrName    String   @db.VarChar(300)
+  quantity       Int
+  unitValueFen   Int
+  core           Boolean  @default(false)
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  bundle         Bundle   @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+
+  @@index([bundleId])
+}
+
+model OwnListing {
+  id               String          @id @default(cuid())
+  monitoredModelId String
+  platform         String          @default("TMALL") @db.VarChar(40)
+  shopName         String          @default("星空乐器专营店") @db.VarChar(200)
+  platformItemId   String?         @db.VarChar(160)
+  url              String
+  skuText          String          @db.VarChar(500)
+  active           Boolean         @default(true)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  monitoredModel   MonitoredModel  @relation(fields: [monitoredModelId], references: [id], onDelete: Cascade)
+  snapshots        OfferSnapshot[]
+
+  @@unique([monitoredModelId, url, skuText])
+  @@index([active])
+}
+
+model SearchCandidate {
+  id               String            @id @default(cuid())
+  monitoredModelId String
+  providerKey      String            @db.VarChar(100)
+  platformItemId   String            @db.VarChar(160)
+  url              String
+  shopName         String            @db.VarChar(200)
+  title            String            @db.VarChar(1000)
+  decision         CandidateDecision @default(PENDING)
+  comparable       Boolean           @default(false)
+  confidenceBps    Int               @default(0)
+  normalizedModel  String?           @db.VarChar(300)
+  reasons          Json?
+  firstSeenAt      DateTime          @default(now())
+  lastSeenAt       DateTime          @default(now())
+  monitoredModel   MonitoredModel    @relation(fields: [monitoredModelId], references: [id], onDelete: Cascade)
+  snapshots        OfferSnapshot[]
+
+  @@unique([monitoredModelId, providerKey, platformItemId])
+  @@index([decision, comparable])
+  @@index([shopName])
+}
+
+model CollectionRun {
+  id               String              @id @default(cuid())
+  monitoredModelId String
+  providerKey      String              @db.VarChar(100)
+  status           CollectionRunStatus @default(QUEUED)
+  scheduledFor     DateTime
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  searchedCount    Int                 @default(0)
+  fetchedCount     Int                 @default(0)
+  matchedCount     Int                 @default(0)
+  failedCount      Int                 @default(0)
+  errorCode        String?             @db.VarChar(120)
+  errorMessage     String?
+  createdAt        DateTime            @default(now())
+  monitoredModel   MonitoredModel      @relation(fields: [monitoredModelId], references: [id], onDelete: Cascade)
+  snapshots        OfferSnapshot[]
+
+  @@unique([monitoredModelId, providerKey, scheduledFor])
+  @@index([status, scheduledFor])
+}
+
+model OfferSnapshot {
+  id                    String           @id @default(cuid())
+  collectionRunId       String
+  ownListingId          String?
+  searchCandidateId     String?
+  platformItemId        String           @db.VarChar(160)
+  skuId                 String?          @db.VarChar(160)
+  shopName              String           @db.VarChar(200)
+  title                 String           @db.VarChar(1000)
+  skuText               String?          @db.VarChar(500)
+  listPriceFen          Int?
+  publicDiscountFen     Int              @default(0)
+  payableFen            Int?
+  stockState            StockState       @default(UNKNOWN)
+  promotions            Json?
+  gifts                 Json?
+  rawEvidence           Json?
+  evidenceUrl           String?
+  capturedAt            DateTime
+  createdAt             DateTime         @default(now())
+  collectionRun         CollectionRun    @relation(fields: [collectionRunId], references: [id], onDelete: Cascade)
+  ownListing            OwnListing?      @relation(fields: [ownListingId], references: [id], onDelete: SetNull)
+  searchCandidate       SearchCandidate? @relation(fields: [searchCandidateId], references: [id], onDelete: SetNull)
+  ownPriceAlerts        PriceAlert[]     @relation("OwnSnapshotAlerts")
+  competitorPriceAlerts PriceAlert[]     @relation("CompetitorSnapshotAlerts")
+
+  @@index([collectionRunId])
+  @@index([ownListingId, capturedAt])
+  @@index([searchCandidateId, capturedAt])
+  @@index([platformItemId, skuId, capturedAt])
+}
+
+model PriceAlert {
+  id                   String        @id @default(cuid())
+  monitoredModelId     String
+  ownSnapshotId        String?
+  competitorSnapshotId String?
+  severity             AlertSeverity
+  status               AlertStatus   @default(PENDING)
+  dedupKey             String        @unique @db.VarChar(300)
+  ownPriceFen          Int?
+  competitorPriceFen   Int?
+  differenceFen        Int?
+  reasons              Json?
+  firstSeenAt          DateTime      @default(now())
+  lastSeenAt           DateTime      @default(now())
+  notifiedAt           DateTime?
+  notificationAttempts Int           @default(0)
+  lastNotificationError String?
+  lastNotificationAttemptAt DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  monitoredModel       MonitoredModel @relation(fields: [monitoredModelId], references: [id], onDelete: Cascade)
+  ownSnapshot          OfferSnapshot? @relation("OwnSnapshotAlerts", fields: [ownSnapshotId], references: [id], onDelete: SetNull)
+  competitorSnapshot   OfferSnapshot? @relation("CompetitorSnapshotAlerts", fields: [competitorSnapshotId], references: [id], onDelete: SetNull)
+  actions              AlertAction[]
+
+  @@index([status, createdAt])
+  @@index([monitoredModelId, lastSeenAt])
+}
+
+model AlertAction {
+  id         String      @id @default(cuid())
+  alertId    String
+  actorId    String      @db.VarChar(160)
+  status     AlertStatus
+  reasonCode String?     @db.VarChar(120)
+  note       String?
+  createdAt  DateTime    @default(now())
+  alert      PriceAlert  @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([alertId, createdAt])
+}
+
+model SystemSetting {
+  key            String   @id @db.VarChar(160)
+  valueJson      Json?
+  encryptedValue Bytes?
+  secret         Boolean  @default(false)
+  updatedBy      String   @db.VarChar(160)
+  updatedAt      DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String   @db.VarChar(160)
+  action     String   @db.VarChar(200)
+  entityType String   @db.VarChar(160)
+  entityId   String   @db.VarChar(200)
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId, createdAt])
+  @@index([actorId, createdAt])
+}

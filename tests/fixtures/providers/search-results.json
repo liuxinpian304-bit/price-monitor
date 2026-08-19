@@ -1,0 +1,27 @@
+{
+  "status": "ok",
+  "data": {
+    "items": [
+      {
+        "item_id": "1001",
+        "url": "https://detail.tmall.com/item.htm?id=1001",
+        "shop_name": "同行专业音频店",
+        "title": "RME Babyface Pro FS 专业声卡 官方标配",
+        "price_range": {
+          "min_yuan": "1.00",
+          "max_yuan": "6499.00"
+        }
+      },
+      {
+        "item_id": "1002",
+        "url": "https://detail.tmall.com/item.htm?id=1002",
+        "shop_name": "同行录音设备店",
+        "title": "RME Babyface Pro FS MK4录音套装",
+        "price_range": {
+          "min_yuan": "6999.00",
+          "max_yuan": "8299.00"
+        }
+      }
+    ]
+  }
+}
