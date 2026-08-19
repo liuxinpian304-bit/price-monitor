@@ -67,11 +67,22 @@ function inspectText(path, content, issues, enforcePublicUrl = false) {
     }
   }
 
-  for (const match of content.matchAll(/https?:\/\/([^/\s"'`]+)/g)) {
-    reportIfLegacyValue(issues, path, "product or evidence domain", match[1]);
-    if (enforcePublicUrl && match[1] !== "example.com" && !match[1].startsWith("localhost")) {
-      issues.add(`${path}: public URL`);
+  for (const match of content.matchAll(/https?:\/\/[^\s"'`<>]+/g)) {
+    let hostname = "";
+    try {
+      hostname = new URL(match[0]).hostname;
+    } catch {
+      // The public URL contract below reports malformed URLs without exposing them.
     }
+    reportIfLegacyValue(issues, path, "product or evidence domain", hostname);
+    if (enforcePublicUrl && !isPublicDemoUrl(match[0])) issues.add(`${path}: public URL`);
+  }
+
+  for (const match of content.matchAll(/\bowner\s*:\s*["']([^"']+)["']/g)) {
+    if (!ALLOWED_OWNERS.has(match[1])) issues.add(`${path}: owner`);
+  }
+  for (const match of content.matchAll(/\bcompetitorShop\s*:\s*["']([^"']+)["']/g)) {
+    if (!ALLOWED_COMPETITOR_SHOPS.has(match[1])) issues.add(`${path}: competitor shop`);
   }
 
   for (const match of content.matchAll(/运营[A-Z]/g)) {
@@ -139,8 +150,7 @@ function decodeXmlText(value) {
     .replace(/&apos;/g, "'");
 }
 
-function workbookStrings(entries) {
-  const strings = [];
+function workbookSharedStrings(entries) {
   const tag = "(?:[A-Za-z_][\\w.-]*:)?";
   const textNodes = (xml) => [...xml.matchAll(new RegExp(`<${tag}t(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}t>`, "g"))]
     .map((match) => decodeXmlText(match[1]));
@@ -153,24 +163,49 @@ function workbookStrings(entries) {
     }
   }
 
+  return { sharedStrings, tag, textNodes };
+}
+
+function workbookCells(entries) {
+  const { sharedStrings, tag, textNodes } = workbookSharedStrings(entries);
+  const cells = [];
+
   for (const [path, content] of entries) {
     const xml = content.toString("utf8");
     if (/^xl\/worksheets\/sheet\d+\.xml$/.test(path)) {
       for (const cell of xml.matchAll(new RegExp(`<${tag}c\\b([^>]*)>([\\s\\S]*?)<\\/${tag}c>`, "g"))) {
+        const reference = /\br=["']([^"']+)["']/.exec(cell[1])?.[1];
         const cellType = /\bt=["']([^"']+)["']/.exec(cell[1])?.[1];
         const body = cell[2];
-        for (const formula of body.matchAll(new RegExp(`<${tag}f(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}f>`, "g"))) {
-          strings.push(decodeXmlText(formula[1]));
-        }
+        let value;
         if (cellType === "s") {
           const sharedIndex = new RegExp(`<${tag}v(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}v>`).exec(body)?.[1];
           const shared = sharedStrings[Number(sharedIndex)];
-          if (shared !== undefined) strings.push(shared);
+          if (shared !== undefined) value = shared;
         } else if (cellType === "str") {
-          const value = new RegExp(`<${tag}v(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}v>`).exec(body)?.[1];
-          if (value !== undefined) strings.push(decodeXmlText(value));
+          const formulaValue = new RegExp(`<${tag}v(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}v>`).exec(body)?.[1];
+          if (formulaValue !== undefined) value = decodeXmlText(formulaValue);
         } else if (cellType === "inlineStr") {
-          strings.push(...textNodes(body));
+          value = textNodes(body).join("");
+        }
+        if (reference && value !== undefined) cells.push({ path, reference, value });
+      }
+    }
+  }
+
+  return cells;
+}
+
+function workbookStrings(entries) {
+  const strings = workbookCells(entries).map((cell) => cell.value);
+  const { tag } = workbookSharedStrings(entries);
+
+  for (const [path, content] of entries) {
+    const xml = content.toString("utf8");
+    if (/^xl\/worksheets\/sheet\d+\.xml$/.test(path)) {
+      for (const cell of xml.matchAll(new RegExp(`<${tag}c\\b[^>]*>([\\s\\S]*?)<\\/${tag}c>`, "g"))) {
+        for (const formula of cell[1].matchAll(new RegExp(`<${tag}f(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}f>`, "g"))) {
+          strings.push(decodeXmlText(formula[1]));
         }
       }
     }
@@ -181,6 +216,28 @@ function workbookStrings(entries) {
     }
   }
   return strings;
+}
+
+function workbookOwnerIssues(path, entries) {
+  const issues = new Set();
+  const headers = new Map();
+
+  for (const cell of workbookCells(entries)) {
+    const match = /^([A-Z]+)(\d+)$/.exec(cell.reference);
+    if (!match || cell.value !== "负责人") continue;
+    headers.set(`${cell.path}:${match[1]}`, Number(match[2]));
+  }
+
+  for (const cell of workbookCells(entries)) {
+    const match = /^([A-Z]+)(\d+)$/.exec(cell.reference);
+    if (!match || !cell.value.trim()) continue;
+    const headerRow = headers.get(`${cell.path}:${match[1]}`);
+    if (headerRow !== undefined && Number(match[2]) > headerRow && !ALLOWED_OWNERS.has(cell.value.trim())) {
+      issues.add(`${path}: owner`);
+    }
+  }
+
+  return issues;
 }
 
 function isPublicDemoUrl(value) {
@@ -265,19 +322,21 @@ test("public demo artifacts do not contain legacy personal, competitor, or produ
   }
 
   const workbookPath = resolve(root, WORKBOOK_PATH);
-  for (const value of workbookStrings(readZipEntries(await readFile(workbookPath)))) {
+  const workbookEntries = readZipEntries(await readFile(workbookPath));
+  for (const value of workbookStrings(workbookEntries)) {
     inspectText(WORKBOOK_PATH, value, issues, true);
   }
+  for (const issue of workbookOwnerIssues(WORKBOOK_PATH, workbookEntries)) issues.add(issue);
 
   assert.deepEqual([...issues].sort(), []);
 });
 
 test("extracts every XLSX string representation before applying privacy checks", () => {
   const restrictedOwner = "运营D";
-  const restrictedUrl = "https://not-example.invalid/private";
+  const restrictedUrl = "http://example.com/private";
   const entries = new Map([
     ["xl/sharedStrings.xml", Buffer.from(`<x:sst xmlns:x="urn:test"><x:si><x:t>${restrictedOwner}</x:t></x:si></x:sst>`)],
-    ["xl/worksheets/sheet1.xml", Buffer.from(`<x:worksheet xmlns:x="urn:test"><x:sheetData><x:row><x:c t="str"><x:v>${restrictedOwner}</x:v></x:c><x:c t="s"><x:v>0</x:v></x:c><x:c t="inlineStr"><x:is><x:t>${restrictedOwner}</x:t></x:is></x:c><x:c><x:f>CONCAT(&quot;${restrictedOwner}&quot;)</x:f></x:c></x:row></x:sheetData></x:worksheet>`)],
+    ["xl/worksheets/sheet1.xml", Buffer.from(`<x:worksheet xmlns:x="urn:test"><x:sheetData><x:row><x:c r="A1" t="str"><x:v>${restrictedOwner}</x:v></x:c><x:c r="B1" t="s"><x:v>0</x:v></x:c><x:c r="C1" t="inlineStr"><x:is><x:t>${restrictedOwner}</x:t></x:is></x:c><x:c r="D1"><x:f>CONCAT(&quot;${restrictedOwner}&quot;)</x:f></x:c></x:row></x:sheetData></x:worksheet>`)],
     ["xl/worksheets/_rels/sheet1.xml.rels", Buffer.from(`<Relationships xmlns="urn:test"><Relationship Target="${restrictedUrl}" /></Relationships>`)],
   ]);
 
@@ -287,6 +346,33 @@ test("extracts every XLSX string representation before applying privacy checks",
   const issues = new Set();
   for (const value of values) inspectText("synthetic.xlsx", value, issues, true);
   assert.deepEqual([...issues].sort(), ["synthetic.xlsx: owner", "synthetic.xlsx: public URL"]);
+});
+
+test("rejects nonallowlisted seed literals and non-HTTPS demo URLs without echoing values", () => {
+  const issues = new Set();
+  inspectText(
+    "synthetic-seed.ts",
+    'const record = { owner: "任意人员", competitorShop: "不相关店铺", productUrl: "http://example.com/demo" };',
+    issues,
+    true
+  );
+
+  assert.deepEqual([...issues].sort(), [
+    "synthetic-seed.ts: competitor shop",
+    "synthetic-seed.ts: owner",
+    "synthetic-seed.ts: public URL",
+  ]);
+});
+
+test("requires each non-empty owner below a 负责人 workbook header to be allowlisted", () => {
+  const entries = new Map([
+    ["xl/worksheets/sheet1.xml", Buffer.from(`<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>负责人</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>任意人员</t></is></c></row></sheetData></worksheet>`)],
+  ]);
+  const issues = new Set();
+
+  for (const issue of workbookOwnerIssues("synthetic-owner.xlsx", entries)) issues.add(issue);
+
+  assert.deepEqual([...issues].sort(), ["synthetic-owner.xlsx: owner"]);
 });
 
 test("enforces public owner, shop, and URL allowlists without echoing rejected values", async () => {
