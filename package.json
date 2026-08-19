@@ -28,6 +28,7 @@
     "test:portable": "pnpm test:config && pnpm test:contracts && pnpm test:api:portable && pnpm test:web",
     "test:web": "pnpm --filter @stau-price-monitor/web test",
     "test:e2e": "node --test --test-concurrency=1 tests/e2e/*.spec.ts",
+    "audit:public": "node scripts/public-audit.mjs",
     "verify": "pnpm test && pnpm test:e2e && pnpm build",
     "verify:portable": "pnpm test:portable && pnpm build"
   },
