@@ -23,6 +23,8 @@ test("rejects private and non-public paths across path separators", () => {
     "outputs/tmall-price-monitor/private-export.zip",
     "recordings/20260819.m4a",
     "reports/销售数据.xlsx",
+    "sales/orders.csv",
+    "archive\\sales\\orders.csv",
   ]);
 
   assert.deepEqual(errors, [
@@ -36,6 +38,8 @@ test("rejects private and non-public paths across path separators", () => {
     "outputs/tmall-price-monitor/private-export.zip: disallowed archive",
     "recordings/20260819.m4a: disallowed recording",
     "reports/销售数据.xlsx: disallowed sales file",
+    "sales/orders.csv: disallowed sales file",
+    "archive/sales/orders.csv: disallowed sales file",
   ]);
 });
 

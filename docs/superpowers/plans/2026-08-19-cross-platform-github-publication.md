@@ -165,7 +165,7 @@ git commit -m "feat: add portable setup and diagnostics"
 
 - [ ] **Step 1: 写失败测试**
 
-覆盖 `.env`、`node_modules`、`work/`、`tmp/`、ZIP、录音、销售文件、`/Users/name/`、`C:\\Users\\name\\`、企业微信完整 Webhook 与非占位密钥；同时允许 `.env.example`、Excel 模板和 `replace-with-a-long-random-secret`。
+覆盖 `.env`、`node_modules`、`work/`、`tmp/`、ZIP、录音、销售文件、Unix home-directory 与 Windows drive-rooted home-directory 路径、企业微信完整 Webhook 与非占位密钥。路径与 Webhook fixture 必须由安全片段动态构造；同时允许 `.env.example`、Excel 模板和 `replace-with-a-long-random-secret`。
 
 - [ ] **Step 2: 验证测试先失败**
 
@@ -297,14 +297,14 @@ git commit -m "docs: add macOS and Windows setup with CI"
 Run: `pnpm db:validate`  
 Run: `pnpm infra:config`  
 Run: `pnpm verify`  
-Run: `pnpm audit:public`  
+Run: `pnpm audit:public`
 Expected: 全部 PASS；只允许已知的非阻塞前端 chunk 大小警告。
 
 - [ ] **Step 2: 审计待提交内容**
 
 Run: `git status --short`  
 Run: `git ls-files`  
-Run: `git grep -n -E '/Users/|C:\\Users\\|qyapi\\.weixin\\.qq\\.com/.+key='`  
+Run: `pnpm audit:public`
 Expected: 不存在秘密、本机路径、录音、销售资料、`.env`、ZIP、`node_modules` 或 `generated/prisma`。
 
 - [ ] **Step 3: 提交最终公开快照**

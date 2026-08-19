@@ -20,7 +20,8 @@ function normalizePath(path) {
 
 function pathIssue(path) {
   const normalized = normalizePath(path);
-  const name = normalized.split("/").at(-1);
+  const segments = normalized.split("/");
+  const name = segments.at(-1);
 
   if (name.startsWith(".env") && name !== ".env.example") {
     return "disallowed environment file";
@@ -46,7 +47,7 @@ function pathIssue(path) {
     return "disallowed recording";
   }
 
-  if (/(?:销售|sales)/i.test(name)) {
+  if (segments.some((segment) => /(?:销售|sales)/i.test(segment))) {
     return "disallowed sales file";
   }
 
