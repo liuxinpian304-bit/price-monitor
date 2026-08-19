@@ -12,7 +12,7 @@ describe("AlertsPage", () => {
     expect(screen.getByRole("tab", { name: /裸机预警/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /套装预警/ })).toBeInTheDocument();
     expect(screen.getByText("RME Babyface Pro FS")).toBeInTheDocument();
-    expect(screen.getByText("¥6299.99")).toHaveClass("risk-price");
+    expect(screen.getByText("¥7009.99")).toHaveClass("risk-price");
 
     fireEvent.click(screen.getByRole("tab", { name: /套装预警/ }));
     expect(screen.getByText(/MK4录音套装/)).toBeInTheDocument();

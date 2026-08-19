@@ -28,10 +28,10 @@ const demoModels: DemoModel[] = [
     model: "Babyface Pro FS",
     category: "声卡",
     type: "BARE",
-    owner: "张三",
-    ownPriceFen: 730_000,
-    competitorPriceFen: 629_999,
-    competitorShop: "音频玩家旗舰店",
+    owner: "运营A",
+    ownPriceFen: 701_000,
+    competitorPriceFen: 700_999,
+    competitorShop: "示例同行店A",
     sku: "Babyface Pro FS 单机 / FS 新版",
     itemId: "1001",
     alert: { id: "demo-alert-rme-bare", status: "PENDING", severity: "CONFIRMED_LOW" }
@@ -43,10 +43,10 @@ const demoModels: DemoModel[] = [
     model: "Babyface Pro FS MK4录音套装",
     category: "声卡套装",
     type: "BUNDLE",
-    owner: "张三",
-    ownPriceFen: 829_900,
-    competitorPriceFen: 799_900,
-    competitorShop: "同行录音设备店",
+    owner: "运营A",
+    ownPriceFen: 855_000,
+    competitorPriceFen: 854_000,
+    competitorShop: "示例同行店B",
     sku: "Babyface Pro FS + MK4 套装",
     itemId: "1002",
     alert: { id: "demo-alert-rme-bundle-mk4", status: "PENDING", severity: "CONFIRMED_LOW" },
@@ -59,10 +59,10 @@ const demoModels: DemoModel[] = [
     model: "MK4",
     category: "麦克风",
     type: "BARE",
-    owner: "李四",
-    ownPriceFen: 219_900,
-    competitorPriceFen: 199_900,
-    competitorShop: "声华音频专营店",
+    owner: "运营B",
+    ownPriceFen: 321_000,
+    competitorPriceFen: 320_000,
+    competitorShop: "示例同行店C",
     sku: "MK4 官方标配 / 国行",
     itemId: "1003",
     alert: { id: "demo-alert-sennheiser-mk4", status: "WATCHING", severity: "CONFIRMED_LOW" }
@@ -74,10 +74,10 @@ const demoModels: DemoModel[] = [
     model: "KMS 105",
     category: "麦克风",
     type: "BARE",
-    owner: "王五",
-    ownPriceFen: 689_900,
-    competitorPriceFen: 639_900,
-    competitorShop: "麦田音响专营店",
+    owner: "运营C",
+    ownPriceFen: 478_000,
+    competitorPriceFen: 477_000,
+    competitorShop: "示例同行店A",
     sku: "KMS 105 镍色 / 国行",
     itemId: "1004",
     alert: { id: "demo-alert-neumann-kms105", status: "PENDING", severity: "CONFIRMED_LOW" }
@@ -89,10 +89,10 @@ const demoModels: DemoModel[] = [
     model: "Babyface Pro FS MK8套装",
     category: "声卡套装",
     type: "BUNDLE",
-    owner: "张三",
-    ownPriceFen: 899_900,
-    competitorPriceFen: 859_900,
-    competitorShop: "专业录音旗舰店",
+    owner: "运营A",
+    ownPriceFen: 936_000,
+    competitorPriceFen: 935_000,
+    competitorShop: "示例同行店B",
     sku: "Babyface Pro FS + MK8 套装",
     itemId: "1005",
     alert: { id: "demo-alert-rme-bundle-mk8", status: "WATCHING", severity: "MANUAL_REVIEW" },
@@ -105,10 +105,10 @@ const demoModels: DemoModel[] = [
     model: "LP-UNF",
     category: "监听音箱",
     type: "BARE",
-    owner: "王五",
-    ownPriceFen: 289_900,
-    competitorPriceFen: 259_900,
-    competitorShop: "新城旗舰店",
+    owner: "运营C",
+    ownPriceFen: 264_000,
+    competitorPriceFen: 263_000,
+    competitorShop: "示例同行店C",
     sku: "黑色一对",
     itemId: "1006"
   }
@@ -178,7 +178,7 @@ async function seed() {
         }
       });
 
-      const ownUrl = `https://detail.tmall.com/item.htm?id=own-${model.itemId}`;
+      const ownUrl = `https://example.com/demo/1`;
       const ownListing = await prisma.ownListing.upsert({
         where: { monitoredModelId_url_skuText: { monitoredModelId: model.id, url: ownUrl, skuText: model.sku } },
         create: { monitoredModelId: model.id, platform: "TMALL", shopName: "星空乐器专营店", url: ownUrl, skuText: model.sku },
@@ -205,7 +205,7 @@ async function seed() {
         update: { status: "SUCCEEDED", finishedAt: new Date(capturedAt.getTime() + 3_000) }
       });
 
-      const competitorUrl = `https://detail.tmall.com/item.htm?id=${model.itemId}`;
+      const competitorUrl = `https://example.com/demo/2`;
       const candidate = await prisma.searchCandidate.upsert({
         where: {
           monitoredModelId_providerKey_platformItemId: {

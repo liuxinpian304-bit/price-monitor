@@ -45,7 +45,7 @@ export const fallbackCatalog: CatalogModel[] = models.map((model) => ({
   version: model.model.includes("Babyface") ? "FS新版" : null,
   mustIncludeTerms: model.model.split(/\s+/).filter(Boolean),
   excludedTerms: ["二手", "租赁", "定金", "维修"],
-  ownUrl: "https://detail.tmall.com",
+  ownUrl: "https://example.com/demo/1",
   ownSkuText: "官方标配",
   comparisonType: model.type === "裸机" ? "BARE" : "BUNDLE",
   bundleCode: model.type === "套装" ? `BUNDLE-${model.code}` : null,
@@ -62,14 +62,14 @@ export const fallbackComparisons: ComparisonRow[] = comparisons.map((row) => ({
   ownPriceFen: row.own,
   competitorPriceFen: row.competitor,
   competitorShop: row.shop,
-  competitorUrl: "https://detail.tmall.com",
+  competitorUrl: "https://example.com/demo/2",
   stock: row.stock,
   updatedAt: `2026-08-19T${row.updated}+08:00`
 }));
 
 export const fallbackManualCandidates: ManualCandidate[] = [
-  { id: "c1", model: "RME Babyface Pro FS", title: "RME Babyface Pro FS 专业录音声卡", sku: "Babyface Pro FS", shop: "录音设备中心", reason: "未识别到裸机或套装信号", foundAt: "2026-08-19T09:30:11+08:00", url: "https://detail.tmall.com" },
-  { id: "c2", model: "Kali LP-UNF", title: "Kali LP-UNF 监听音箱", sku: "黑色", shop: "音乐制作专营店", reason: "无法确认单只或一对", foundAt: "2026-08-19T09:30:16+08:00", url: "https://detail.tmall.com" }
+  { id: "c1", model: "RME Babyface Pro FS", title: "RME Babyface Pro FS 专业录音声卡", sku: "Babyface Pro FS", shop: "录音设备中心", reason: "未识别到裸机或套装信号", foundAt: "2026-08-19T09:30:11+08:00", url: "https://example.com/demo/3" },
+  { id: "c2", model: "Kali LP-UNF", title: "Kali LP-UNF 监听音箱", sku: "黑色", shop: "音乐制作专营店", reason: "无法确认单只或一对", foundAt: "2026-08-19T09:30:16+08:00", url: "https://example.com/demo/4" }
 ];
 
 export const fallbackHistory: HistoryRow[] = fallbackComparisons.map((row) => ({

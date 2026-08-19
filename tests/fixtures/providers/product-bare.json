@@ -2,7 +2,7 @@
   "status": "ok",
   "data": {
     "item_id": "1001",
-    "url": "https://detail.tmall.com/item.htm?id=1001",
+    "url": "https://example.com/fixtures/bare",
     "shop_name": "同行专业音频店",
     "title": "RME Babyface Pro FS 专业声卡 官方标配",
     "selected_sku_id": "sku-bare",
@@ -14,9 +14,9 @@
           "版本": "FS新版",
           "颜色": "银色"
         },
-        "list_price_yuan": "6499.00",
-        "public_discount_yuan": "200.00",
-        "payable_yuan": "6299.00",
+        "list_price_yuan": "4701.00",
+        "public_discount_yuan": "100.00",
+        "payable_yuan": "4601.00",
         "stock": "in_stock"
       }
     ],
@@ -24,7 +24,7 @@
       {
         "type": "shop_coupon",
         "label": "店铺公开券满6000减200",
-        "amount_yuan": "200.00"
+        "amount_yuan": "100.00"
       }
     ],
     "gifts": [
@@ -34,6 +34,6 @@
       }
     ],
     "captured_at": "2026-08-19T09:30:00+08:00",
-    "evidence_url": "https://evidence.example/1001/sku-bare"
+    "evidence_url": "https://example.com/fixtures/bare-evidence"
   }
 }

@@ -78,8 +78,8 @@ test("stores a complete fixture collection and reuses the summary for the same r
   const provider = new ManualImportProvider({
     searchResponse,
     offersByUrl: new Map([
-      ["https://detail.tmall.com/item.htm?id=1001", bare],
-      ["https://detail.tmall.com/item.htm?id=1002", bundle]
+      ["https://example.com/fixtures/bare", bare],
+      ["https://example.com/fixtures/bundle", bundle],
     ])
   });
   const repository = new PrismaCollectionRepository(prisma, "manual-fixtures");
@@ -100,8 +100,8 @@ test("stores a complete fixture collection and reuses the summary for the same r
   assert.equal(await prisma.searchCandidate.count(), 2);
   assert.equal(await prisma.offerSnapshot.count(), 2);
   const snapshots = await prisma.offerSnapshot.findMany({ orderBy: { platformItemId: "asc" } });
-  assert.equal(snapshots[0]?.payableFen, 629_900);
-  assert.notEqual(snapshots[0]?.payableFen, 100);
+  assert.equal(snapshots[0]?.payableFen, 460_100);
+  assert.notEqual(snapshots[0]?.payableFen, 12_345);
   assert.deepEqual(snapshots[0]?.rawEvidence, bare);
   const decisions = await prisma.searchCandidate.findMany({
     select: { decision: true, comparable: true },

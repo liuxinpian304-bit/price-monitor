@@ -2,8 +2,8 @@
   "status": "ok",
   "data": {
     "item_id": "1002",
-    "url": "https://detail.tmall.com/item.htm?id=1002",
-    "shop_name": "同行录音设备店",
+    "url": "https://example.com/fixtures/bundle",
+    "shop_name": "示例同行店B",
     "title": "RME Babyface Pro FS MK4录音套装",
     "selected_sku_id": "sku-bundle-mk4",
     "sku_options": [
@@ -14,9 +14,9 @@
           "声卡": "Babyface Pro FS",
           "麦克风": "MK4"
         },
-        "list_price_yuan": "8299.00",
-        "public_discount_yuan": "300.00",
-        "payable_yuan": "7999.00",
+        "list_price_yuan": "5701.00",
+        "public_discount_yuan": "100.00",
+        "payable_yuan": "5601.00",
         "stock": "in_stock"
       },
       {
@@ -26,9 +26,9 @@
           "声卡": "Babyface Pro FS",
           "麦克风": "MK8"
         },
-        "list_price_yuan": "8999.00",
-        "public_discount_yuan": "0.00",
-        "payable_yuan": "8999.00",
+        "list_price_yuan": "6701.00",
+        "public_discount_yuan": "100.00",
+        "payable_yuan": "6601.00",
         "stock": "out_of_stock"
       }
     ],
@@ -44,6 +44,6 @@
       }
     ],
     "captured_at": "2026-08-19T09:30:05+08:00",
-    "evidence_url": "https://evidence.example/1002/sku-bundle-mk4"
+    "evidence_url": "https://example.com/fixtures/bundle-evidence"
   }
 }

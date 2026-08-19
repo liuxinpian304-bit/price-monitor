@@ -243,8 +243,6 @@ test("recognizes the distributed operations template as a valid workbook", async
 
   const result = await service.importWorkbook(template, "operator-1");
 
-  assert.equal(result.errors.some((error) => error.sheet === "文件"), false);
-  assert.ok(result.errors.some((error) =>
-    error.sheet === "监控型号" && error.field === "我方商品链接"
-  ));
+  assert.deepEqual(result.errors, []);
+  assert.equal(writer.calls.length, 1);
 });
