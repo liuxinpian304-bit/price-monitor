@@ -11,7 +11,7 @@ import {
   UnorderedListOutlined,
   WarningOutlined
 } from "@ant-design/icons";
-import { Button, Drawer, Grid, Layout, Menu, Space } from "antd";
+import { Alert, Button, Drawer, Grid, Layout, Menu, Space } from "antd";
 import { useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
@@ -62,7 +62,7 @@ export function AppShell() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const titleKey = location.pathname.startsWith("/alerts/") ? "/alerts" : location.pathname;
   const health = useApiData<HealthData>("/api/health", { status: "degraded", database: "down", redis: "down" });
-  const healthLabel = health.loading ? "连接中" : health.data.status === "ok" ? "数据正常" : "数据异常";
+  const healthLabel = health.loading ? "连接中" : health.data.status === "ok" ? "服务正常" : "服务异常";
 
   return <Layout className="app-layout">
     {!mobile ? <Sider width={232} theme="light" className="app-sider">
@@ -99,6 +99,13 @@ export function AppShell() {
         </div>
       </Header>
       <Content className="app-content">
+        <Alert
+          className="data-warning"
+          type="warning"
+          showIcon
+          message="开发原型"
+          description="当前公开版不会自动执行定时采集，也不会自动发送企业微信消息；页面中的计划、事件和价格可能来自演示数据。"
+        />
         <Outlet />
       </Content>
     </Layout>

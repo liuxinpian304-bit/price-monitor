@@ -58,7 +58,23 @@ test("public README states the product boundary, supported platforms, and provid
   assert.match(readme, /合规/);
   assert.match(readme, /固定样例|fixtures/);
   assert.match(readme, /手工/);
+  assert.match(readme, /当前公开版不会自动执行定时采集，也不会自动发送企业微信消息/);
+  assert.match(readme, /CollectionScheduler/);
+  assert.match(readme, /WecomClient/);
+  assert.doesNotMatch(readme, /!\[[^\]]*\]\([^)]*\.(?:png|jpe?g|webp)\)/i);
   assert.match(readme, /不附(?:开源)?许可证|暂无许可证/);
+});
+
+test("operations guides distinguish the current prototype from the production target", async () => {
+  const [deploymentGuide, operatorGuide] = await Promise.all([
+    read("docs/operations/deployment-guide.md"),
+    read("docs/operations/operator-guide.md")
+  ]);
+
+  assert.match(deploymentGuide, /目标态/);
+  assert.match(deploymentGuide, /当前公开版尚未装配.*CollectionScheduler.*Worker.*WecomClient/s);
+  assert.match(operatorGuide, /目标态/);
+  assert.match(operatorGuide, /当前公开版不会自动执行定时采集，也不会自动发送企业微信消息/);
 });
 
 test("platform setup guides and security policy use the public release conventions", async () => {

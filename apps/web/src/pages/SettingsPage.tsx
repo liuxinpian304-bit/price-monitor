@@ -64,7 +64,7 @@ export function SettingsPage() {
         <Form form={form} layout="vertical">
           <Form.Item label="我方店铺" name="shop"><Input disabled /></Form.Item>
           <Form.Item label="商品数据源" name="provider"><Select options={[{ value: "manual", label: "手工固定样例（开发）" }, { value: "external", label: "外部合规数据 API" }]} /></Form.Item>
-          <Form.Item label="启用自动检查" name="enabled" valuePropName="checked"><Switch /></Form.Item>
+          <Form.Item label="启用自动检查（配置预留）" name="enabled" valuePropName="checked"><Switch /></Form.Item>
           <Button type="primary" onClick={() => void saveBase()}>保存基础配置</Button>
         </Form>
       </section>
@@ -92,7 +92,7 @@ export function SettingsPage() {
           aria-label={`检查时间 ${time}`}
           onChange={(event) => setTimes((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}
         />)}</div>
-        <Button type="primary" onClick={() => void saveBase()}>保存检查计划</Button>
+        <Button type="primary" onClick={() => void saveBase()}>保存检查计划配置</Button>
       </section>
     </div>
   </>;

@@ -4,7 +4,7 @@ import { extname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const TEMPLATE_PATH = "outputs/tmall-price-monitor/天猫比价监控_运营录入模板.xlsx";
-const BINARY_EXTENSIONS = new Set([".png", ".xlsx", ".zip"]);
+const BINARY_EXTENSIONS = new Set([".jpeg", ".jpg", ".png", ".webp", ".xlsx", ".zip"]);
 const RECORDING_EXTENSIONS = new Set([".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"]);
 const PLACEHOLDER_SECRET = "replace-with-a-long-random-secret";
 
@@ -63,6 +63,10 @@ function pathIssue(path) {
     if (normalized !== TEMPLATE_PATH) {
       return "disallowed output file";
     }
+  }
+
+  if (BINARY_EXTENSIONS.has(extname(name).toLowerCase()) && normalized !== TEMPLATE_PATH) {
+    return "disallowed unreviewed binary asset";
   }
 
   return null;
