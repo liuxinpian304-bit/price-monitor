@@ -9,6 +9,7 @@ build/
 .cache/
 .next/
 .turbo/
+.worktrees/
 generated/prisma/
 work/
 tmp/
