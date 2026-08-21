@@ -1,0 +1,9 @@
+{
+  "name": "@stau-price-monitor/config",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./money": "./src/money.ts",
+    "./schedule": "./src/schedule.ts"
+  }
+}

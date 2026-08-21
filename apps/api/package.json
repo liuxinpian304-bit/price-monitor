@@ -1,0 +1,25 @@
+{
+  "name": "@stau-price-monitor/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file=../../.env --import=tsx --watch src/main.ts",
+    "start": "node --env-file=../../.env --import=tsx src/main.ts",
+    "seed:demo": "node --env-file=../../.env --import=tsx src/database/seed-demo.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.2.1",
+    "@nestjs/core": "^11.2.1",
+    "@nestjs/platform-express": "^11.2.1",
+    "jszip": "3.10.1",
+    "multer": "^2.2.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
+    "tsx": "^4.23.12"
+  }
+}

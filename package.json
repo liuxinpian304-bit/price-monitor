@@ -1,0 +1,51 @@
+{
+  "name": "stau-tmall-price-monitor",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "db:migrate": "prisma migrate deploy",
+    "dev:api": "pnpm --filter @stau-price-monitor/api dev",
+    "dev:web": "pnpm --filter @stau-price-monitor/web dev",
+    "seed:demo": "pnpm --filter @stau-price-monitor/api seed:demo",
+    "db:generate": "prisma generate",
+    "db:validate": "prisma validate",
+    "infra:config": "docker compose -f infra/docker-compose.yml config",
+    "typecheck": "tsc --noEmit -p apps/api/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
+    "build": "pnpm typecheck && pnpm --filter @stau-price-monitor/web build",
+    "test": "pnpm test:config && pnpm test:contracts && pnpm test:api && pnpm test:web",
+    "test:config": "node --test packages/config/src/*.test.ts",
+    "test:contracts": "node --test packages/contracts/src/*.test.ts",
+    "test:api": "node scripts/run-api-tests.mjs",
+    "test:api:portable": "node scripts/run-api-tests.mjs --portable",
+    "test:portable": "pnpm test:config && pnpm test:contracts && pnpm test:api:portable && pnpm test:web",
+    "test:web": "pnpm --filter @stau-price-monitor/web test",
+    "test:e2e": "node --test --test-concurrency=1 tests/e2e/*.spec.ts",
+    "audit:public": "node scripts/public-audit.mjs",
+    "verify": "pnpm test && pnpm test:e2e && pnpm build",
+    "verify:portable": "pnpm test:portable && pnpm build"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.9.1",
+    "@prisma/client": "7.9.1",
+    "bullmq": "^6.1.2",
+    "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
+    "ioredis": "^6.0.0",
+    "pg": "^8.23.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/pg": "^8.23.1",
+    "prisma": "7.9.1",
+    "typescript": "^7.0.2"
+  }
+}

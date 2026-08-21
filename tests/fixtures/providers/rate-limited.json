@@ -1,0 +1,5 @@
+{
+  "status": "rate_limited",
+  "retry_after_seconds": 120,
+  "message": "provider quota reached"
+}

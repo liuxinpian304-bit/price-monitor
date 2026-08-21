@@ -1,0 +1,39 @@
+{
+  "status": "ok",
+  "data": {
+    "item_id": "1001",
+    "url": "https://example.com/fixtures/bare",
+    "shop_name": "示例同行店A",
+    "title": "RME Babyface Pro FS 专业声卡 官方标配",
+    "selected_sku_id": "sku-bare",
+    "sku_options": [
+      {
+        "sku_id": "sku-bare",
+        "label": "Babyface Pro FS 单机",
+        "attributes": {
+          "版本": "FS新版",
+          "颜色": "银色"
+        },
+        "list_price_yuan": "4701.00",
+        "public_discount_yuan": "100.00",
+        "payable_yuan": "4601.00",
+        "stock": "in_stock"
+      }
+    ],
+    "promotions": [
+      {
+        "type": "shop_coupon",
+        "label": "店铺公开券满6000减200",
+        "amount_yuan": "100.00"
+      }
+    ],
+    "gifts": [
+      {
+        "name": "STAU双卡农音频线",
+        "quantity": 1
+      }
+    ],
+    "captured_at": "2026-08-19T09:30:00+08:00",
+    "evidence_url": "https://example.com/fixtures/bare-evidence"
+  }
+}

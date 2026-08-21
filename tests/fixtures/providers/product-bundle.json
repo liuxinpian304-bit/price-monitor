@@ -1,0 +1,49 @@
+{
+  "status": "ok",
+  "data": {
+    "item_id": "1002",
+    "url": "https://example.com/fixtures/bundle",
+    "shop_name": "示例同行店B",
+    "title": "RME Babyface Pro FS MK4录音套装",
+    "selected_sku_id": "sku-bundle-mk4",
+    "sku_options": [
+      {
+        "sku_id": "sku-bundle-mk4",
+        "label": "Babyface Pro FS+MK4套装",
+        "attributes": {
+          "声卡": "Babyface Pro FS",
+          "麦克风": "MK4"
+        },
+        "list_price_yuan": "5701.00",
+        "public_discount_yuan": "100.00",
+        "payable_yuan": "5601.00",
+        "stock": "in_stock"
+      },
+      {
+        "sku_id": "sku-bundle-mk8",
+        "label": "Babyface Pro FS+MK8套装",
+        "attributes": {
+          "声卡": "Babyface Pro FS",
+          "麦克风": "MK8"
+        },
+        "list_price_yuan": "6701.00",
+        "public_discount_yuan": "100.00",
+        "payable_yuan": "6601.00",
+        "stock": "out_of_stock"
+      }
+    ],
+    "promotions": [],
+    "gifts": [
+      {
+        "name": "驱动安装及远程精调",
+        "quantity": 1
+      },
+      {
+        "name": "桌面麦克风支架",
+        "quantity": 1
+      }
+    ],
+    "captured_at": "2026-08-19T09:30:05+08:00",
+    "evidence_url": "https://example.com/fixtures/bundle-evidence"
+  }
+}
