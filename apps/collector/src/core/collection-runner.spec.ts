@@ -9,7 +9,7 @@ import test from "node:test";
 import { collectorReportSchema, type CollectorJob } from "@stau-price-monitor/contracts";
 
 import { AtomicCheckpointStore, type CollectorCheckpoint } from "./checkpoint-store.ts";
-import { CollectionRunner } from "./collection-runner.ts";
+import { CollectionRunner, hashCollectorJob } from "./collection-runner.ts";
 import { FixtureDriver } from "../drivers/fixture/fixture-driver.ts";
 import {
   LoginRequiredError,
@@ -737,6 +737,68 @@ test("rejects a legacy schema-version-1 checkpoint before any driver action", as
     );
     assert.equal(diagnoseCalls, 0);
     assert.equal(fixture.events.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a corrupt format-2 checkpoint before driver action without rewriting it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-corrupt-checkpoint-"));
+  const corruptJob = { ...job, runId: "sony-corrupt-checkpoint-run" };
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const checkpointPath = store.pathFor(corruptJob.runId);
+    const corruptCheckpoint = {
+      schemaVersion: 1,
+      checkpointFormatVersion: 2,
+      runId: corruptJob.runId,
+      jobHash: hashCollectorJob(corruptJob),
+      phase: "OWN_LISTINGS",
+      completedOwnListingIds: [],
+      completedPlatformItemIds: [],
+      completedSkuKeys: [],
+      report: {
+        schemaVersion: 1,
+        runId: corruptJob.runId,
+        collectorId: corruptJob.collectorId,
+        appVersion: "fixture-1.0",
+        startedAt: "not-a-timestamp",
+        completedAt: "also-not-a-timestamp",
+        status: "CORRUPTED",
+        searchLimit: corruptJob.searchLimit,
+        positions: [],
+        ownItems: [{
+          ownListingId: "broken-own-item",
+          platformItemId: "broken-platform-item",
+          url: "not-a-url",
+          shopName: "",
+          title: "",
+          searchRanks: [],
+          skus: [{ skuId: "not-a-current-sku" }]
+        }],
+        competitorItems: [],
+        issues: []
+      },
+      evidenceManifest: {},
+      identityAliases: {}
+    };
+    const serialized = `${JSON.stringify(corruptCheckpoint)}\n`;
+    await mkdir(dirname(checkpointPath), { recursive: true });
+    await writeFile(checkpointPath, serialized, "utf8");
+
+    const fixture = await FixtureDriver.fromFile(fixturePath);
+    let diagnoseCalls = 0;
+    const driver = withDiagnose(fixture, async () => {
+      diagnoseCalls += 1;
+      return fixture.diagnose();
+    });
+    await assert.rejects(
+      new CollectionRunner(driver, store).run(corruptJob, corruptJob.collectorId),
+      { name: "TypeError", message: "Checkpoint validation failed" }
+    );
+    assert.equal(diagnoseCalls, 0);
+    assert.equal(fixture.events.length, 0);
+    assert.equal(await readFile(checkpointPath, "utf8"), serialized);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -479,6 +479,14 @@ export class CollectionRunner {
           item.platformItemId,
           skuId
         ));
+        if (item.skus.length === 0) {
+          addIssueOnce(checkpoint.report, issue(
+            "SKU_ENUMERATION_INCOMPLETE",
+            "No SKU has produced a validated selected-SKU price yet",
+            result.view.capturedAt,
+            item.platformItemId
+          ));
+        }
         await this.completeSku(checkpoint, completedSkuKey);
         continue;
       }
@@ -494,6 +502,14 @@ export class CollectionRunner {
           item.platformItemId,
           skuId
         ));
+        if (item.skus.length === 0) {
+          addIssueOnce(checkpoint.report, issue(
+            "SKU_ENUMERATION_INCOMPLETE",
+            "No SKU has produced a validated selected-SKU price yet",
+            result.view.capturedAt,
+            item.platformItemId
+          ));
+        }
       }
       await this.completeSku(checkpoint, completedSkuKey);
     }

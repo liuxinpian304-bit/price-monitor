@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import type { CollectorReport } from "@stau-price-monitor/contracts";
@@ -41,6 +41,15 @@ function checkpoint(phase: CollectorCheckpoint["phase"]): CollectorCheckpoint {
     evidenceManifest: {},
     identityAliases: {}
   };
+}
+
+async function writeRawCheckpoint(
+  store: AtomicCheckpointStore,
+  value: unknown
+): Promise<void> {
+  const path = store.pathFor("run-1");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(value)}\n`, "utf8");
 }
 
 test("atomically replaces a checkpoint without leaking unrelated process secrets", async () => {
@@ -87,6 +96,100 @@ test("rejects a run ID that could escape the checkpoint root", async () => {
     const store = new AtomicCheckpointStore(root);
     assert.throws(() => store.pathFor("../escaped"), /run ID/i);
     await assert.rejects(store.save("nested/run", checkpoint("SEARCH")), /run ID/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects malformed format-2 nested report data with one deterministic error", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-checkpoint-invalid-report-"));
+  try {
+    const store = new AtomicCheckpointStore(root);
+    const invalidStatusAndTimestamps = structuredClone(checkpoint("ITEMS")) as unknown as {
+      report: Record<string, unknown>;
+    };
+    invalidStatusAndTimestamps.report.status = "CORRUPTED";
+    invalidStatusAndTimestamps.report.startedAt = "not-a-timestamp";
+
+    const malformedOwnObservation = structuredClone(checkpoint("ITEMS")) as unknown as {
+      report: Record<string, unknown>;
+    };
+    malformedOwnObservation.report.ownItems = [{
+      ownListingId: "own-1",
+      platformItemId: "item-1",
+      url: "https://item.example.test/item.htm?id=item-1",
+      shopName: "Fixture shop",
+      title: "Fixture item",
+      searchRanks: [],
+      skus: [{
+        skuId: `sku_${"a".repeat(64)}`,
+        label: "",
+        attributes: {},
+        stockState: "IN_STOCK",
+        listPriceFen: -1,
+        activityPriceFen: 100,
+        couponDiscountFen: 0,
+        fullReductionFen: 0,
+        directDiscountFen: 0,
+        promotions: [],
+        mandatoryFeeFen: 0,
+        priceConfidence: "CONFIRMED",
+        payableFen: 100,
+        capturedAt: "not-a-timestamp",
+        evidenceKey: null
+      }]
+    }];
+
+    for (const malformed of [invalidStatusAndTimestamps, malformedOwnObservation]) {
+      await writeRawCheckpoint(store, malformed);
+      await assert.rejects(store.load("run-1"), {
+        name: "TypeError",
+        message: "Checkpoint validation failed"
+      });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects malformed checkpoint progress and completion keys", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-checkpoint-invalid-progress-"));
+  try {
+    const store = new AtomicCheckpointStore(root);
+    const malformedValues = [
+      { completedOwnListingIds: [""] },
+      { completedPlatformItemIds: [""] },
+      { completedSkuKeys: ["item-1:sku-old-format"] },
+      { completedSkuKeys: [JSON.stringify(["item-1", "not-a-hashed-sku-id"])] }
+    ];
+    for (const replacement of malformedValues) {
+      await writeRawCheckpoint(store, { ...checkpoint("ITEMS"), ...replacement });
+      await assert.rejects(store.load("run-1"), {
+        name: "TypeError",
+        message: "Checkpoint validation failed"
+      });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects empty, self-referential, and cyclic identity aliases", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-checkpoint-invalid-aliases-"));
+  try {
+    const store = new AtomicCheckpointStore(root);
+    for (const identityAliases of [
+      { "": "stable-id" },
+      { "fallback-id": "" },
+      { "same-id": "same-id" },
+      { "fallback-a": "fallback-b", "fallback-b": "fallback-a" }
+    ]) {
+      await writeRawCheckpoint(store, { ...checkpoint("ITEMS"), identityAliases });
+      await assert.rejects(store.load("run-1"), {
+        name: "TypeError",
+        message: "Checkpoint validation failed"
+      });
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
