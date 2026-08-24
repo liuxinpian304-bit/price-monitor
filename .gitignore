@@ -10,6 +10,7 @@ build/
 .next/
 .turbo/
 .worktrees/
+apps/collector-macos/.build/
 generated/prisma/
 work/
 tmp/
