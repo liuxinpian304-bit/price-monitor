@@ -57,6 +57,13 @@ function searchResultContainer(root: AxNode): AxNode {
   return container;
 }
 
+function setCardIdentity(cardNode: AxNode, semanticId: string): void {
+  const actionNode = cardNode.children.find((child) => child.identifier === "item-link");
+  assert.ok(actionNode);
+  actionNode.title = `商品 ${semanticId}`;
+  actionNode.url = `https://item.example.test/item.htm?id=${semanticId}`;
+}
+
 function resolvePath(root: AxNode, path: number[]): AxNode {
   let current = root;
   for (const index of path) {
@@ -88,12 +95,72 @@ test("does not fabricate cards for an equal duplicate-count multiset with regene
   assert.deepEqual(merged.map((entry) => entry.platformItemId), ["A", "A", "B", "B"]);
 });
 
-test("appends only the non-overlapping tail when a mixed viewport has a true new card", () => {
+test("preserves multiplicity in a rebased semantic suffix-prefix overlap", () => {
   const merged = mergeSearchCardViewports(
-    [card(1, "A"), card(2, "B"), card(3, "C")],
-    [card(2, "B"), card(3, "C"), card(4, "D")]
+    [card(1, "A"), card(2, "A"), card(3, "B")],
+    [card(1, "A"), card(2, "B"), card(3, "C")]
   );
+  assert.deepEqual(merged.map((entry) => entry.platformItemId), ["A", "A", "B", "C"]);
+});
+
+test("appends a genuinely new semantic window in full when no boundary overlap exists", () => {
+  const merged = mergeSearchCardViewports(
+    [card(1, "A"), card(2, "B")],
+    [card(1, "A"), card(2, "C")]
+  );
+  assert.deepEqual(merged.map((entry) => entry.platformItemId), ["A", "B", "A", "C"]);
+});
+
+test("appends only D when real rebased AX viewports advance A,B,C to B,C,D", async () => {
+  const previousRoot = await fixture("search-results.json");
+  const previousContainer = searchResultContainer(previousRoot);
+  const previousMarker = previousContainer.children.find(
+    (child) => child.identifier === "search-result-query-marker"
+  );
+  const previousEnd = previousContainer.children.find((child) => child.identifier === "search-end-marker");
+  const previousCardNodes = previousContainer.children.filter((child) => child.identifier === "result-card");
+  assert.ok(previousMarker);
+  assert.ok(previousEnd);
+  assert.equal(previousCardNodes.length, 3);
+  previousCardNodes.forEach((cardNode, index) => setCardIdentity(cardNode, ["A", "B", "C"][index]!));
+  previousContainer.children = [previousMarker, ...previousCardNodes, previousEnd];
+  regeneratePaths(previousRoot);
+
+  const currentRoot = structuredClone(previousRoot);
+  const currentContainer = searchResultContainer(currentRoot);
+  const currentMarker = currentContainer.children.find(
+    (child) => child.identifier === "search-result-query-marker"
+  );
+  const currentEnd = currentContainer.children.find((child) => child.identifier === "search-end-marker");
+  const currentCardNodes = currentContainer.children.filter((child) => child.identifier === "result-card");
+  assert.ok(currentMarker);
+  assert.ok(currentEnd);
+  assert.equal(currentCardNodes.length, 3);
+  const replacement = structuredClone(currentCardNodes[0]!);
+  setCardIdentity(replacement, "D");
+  currentContainer.children = [currentMarker, currentCardNodes[1]!, currentCardNodes[2]!, replacement, currentEnd];
+  regeneratePaths(currentRoot);
+
+  const previous = readSearchCards(previousRoot);
+  const current = readSearchCards(currentRoot);
+  assert.deepEqual(previous.map((entry) => entry.platformItemId), ["A", "B", "C"]);
+  assert.deepEqual(current.map((entry) => entry.platformItemId), ["B", "C", "D"]);
+  assert.deepEqual(
+    previous.map((entry) => entry.actionNode.path),
+    current.map((entry) => entry.actionNode.path)
+  );
+
+  const merged = mergeSearchCardViewports(previous, current);
   assert.deepEqual(merged.map((entry) => entry.platformItemId), ["A", "B", "C", "D"]);
+  merged.forEach((mergedCard, index) => {
+    const source = index < previous.length ? previousRoot : currentRoot;
+    const resolved = resolvePath(source, mergedCard.actionNode.path);
+    assert.equal(resolved.url, mergedCard.actionNode.url);
+  });
+  assert.equal(merged[0], previous[0]);
+  assert.equal(merged[1], previous[1]);
+  assert.equal(merged[2], previous[2]);
+  assert.equal(merged[3], current[2]);
 });
 
 test("reconciles a real recursively rebased AX sibling reorder without stale action reuse", async () => {

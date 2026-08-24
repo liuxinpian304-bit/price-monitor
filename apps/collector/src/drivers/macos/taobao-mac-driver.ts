@@ -146,6 +146,16 @@ function strictOverlapLength(existing: SelectedSearchCard[], next: SelectedSearc
   return 0;
 }
 
+function semanticOverlapLength(existing: SelectedSearchCard[], next: SelectedSearchCard[]): number {
+  const max = Math.min(existing.length, next.length);
+  for (let length = max; length > 0; length -= 1) {
+    const suffix = existing.slice(existing.length - length).map(semanticCardKey);
+    const prefix = next.slice(0, length).map(semanticCardKey);
+    if (suffix.every((value, index) => value === prefix[index])) return length;
+  }
+  return 0;
+}
+
 function semanticCardCounts(cards: SelectedSearchCard[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const card of cards) {
@@ -168,17 +178,18 @@ export function mergeSearchCardViewports(
   next: SelectedSearchCard[],
   previousViewport: SelectedSearchCard[] = existing
 ): SelectedSearchCard[] {
-  const overlap = strictOverlapLength(previousViewport, next);
   const equalMultiset = equalSemanticMultiset(previousViewport, next);
-  const semanticClassCount = semanticCardCounts(next).size;
+  if (equalMultiset) {
+    const strictOverlap = strictOverlapLength(previousViewport, next);
+    const isSingleSemanticClass = semanticCardCounts(next).size === 1;
 
-  // Rebased equal multisets are ambiguous. Multi-class permutations never advance;
-  // single-class duplicate windows advance only when strict path overlap proves continuity.
-  if (equalMultiset && (semanticClassCount > 1 || overlap === 0)) return existing;
+    // Equal multisets cannot prove progress unless stable paths identify a shifted duplicate window.
+    if (!isSingleSemanticClass || strictOverlap === 0) return existing;
+    return [...existing, ...next.slice(strictOverlap)];
+  }
 
-  const known = new Set(existing.map(strictCardKey));
-  const additions = next.slice(overlap).filter((card) => !known.has(strictCardKey(card)));
-  return [...existing, ...additions];
+  const semanticOverlap = semanticOverlapLength(previousViewport, next);
+  return [...existing, ...next.slice(semanticOverlap)];
 }
 
 export class TaobaoMacDriver implements TaobaoDesktopDriver {

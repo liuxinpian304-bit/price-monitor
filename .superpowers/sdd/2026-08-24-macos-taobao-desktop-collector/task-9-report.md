@@ -241,3 +241,45 @@ The required full `pnpm audit:public` command was run after staging Task 9. Task
 - Equal semantic multisets without conclusive strict continuity are intentionally treated as no progress. This may conservatively stop collection when indistinguishable products genuinely replace one another, but it cannot fabricate ranks.
 - Search fixtures remain minimal sanitized synthetic data because Accessibility permission is unavailable. Task 14 must validate or replace them against a live sanitized Taobao Desktop 2.4.5 build 15 snapshot.
 - SwiftPM XCTest remains unavailable on this host for the documented Apple Swift 6.3.3 compiler versus 6.3.2 SDK mismatch; all requested direct Swift checks pass.
+
+## Fix Round 4
+
+### RED Evidence
+
+- Replaced the synthetic mixed-tail probe with two contract-valid AX trees. The second tree reorders and replaces result-card children from `A,B,C` to `B,C,D`, then recursively regenerates every path using the Swift serializer's `parent.path + child index` rule. Both viewports expose card paths `1,2,3`.
+- The unchanged path-sensitive merge returned `A,B,C,B,C,D` instead of `A,B,C,D`, proving that normal continuity still incorrectly required stable paths.
+- A rebased multiplicity probe `A,A,B -> A,B,C` returned `A,A,B,B,C`, and a zero-overlap unequal-multiset probe `A,B -> A,C` dropped the second `A`. These failures exposed path-based filtering beyond the reported mixed-tail case.
+
+### GREEN Evidence
+
+- Equal semantic multisets, including duplicate counts, remain conservative no progress for pure reorder or ambiguity. The supported single-semantic-class shift still uses maximal strict path overlap, so `A1,A2 -> A2,A3` appends only `A3`.
+- Every unequal semantic multiset now uses maximal ordered semantic suffix/prefix overlap between the previous and current viewports. Paths are excluded from normal overlap, while multiplicity and order are preserved.
+- A genuinely new window with no semantic boundary overlap appends in full. Global strict-path filtering was removed because regenerated path numbers are execution locators, not occurrence identities.
+- The real rebased `A,B,C -> B,C,D` fixture now appends only `D`. Historical cards retain objects and paths from their source snapshot, and the new tail retains the current snapshot locator; the test resolves each path only against its owning tree.
+
+### Verification
+
+- Focused AX-fixture/continuity/selector/driver run: PASS, 33 tests, 0 failures.
+- `pnpm test:collector`: PASS, 87 tests, 0 failures.
+- `pnpm typecheck`: PASS for API, web, and collector projects.
+- Fix Round 4 changed-file public audit: PASS for all three implementation, test, and report changes.
+- `git diff --check`: PASS.
+- Frontend parsing: PASS for every Swift production and XCTest source.
+- Swift 5 production typecheck with warnings as errors: PASS at `arm64-apple-macosx12.0`.
+- Strict Swift 6 production typecheck with complete concurrency and warnings as errors: PASS.
+- Direct helper executable build: PASS at `arm64-apple-macosx12.0`.
+- Direct read-only helper protocol probe: one UUID-correlated `ACCESSIBILITY_PERMISSION_REQUIRED` response line and zero stderr bytes; no permission prompt or UI challenge was triggered.
+
+### Self-Review
+
+- Verified equal-multiset comparison includes counts and precedes all append decisions, so multi-class permutations cannot fabricate progress.
+- Verified semantic overlap is ordered and maximal, handles duplicate multiplicity, and compares the immediately previous viewport rather than the full aggregate.
+- Verified strict path overlap is used only to disambiguate the established single-class duplicate shift.
+- Verified retained and appended action nodes stay associated with their source AX snapshots. The driver reselects a current-snapshot card before every action and never executes a stored historical path directly.
+- Rechecked unchanged viewports, pure reorder, duplicate-count reorder, duplicate shift, identity, rollback, split UTF-8, search/detail transition, selected-SKU identity, and exact back-context coverage through the full collector suite.
+
+### Fix Round 4 Concerns
+
+- Equal semantic multisets without strict single-class continuity intentionally remain no progress. This can conservatively stop an indistinguishable true replacement but cannot invent ranks.
+- Live Accessibility snapshots and actions remain unavailable because permission is absent. Task 14 must validate the synthetic sanitized profile fixtures against Taobao Desktop 2.4.5 build 15.
+- SwiftPM XCTest remains subject to the documented local compiler/SDK limitation; all requested direct Swift checks pass.
