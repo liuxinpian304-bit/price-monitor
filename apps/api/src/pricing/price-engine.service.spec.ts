@@ -68,6 +68,22 @@ test("uses integer fen and rejects invalid negative money", () => {
   }), /非负整数/);
 });
 
+test("calculates desktop prices through the shared public-price formula", () => {
+  const result = new PriceEngineService().calculateDesktop({
+    listPriceFen: 77_500,
+    activityPriceFen: 65_800,
+    promotions: [
+      { kind: "COUPON", label: "满600减20", amountFen: 2_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false },
+      { kind: "FULL_REDUCTION", label: "满650减10", amountFen: 1_000, thresholdFen: 65_000, audience: "PUBLIC", stackGroup: "platform-full", includedInActivityPrice: false }
+    ],
+    mandatoryFeeFen: 0
+  });
+
+  assert.equal(result.payableFen, 62_800);
+  assert.equal(result.confidence, "CONFIRMED");
+  assert.equal(result.publicDiscountFen, 3_000);
+});
+
 test("creates the same signature for the same core bundle regardless of row order", () => {
   const items = [
     { accessoryType: "麦克风", brand: "Sennheiser", modelOrName: "MK4", quantity: 1, unitValueFen: 180_000, core: true },

@@ -1,3 +1,9 @@
+import {
+  calculatePublicPrice,
+  type PublicPriceInput,
+  type PublicPriceResult
+} from "../../../../packages/config/src/public-price.ts";
+
 export interface PriceAdjustment {
   label: string;
   amountFen: number | null;
@@ -39,6 +45,10 @@ function knownTotal(adjustments: PriceAdjustment[], label: string): number | nul
 }
 
 export class PriceEngineService {
+  calculateDesktop(input: PublicPriceInput): PublicPriceResult {
+    return calculatePublicPrice(input);
+  }
+
   calculate(input: PriceInput): PriceResult {
     if (input.pagePriceFen !== null) {
       assertMoney(input.pagePriceFen, "页面价");
@@ -62,8 +72,22 @@ export class PriceEngineService {
       };
     }
 
-    const publicDiscountFen = knownTotal(input.publicDiscounts, "公开优惠");
-    if (publicDiscountFen === null) {
+    const legacyPromotions = input.publicDiscounts.map((discount, index) => ({
+      kind: "DIRECT_DISCOUNT",
+      label: discount.label,
+      amountFen: discount.amountFen,
+      thresholdFen: 0,
+      audience: "PUBLIC",
+      stackGroup: `legacy-public-discount-${index}`,
+      includedInActivityPrice: false
+    }));
+    const discountOnly = this.calculateDesktop({
+      listPriceFen: input.pagePriceFen,
+      activityPriceFen: input.pagePriceFen,
+      promotions: legacyPromotions,
+      mandatoryFeeFen: 0
+    });
+    if (discountOnly.confidence !== "CONFIRMED") {
       return {
         payableFen: null,
         publicDiscountFen: 0,
@@ -76,33 +100,38 @@ export class PriceEngineService {
     if (mandatoryFeeFen === null) {
       return {
         payableFen: null,
-        publicDiscountFen,
+        publicDiscountFen: discountOnly.publicDiscountFen,
         confidence: "MANUAL",
         reasons: ["存在金额无法确认的必付费用，需要人工核对"]
       };
     }
 
-    const payableFen = input.pagePriceFen - publicDiscountFen + mandatoryFeeFen;
-    if (!Number.isSafeInteger(payableFen) || payableFen < 0) {
+    const result = this.calculateDesktop({
+      listPriceFen: input.pagePriceFen,
+      activityPriceFen: input.pagePriceFen,
+      promotions: legacyPromotions,
+      mandatoryFeeFen
+    });
+    if (result.confidence !== "CONFIRMED" || result.payableFen === null) {
       return {
         payableFen: null,
-        publicDiscountFen,
+        publicDiscountFen: result.publicDiscountFen,
         confidence: "MANUAL",
         reasons: ["优惠或费用组合产生无效到手价，需要人工核对"]
       };
     }
 
     const reasons = [`具体SKU页面价 ${input.pagePriceFen} 分`];
-    if (publicDiscountFen > 0) {
-      reasons.push(`扣除公开优惠 ${publicDiscountFen} 分`);
+    if (result.publicDiscountFen > 0) {
+      reasons.push(`扣除公开优惠 ${result.publicDiscountFen} 分`);
     }
     if (mandatoryFeeFen > 0) {
       reasons.push(`加上必付费用 ${mandatoryFeeFen} 分`);
     }
 
     return {
-      payableFen,
-      publicDiscountFen,
+      payableFen: result.payableFen,
+      publicDiscountFen: result.publicDiscountFen,
       confidence: "CONFIRMED",
       reasons
     };
