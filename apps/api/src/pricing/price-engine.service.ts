@@ -72,22 +72,8 @@ export class PriceEngineService {
       };
     }
 
-    const legacyPromotions = input.publicDiscounts.map((discount, index) => ({
-      kind: "DIRECT_DISCOUNT",
-      label: discount.label,
-      amountFen: discount.amountFen,
-      thresholdFen: 0,
-      audience: "PUBLIC",
-      stackGroup: `legacy-public-discount-${index}`,
-      includedInActivityPrice: false
-    }));
-    const discountOnly = this.calculateDesktop({
-      listPriceFen: input.pagePriceFen,
-      activityPriceFen: input.pagePriceFen,
-      promotions: legacyPromotions,
-      mandatoryFeeFen: 0
-    });
-    if (discountOnly.confidence !== "CONFIRMED") {
+    const publicDiscountFen = knownTotal(input.publicDiscounts, "公开优惠");
+    if (publicDiscountFen === null) {
       return {
         payableFen: null,
         publicDiscountFen: 0,
@@ -100,12 +86,21 @@ export class PriceEngineService {
     if (mandatoryFeeFen === null) {
       return {
         payableFen: null,
-        publicDiscountFen: discountOnly.publicDiscountFen,
+        publicDiscountFen,
         confidence: "MANUAL",
         reasons: ["存在金额无法确认的必付费用，需要人工核对"]
       };
     }
 
+    const legacyPromotions = input.publicDiscounts.map((discount, index) => ({
+      kind: "DIRECT_DISCOUNT",
+      label: discount.label,
+      amountFen: discount.amountFen,
+      thresholdFen: 0,
+      audience: "PUBLIC",
+      stackGroup: `legacy-public-discount-${index}`,
+      includedInActivityPrice: false
+    }));
     const result = this.calculateDesktop({
       listPriceFen: input.pagePriceFen,
       activityPriceFen: input.pagePriceFen,

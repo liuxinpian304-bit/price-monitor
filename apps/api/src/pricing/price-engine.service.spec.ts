@@ -27,6 +27,26 @@ test("calculates exact payable price from page price, public discounts and manda
   });
 });
 
+test("preserves a zero legacy payable price when a mandatory fee offsets the public discount", () => {
+  const result = new PriceEngineService().calculate({
+    pagePriceFen: 100,
+    publicDiscounts: [{ label: "公开优惠", amountFen: 200 }],
+    mandatoryFees: [{ label: "必付费用", amountFen: 100 }],
+    privatePriceRequired: false
+  });
+
+  assert.deepEqual(result, {
+    payableFen: 0,
+    publicDiscountFen: 200,
+    confidence: "CONFIRMED",
+    reasons: [
+      "具体SKU页面价 100 分",
+      "扣除公开优惠 200 分",
+      "加上必付费用 100 分"
+    ]
+  });
+});
+
 test("returns manual with no payable price when a private chat price is required", () => {
   const result = new PriceEngineService().calculate({
     pagePriceFen: 649_900,
