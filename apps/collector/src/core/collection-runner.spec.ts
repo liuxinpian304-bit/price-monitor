@@ -10,7 +10,11 @@ import { collectorReportSchema, type CollectorJob } from "@stau-price-monitor/co
 
 import { AtomicCheckpointStore, type CollectorCheckpoint } from "./checkpoint-store.ts";
 import { assertCheckpointSemanticCoherence, unresolvedSearchIdentity } from "./checkpoint-semantics.ts";
-import { CollectionRunner, hashCollectorJob } from "./collection-runner.ts";
+import {
+  CollectionInterruptedError,
+  CollectionRunner,
+  hashCollectorJob
+} from "./collection-runner.ts";
 import { FixtureDriver } from "../drivers/fixture/fixture-driver.ts";
 import {
   DriverIssueError,
@@ -199,6 +203,42 @@ test("collects every enabled Sony SKU while preserving duplicate search ranks", 
       assert.equal(store.snapshots.some((snapshot) =>
         snapshot.completedSkuKeys.length === completedCount), true);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("graceful interruption stops after saving the current SKU boundary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-interruption-"));
+  try {
+    const fixtureDriver = await FixtureDriver.fromFile(fixturePath);
+    const controller = new AbortController();
+    let selectionCalls = 0;
+    const driver: TaobaoDesktopDriver = {
+      diagnose: () => fixtureDriver.diagnose(),
+      openOwnListing: (url) => fixtureDriver.openOwnListing(url),
+      search: (query, limit) => fixtureDriver.search(query, limit),
+      openSearchPosition: (position) => fixtureDriver.openSearchPosition(position),
+      async selectSku(selection) {
+        selectionCalls += 1;
+        const result = await fixtureDriver.selectSku(selection);
+        controller.abort();
+        return result;
+      },
+      returnToSearch: () => fixtureDriver.returnToSearch()
+    };
+    const store = new AtomicCheckpointStore(root);
+
+    await assert.rejects(
+      () => new CollectionRunner(driver, store).run(job, job.collectorId, controller.signal),
+      CollectionInterruptedError
+    );
+
+    const checkpoint = await store.load(job.runId);
+    assert.ok(checkpoint);
+    assert.equal(selectionCalls, 1);
+    assert.equal(checkpoint.completedSkuKeys.length, 1);
+    assert.equal(checkpoint.phase, "OWN_LISTINGS");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

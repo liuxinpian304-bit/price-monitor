@@ -3,7 +3,11 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve } from "node:path";
 
-import { checkNodeVersion, commandSpawnOptions } from "./local-env.mjs";
+import {
+  checkNodeVersion,
+  collectorDoctorPlan,
+  commandSpawnOptions
+} from "./local-env.mjs";
 
 function checkCommand(command, args, label) {
   const result = spawnSync(command, args, commandSpawnOptions());
@@ -19,6 +23,8 @@ console.log(`${node.ok ? "OK" : "MISSING"} ${node.message}`);
 const pnpmOk = checkCommand("pnpm", ["--version"], "pnpm");
 const dockerOk = checkCommand("docker", ["--version"], "Docker");
 const composeOk = checkCommand("docker", ["compose", "version"], "Docker Compose");
+const collectorOk = collectorDoctorPlan().every((check) =>
+  checkCommand(check.command, check.args, check.label));
 
 let envOk = true;
 
@@ -34,6 +40,6 @@ try {
   console.log("MISSING .env. Run pnpm setup.");
 }
 
-if (!node.ok || !pnpmOk || !dockerOk || !composeOk || !envOk) {
+if (!node.ok || !pnpmOk || !dockerOk || !composeOk || !envOk || !collectorOk) {
   process.exitCode = 1;
 }

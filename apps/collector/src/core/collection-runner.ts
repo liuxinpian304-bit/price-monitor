@@ -40,6 +40,17 @@ const PAUSE_INCOMPLETE_MESSAGE = "Collection paused before SKU enumeration compl
 const SEARCH_ID_CONFLICT_MESSAGE = "Search results exposed conflicting stable item IDs for one canonical URL";
 const DETAIL_ID_MISMATCH_MESSAGE = "Search item identity changed during detail traversal";
 
+export class CollectionInterruptedError extends Error {
+  constructor() {
+    super("Collection interrupted after checkpoint");
+    this.name = "CollectionInterruptedError";
+  }
+}
+
+function throwIfInterrupted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new CollectionInterruptedError();
+}
+
 function canonicalValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalValue);
   if (typeof value === "object" && value !== null) {
@@ -189,7 +200,11 @@ export class CollectionRunner {
     this.checkpointStore = checkpointStore;
   }
 
-  async run(inputJob: CollectorJob, collectorId: string): Promise<CollectorReport> {
+  async run(
+    inputJob: CollectorJob,
+    collectorId: string,
+    signal?: AbortSignal
+  ): Promise<CollectorReport> {
     const job = collectorJobSchema.parse(inputJob);
     if (job.collectorId !== collectorId) {
       throw new TypeError("Collector ID does not match the validated job");
@@ -213,22 +228,26 @@ export class CollectionRunner {
       if (!existing) {
         const diagnostic = await this.driver.diagnose();
         checkpoint.report.appVersion = diagnostic.appVersion ?? "unknown";
+        await this.checkpointStore.save(job.runId, checkpoint);
       }
+      throwIfInterrupted(signal);
 
       if (checkpoint.phase === "OWN_LISTINGS") {
-        await this.collectOwnListings(job, checkpoint);
+        await this.collectOwnListings(job, checkpoint, signal);
         checkpoint.phase = "SEARCH";
         await this.checkpointStore.save(job.runId, checkpoint);
+        throwIfInterrupted(signal);
       }
 
       if (checkpoint.phase === "SEARCH") {
         await this.collectSearch(job, checkpoint);
         checkpoint.phase = "ITEMS";
         await this.checkpointStore.save(job.runId, checkpoint);
+        throwIfInterrupted(signal);
       }
 
       if (checkpoint.phase === "ITEMS") {
-        await this.collectSearchItems(checkpoint);
+        await this.collectSearchItems(checkpoint, signal);
       }
 
       checkpoint.phase = "COMPLETE";
@@ -316,9 +335,14 @@ export class CollectionRunner {
     };
   }
 
-  private async collectOwnListings(job: CollectorJob, checkpoint: CollectorCheckpoint): Promise<void> {
+  private async collectOwnListings(
+    job: CollectorJob,
+    checkpoint: CollectorCheckpoint,
+    signal: AbortSignal | undefined
+  ): Promise<void> {
     for (const listing of job.ownListings) {
       if (checkpoint.completedOwnListingIds.includes(listing.id)) continue;
+      throwIfInterrupted(signal);
 
       const page = await this.driver.openOwnListing(listing.url);
       const identity = itemIdentity(page.platformItemId, page.url);
@@ -336,11 +360,12 @@ export class CollectionRunner {
         checkpoint.report.ownItems.push(item);
       }
 
-      await this.collectItemSkus(page, item, checkpoint);
+      await this.collectItemSkus(page, item, checkpoint, signal);
       addUnique(checkpoint.completedOwnListingIds, listing.id);
       addUnique(checkpoint.completedPlatformItemIds, identity);
       await this.driver.returnToSearch();
       await this.checkpointStore.save(checkpoint.runId, checkpoint);
+      throwIfInterrupted(signal);
     }
   }
 
@@ -380,7 +405,10 @@ export class CollectionRunner {
     }
   }
 
-  private async collectSearchItems(checkpoint: CollectorCheckpoint): Promise<void> {
+  private async collectSearchItems(
+    checkpoint: CollectorCheckpoint,
+    signal: AbortSignal | undefined
+  ): Promise<void> {
     const firstPositionByIdentity = new Map<string, DriverSearchPosition>();
     for (const position of checkpoint.report.positions) {
       if (!firstPositionByIdentity.has(position.platformItemId)) {
@@ -407,6 +435,7 @@ export class CollectionRunner {
     for (const [identity, position] of firstPositionByIdentity) {
       const resolvedIdentity = canonicalCheckpointIdentity(checkpoint, identity);
       if (checkpoint.completedPlatformItemIds.includes(resolvedIdentity)) continue;
+      throwIfInterrupted(signal);
 
       const page = await this.driver.openSearchPosition(position);
       const pageIdentity = itemIdentity(page.platformItemId, page.url);
@@ -443,18 +472,20 @@ export class CollectionRunner {
         item.searchRanks = [...new Set([...item.searchRanks, ...ranks])].sort((a, b) => a - b);
       }
 
-      await this.collectItemSkus(page, item, checkpoint);
+      await this.collectItemSkus(page, item, checkpoint, signal);
       completeIdentity(checkpoint, pageIdentity);
       completeIdentity(checkpoint, identity);
       await this.driver.returnToSearch();
       await this.checkpointStore.save(checkpoint.runId, checkpoint);
+      throwIfInterrupted(signal);
     }
   }
 
   private async collectItemSkus(
     page: DriverItemPage,
     item: CollectedItem,
-    checkpoint: CollectorCheckpoint
+    checkpoint: CollectorCheckpoint,
+    signal: AbortSignal | undefined
   ): Promise<void> {
     let selections: SkuSelection[];
     try {
@@ -490,6 +521,7 @@ export class CollectionRunner {
       const skuId = skuIdFor(page, selection);
       const completedSkuKey = canonicalCheckpointSkuKey(checkpoint, item.platformItemId, skuId);
       if (checkpoint.completedSkuKeys.includes(completedSkuKey)) continue;
+      throwIfInterrupted(signal);
 
       let result: DriverSkuSelectionResult;
       try {
@@ -511,7 +543,7 @@ export class CollectionRunner {
             item.platformItemId
           ));
         }
-        await this.completeSku(checkpoint, completedSkuKey);
+        await this.completeSku(checkpoint, completedSkuKey, signal);
         continue;
       }
       if (result.availability === "UNAVAILABLE") {
@@ -522,7 +554,7 @@ export class CollectionRunner {
           item.platformItemId,
           skuId
         ));
-        await this.completeSku(checkpoint, completedSkuKey);
+        await this.completeSku(checkpoint, completedSkuKey, signal);
         continue;
       }
 
@@ -542,7 +574,7 @@ export class CollectionRunner {
             item.platformItemId
           ));
         }
-        await this.completeSku(checkpoint, completedSkuKey);
+        await this.completeSku(checkpoint, completedSkuKey, signal);
         continue;
       }
 
@@ -566,7 +598,7 @@ export class CollectionRunner {
           ));
         }
       }
-      await this.completeSku(checkpoint, completedSkuKey);
+      await this.completeSku(checkpoint, completedSkuKey, signal);
     }
 
     if (item.skus.length === 0) {
@@ -629,10 +661,15 @@ export class CollectionRunner {
     };
   }
 
-  private async completeSku(checkpoint: CollectorCheckpoint, completedSkuKey: string): Promise<void> {
+  private async completeSku(
+    checkpoint: CollectorCheckpoint,
+    completedSkuKey: string,
+    signal: AbortSignal | undefined
+  ): Promise<void> {
     addUnique(checkpoint.completedSkuKeys, completedSkuKey);
     checkpoint.report.completedAt = now();
     await this.checkpointStore.save(checkpoint.runId, checkpoint);
+    throwIfInterrupted(signal);
   }
 
   private async pause(

@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node --env-file=../../.env.collector --import=tsx src/main.ts",
     "test": "node ../../scripts/run-collector-tests.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

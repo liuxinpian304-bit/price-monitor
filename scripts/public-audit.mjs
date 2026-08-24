@@ -27,7 +27,9 @@ function pathIssue(path) {
     return "disallowed Git metadata";
   }
 
-  if (name.startsWith(".env") && name !== ".env.example") {
+  if (name.startsWith(".env")
+    && name !== ".env.example"
+    && name !== ".env.collector.example") {
     return "disallowed environment file";
   }
 
@@ -88,7 +90,7 @@ export function auditText(path, content) {
     report("possible webhook secret");
   }
 
-  const secretPattern = /(?:^|[\s"'`])(?:[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|API_KEY|MASTER_KEY)[A-Z0-9_]*)\s*(?:=|:)\s*["']?([A-Za-z0-9][^\s"'`,;]*)/gm;
+  const secretPattern = /(?:^|[\t "'`])(?:[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|API_KEY|MASTER_KEY)[A-Z0-9_]*)[\t ]*(?:=|:)[\t ]*["']?([A-Za-z0-9][^\s"'`,;]*)/gm;
   for (const match of content.matchAll(secretPattern)) {
     if (!isPlaceholder(match[1])) {
       report("possible secret");
