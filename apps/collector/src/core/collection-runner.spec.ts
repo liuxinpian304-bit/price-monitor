@@ -423,7 +423,7 @@ test("upgrades fallback search identities when detail traversal discovers a stab
 
     const checkpoint = await new AtomicCheckpointStore(join(root, "checkpoints")).load(upgradeJob.runId);
     const fallbackIdentity = new URL(itemUrl).toString();
-    assert.equal(checkpoint?.completedPlatformItemIds.includes(fallbackIdentity), true);
+    assert.equal(checkpoint?.completedPlatformItemIds.includes(fallbackIdentity), false);
     assert.equal(checkpoint?.completedPlatformItemIds.includes("competitor-a"), true);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -616,7 +616,7 @@ test("normalizes a stable-first search URL group before detail traversal", async
     const fallbackIdentity = new URL(itemUrl).toString();
     const checkpoint = await store.load(stableFirstJob.runId);
     assert.equal(checkpoint?.identityAliases[fallbackIdentity], "competitor-a");
-    assert.equal(checkpoint?.completedPlatformItemIds.includes(fallbackIdentity), true);
+    assert.equal(checkpoint?.completedPlatformItemIds.includes(fallbackIdentity), false);
     assert.equal(checkpoint?.completedPlatformItemIds.includes("competitor-a"), true);
     assert.doesNotThrow(() => collectorReportSchema.parse(report));
   } finally {
@@ -685,10 +685,86 @@ test("persists a fallback detail alias across pause and resume without duplicate
     const completed = await store.load(aliasJob.runId);
     assert.equal(completed?.completedSkuKeys.length, 6);
     assert.equal(new Set(completed?.completedSkuKeys).size, 6);
-    assert.equal(completed?.completedPlatformItemIds.includes(fallbackIdentity), true);
+    assert.equal(completed?.completedPlatformItemIds.includes(fallbackIdentity), false);
     assert.equal(completed?.completedPlatformItemIds.includes("competitor-a"), true);
     assert.equal(completed?.identityAliases[fallbackIdentity], "competitor-a");
     assert.doesNotThrow(() => collectorReportSchema.parse(resumed));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a paused fallback-alias SKU completion before duplicate selection or checkpoint rewrite", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-alias-sku-key-"));
+  const aliasJob = { ...job, runId: "sony-alias-sku-key-run" };
+  try {
+    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const fallbackIdentity = new URL(itemUrl).toString();
+    const path = await writeFixtureCopy(root, (fixture) => {
+      for (const position of fixture.search.positions) {
+        if (position.url === itemUrl) position.platformItemId = null;
+      }
+    });
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    await new CollectionRunner(await FixtureDriver.fromFile(path, {
+      pauseAfterCompletedSkuCount: 2,
+      pauseType: "LOGIN_REQUIRED"
+    }), store).run(aliasJob, aliasJob.collectorId);
+
+    const checkpoint = await store.load(aliasJob.runId);
+    assert.ok(checkpoint);
+    const stableKeyIndex = checkpoint.completedSkuKeys.findIndex((serialized) =>
+      (JSON.parse(serialized) as [string, string])[0] === "competitor-a");
+    assert.notEqual(stableKeyIndex, -1);
+    const [, skuId] = JSON.parse(checkpoint.completedSkuKeys[stableKeyIndex]!) as [string, string];
+    checkpoint.completedSkuKeys[stableKeyIndex] = JSON.stringify([fallbackIdentity, skuId]);
+    const checkpointPath = store.pathFor(aliasJob.runId);
+    const serialized = `${JSON.stringify(checkpoint)}\n`;
+    await writeFile(checkpointPath, serialized, "utf8");
+
+    const resumedDriver = await FixtureDriver.fromFile(path);
+    await assert.rejects(
+      new CollectionRunner(resumedDriver, store).run(aliasJob, aliasJob.collectorId),
+      { name: "TypeError", message: "Checkpoint semantic validation failed" }
+    );
+    assert.deepEqual(resumedDriver.events, []);
+    assert.equal(await readFile(checkpointPath, "utf8"), serialized);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects an alias-form completed platform item before driver action or checkpoint rewrite", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-alias-platform-key-"));
+  const aliasJob = { ...job, runId: "sony-alias-platform-key-run" };
+  try {
+    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const fallbackIdentity = new URL(itemUrl).toString();
+    const path = await writeFixtureCopy(root, (fixture) => {
+      for (const position of fixture.search.positions) {
+        if (position.url === itemUrl) position.platformItemId = null;
+      }
+    });
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    await new CollectionRunner(await FixtureDriver.fromFile(path), store)
+      .run(aliasJob, aliasJob.collectorId);
+
+    const checkpoint = await store.load(aliasJob.runId);
+    assert.ok(checkpoint);
+    checkpoint.completedPlatformItemIds = checkpoint.completedPlatformItemIds
+      .filter((identity) => identity !== fallbackIdentity)
+      .map((identity) => identity === "competitor-a" ? fallbackIdentity : identity);
+    const checkpointPath = store.pathFor(aliasJob.runId);
+    const serialized = `${JSON.stringify(checkpoint)}\n`;
+    await writeFile(checkpointPath, serialized, "utf8");
+
+    const resumedDriver = await FixtureDriver.fromFile(path);
+    await assert.rejects(
+      new CollectionRunner(resumedDriver, store).run(aliasJob, aliasJob.collectorId),
+      { name: "TypeError", message: "Checkpoint semantic validation failed" }
+    );
+    assert.deepEqual(resumedDriver.events, []);
+    assert.equal(await readFile(checkpointPath, "utf8"), serialized);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -891,6 +967,150 @@ test("rejects a checkpoint report for the wrong collector before every driver ac
     assert.equal(diagnoseCalls, 0);
     assert.deepEqual(fixture.events, []);
     assert.equal(await readFile(checkpointPath, "utf8"), serialized);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects PAUSED_LOGIN without LOGIN_REQUIRED before every driver action without rewriting it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-missing-login-issue-"));
+  const pausedJob = { ...job, runId: "sony-missing-login-issue-run" };
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const checkpointPath = store.pathFor(pausedJob.runId);
+    const checkpoint = emptyCheckpoint(pausedJob);
+    checkpoint.report.status = "PAUSED_LOGIN";
+    const serialized = `${JSON.stringify(checkpoint)}\n`;
+    await mkdir(dirname(checkpointPath), { recursive: true });
+    await writeFile(checkpointPath, serialized, "utf8");
+
+    const fixture = await FixtureDriver.fromFile(fixturePath);
+    let diagnoseCalls = 0;
+    const driver = withDiagnose(fixture, async () => {
+      diagnoseCalls += 1;
+      return fixture.diagnose();
+    });
+    await assert.rejects(
+      new CollectionRunner(driver, store).run(pausedJob, pausedJob.collectorId),
+      { name: "TypeError", message: "Checkpoint semantic validation failed" }
+    );
+    assert.equal(diagnoseCalls, 0);
+    assert.deepEqual(fixture.events, []);
+    assert.equal(await readFile(checkpointPath, "utf8"), serialized);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects incompatible pause statuses and issues at incomplete and complete boundaries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-pause-coherence-"));
+  const coherenceJob = { ...job, runId: "sony-pause-coherence-run" };
+  const capturedAt = "2026-08-24T05:00:00.000Z";
+  const loginIssue = { code: "LOGIN_REQUIRED" as const, message: "Login required", capturedAt };
+  const challengeIssue = {
+    code: "PLATFORM_CHALLENGE" as const,
+    message: "Platform challenge",
+    capturedAt
+  };
+  try {
+    const completeStore = new AtomicCheckpointStore(join(root, "source"));
+    await new CollectionRunner(await FixtureDriver.fromFile(fixturePath), completeStore)
+      .run(coherenceJob, coherenceJob.collectorId);
+    const complete = await completeStore.load(coherenceJob.runId);
+    assert.ok(complete);
+
+    const cases: Array<{ name: string; checkpoint: CollectorCheckpoint }> = [
+      {
+        name: "PAUSED_CHALLENGE without PLATFORM_CHALLENGE",
+        checkpoint: { ...emptyCheckpoint(coherenceJob), report: {
+          ...emptyCheckpoint(coherenceJob).report,
+          status: "PAUSED_CHALLENGE"
+        } }
+      },
+      {
+        name: "PAUSED_LOGIN with challenge issue",
+        checkpoint: { ...emptyCheckpoint(coherenceJob), report: {
+          ...emptyCheckpoint(coherenceJob).report,
+          status: "PAUSED_LOGIN",
+          issues: [challengeIssue]
+        } }
+      },
+      {
+        name: "PAUSED_CHALLENGE with login issue",
+        checkpoint: { ...emptyCheckpoint(coherenceJob), report: {
+          ...emptyCheckpoint(coherenceJob).report,
+          status: "PAUSED_CHALLENGE",
+          issues: [loginIssue]
+        } }
+      },
+      {
+        name: "active checkpoint with login issue",
+        checkpoint: { ...emptyCheckpoint(coherenceJob), report: {
+          ...emptyCheckpoint(coherenceJob).report,
+          issues: [loginIssue]
+        } }
+      },
+      {
+        name: "active checkpoint with challenge issue",
+        checkpoint: { ...emptyCheckpoint(coherenceJob), report: {
+          ...emptyCheckpoint(coherenceJob).report,
+          issues: [challengeIssue]
+        } }
+      },
+      {
+        name: "SUCCEEDED checkpoint with login issue",
+        checkpoint: { ...structuredClone(complete), report: {
+          ...structuredClone(complete.report),
+          issues: [...complete.report.issues, loginIssue]
+        } }
+      },
+      {
+        name: "SUCCEEDED checkpoint with challenge issue",
+        checkpoint: { ...structuredClone(complete), report: {
+          ...structuredClone(complete.report),
+          issues: [...complete.report.issues, challengeIssue]
+        } }
+      },
+      {
+        name: "COMPLETE checkpoint paused for login",
+        checkpoint: { ...structuredClone(complete), report: {
+          ...structuredClone(complete.report),
+          status: "PAUSED_LOGIN",
+          issues: [...complete.report.issues, loginIssue]
+        } }
+      },
+      {
+        name: "COMPLETE checkpoint paused for challenge",
+        checkpoint: { ...structuredClone(complete), report: {
+          ...structuredClone(complete.report),
+          status: "PAUSED_CHALLENGE",
+          issues: [...complete.report.issues, challengeIssue]
+        } }
+      }
+    ];
+
+    for (const [index, testCase] of cases.entries()) {
+      const store = new AtomicCheckpointStore(join(root, "cases", String(index)));
+      const checkpointPath = store.pathFor(coherenceJob.runId);
+      const serialized = `${JSON.stringify(testCase.checkpoint)}\n`;
+      await mkdir(dirname(checkpointPath), { recursive: true });
+      await writeFile(checkpointPath, serialized, "utf8");
+
+      const fixture = await FixtureDriver.fromFile(fixturePath);
+      let diagnoseCalls = 0;
+      const driver = withDiagnose(fixture, async () => {
+        diagnoseCalls += 1;
+        return fixture.diagnose();
+      });
+      await assert.rejects(
+        new CollectionRunner(driver, store).run(coherenceJob, coherenceJob.collectorId),
+        { name: "TypeError", message: "Checkpoint semantic validation failed" },
+        testCase.name
+      );
+      assert.equal(diagnoseCalls, 0, testCase.name);
+      assert.deepEqual(fixture.events, [], testCase.name);
+      assert.equal(await readFile(checkpointPath, "utf8"), serialized, testCase.name);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

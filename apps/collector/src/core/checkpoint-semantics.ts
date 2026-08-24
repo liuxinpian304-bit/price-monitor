@@ -26,7 +26,10 @@ function canonicalUrl(url: string): string {
   return parsed.toString();
 }
 
-function resolveIdentity(checkpoint: CollectorCheckpoint, identity: string): string {
+export function canonicalCheckpointIdentity(
+  checkpoint: CollectorCheckpoint,
+  identity: string
+): string {
   let current = identity;
   while (checkpoint.identityAliases[current] !== undefined) {
     current = checkpoint.identityAliases[current]!;
@@ -34,8 +37,12 @@ function resolveIdentity(checkpoint: CollectorCheckpoint, identity: string): str
   return current;
 }
 
-function semanticSkuKey(identity: string, skuId: string): string {
-  return JSON.stringify([identity, skuId]);
+export function canonicalCheckpointSkuKey(
+  checkpoint: CollectorCheckpoint,
+  identity: string,
+  skuId: string
+): string {
+  return JSON.stringify([canonicalCheckpointIdentity(checkpoint, identity), skuId]);
 }
 
 function hasTerminalItemState(report: CollectorReport, identity: string): boolean {
@@ -58,6 +65,15 @@ export function assertCheckpointSemanticCoherence(
     throw semanticValidationError();
   }
 
+  const hasLoginIssue = report.issues.some((entry) => entry.code === "LOGIN_REQUIRED");
+  const hasChallengeIssue = report.issues.some((entry) => entry.code === "PLATFORM_CHALLENGE");
+  if ((report.status === "PAUSED_LOGIN" && (!hasLoginIssue || hasChallengeIssue))
+    || (report.status === "PAUSED_CHALLENGE" && (!hasChallengeIssue || hasLoginIssue))
+    || (report.status !== "PAUSED_LOGIN" && report.status !== "PAUSED_CHALLENGE"
+      && (hasLoginIssue || hasChallengeIssue))) {
+    throw semanticValidationError();
+  }
+
   const ownListingsById = new Map<string, CollectorJob["ownListings"]>();
   for (const listing of job.ownListings) {
     const matching = ownListingsById.get(listing.id) ?? [];
@@ -76,7 +92,7 @@ export function assertCheckpointSemanticCoherence(
   const itemIds = new Set([...report.ownItems, ...report.competitorItems]
     .map((item) => item.platformItemId));
   for (const alias of Object.keys(checkpoint.identityAliases)) {
-    const resolved = resolveIdentity(checkpoint, alias);
+    const resolved = canonicalCheckpointIdentity(checkpoint, alias);
     const matchingPositions = report.positions.filter((position) => canonicalUrl(position.url) === alias);
     if (matchingPositions.length === 0
       || matchingPositions.some((position) => position.platformItemId !== resolved)
@@ -87,7 +103,7 @@ export function assertCheckpointSemanticCoherence(
     }
   }
   for (const identity of [...positionIds, ...itemIds]) {
-    if (resolveIdentity(checkpoint, identity) !== identity) throw semanticValidationError();
+    if (canonicalCheckpointIdentity(checkpoint, identity) !== identity) throw semanticValidationError();
   }
   for (const item of report.competitorItems) {
     if (!positionIds.has(item.platformItemId) || item.searchRanks.length === 0) {
@@ -97,8 +113,11 @@ export function assertCheckpointSemanticCoherence(
 
   const completedOwnListingIds = new Set(checkpoint.completedOwnListingIds);
   const jobOwnListingIds = new Set(job.ownListings.map((listing) => listing.id));
-  const completedPlatformIds = new Set(checkpoint.completedPlatformItemIds
-    .map((identity) => resolveIdentity(checkpoint, identity)));
+  const completedPlatformIds = new Set<string>();
+  for (const identity of checkpoint.completedPlatformItemIds) {
+    if (canonicalCheckpointIdentity(checkpoint, identity) !== identity) throw semanticValidationError();
+    completedPlatformIds.add(identity);
+  }
   const ownItemPlatformIds = new Set(report.ownItems.map((item) => item.platformItemId));
 
   for (const ownListingId of completedOwnListingIds) {
@@ -117,8 +136,9 @@ export function assertCheckpointSemanticCoherence(
   const completedSkuKeys = new Set<string>();
   for (const serialized of checkpoint.completedSkuKeys) {
     const [identity, skuId] = JSON.parse(serialized) as [string, string];
-    const resolvedIdentity = resolveIdentity(checkpoint, identity);
-    const key = semanticSkuKey(resolvedIdentity, skuId);
+    const resolvedIdentity = canonicalCheckpointIdentity(checkpoint, identity);
+    const key = canonicalCheckpointSkuKey(checkpoint, identity, skuId);
+    if (serialized !== key) throw semanticValidationError();
     if (completedSkuKeys.has(key)) throw semanticValidationError();
     completedSkuKeys.add(key);
 
@@ -130,14 +150,14 @@ export function assertCheckpointSemanticCoherence(
   }
   for (const item of [...report.ownItems, ...report.competitorItems]) {
     for (const sku of item.skus) {
-      if (!completedSkuKeys.has(semanticSkuKey(item.platformItemId, sku.skuId))) {
+      if (!completedSkuKeys.has(canonicalCheckpointSkuKey(checkpoint, item.platformItemId, sku.skuId))) {
         throw semanticValidationError();
       }
     }
   }
   for (const entry of report.issues) {
     if (entry.platformItemId && entry.skuId && TERMINAL_SKU_ISSUE_CODES.has(entry.code)
-      && !completedSkuKeys.has(semanticSkuKey(resolveIdentity(checkpoint, entry.platformItemId), entry.skuId))) {
+      && !completedSkuKeys.has(canonicalCheckpointSkuKey(checkpoint, entry.platformItemId, entry.skuId))) {
       throw semanticValidationError();
     }
   }
