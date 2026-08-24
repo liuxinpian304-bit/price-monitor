@@ -39,8 +39,11 @@ class FakeCollectorAgentService {
   readonly registrationToken = createCollectorToken().plaintext;
   claimResult: typeof claimedJob | null = claimedJob;
   invalidToken = false;
+  disabledToken = false;
   wrongOwner = false;
+  authenticationCalls = 0;
   registrationCalls = 0;
+  claimCalls = 0;
   heartbeatCalls = 0;
   pauseCalls = 0;
 
@@ -49,8 +52,14 @@ class FakeCollectorAgentService {
     return { id: "agent-1", name: input.name, token: this.registrationToken };
   }
 
+  async assertAuthenticated(_token: string): Promise<void> {
+    this.authenticationCalls += 1;
+    if (this.invalidToken || this.disabledToken) throw new CollectorAgentAuthenticationError();
+  }
+
   async claimNext(_token: string, _input: { appVersion: string; capabilities: string[] }) {
-    if (this.invalidToken) throw new CollectorAgentAuthenticationError();
+    this.claimCalls += 1;
+    if (this.invalidToken || this.disabledToken) throw new CollectorAgentAuthenticationError();
     return this.claimResult;
   }
 
@@ -60,7 +69,7 @@ class FakeCollectorAgentService {
     _input: { discoveredCount: number; skuCount: number }
   ): Promise<void> {
     this.heartbeatCalls += 1;
-    if (this.invalidToken) throw new CollectorAgentAuthenticationError();
+    if (this.invalidToken || this.disabledToken) throw new CollectorAgentAuthenticationError();
     if (this.wrongOwner) throw new CollectorAgentRunOwnershipError();
   }
 
@@ -71,7 +80,7 @@ class FakeCollectorAgentService {
     _message: string
   ): Promise<void> {
     this.pauseCalls += 1;
-    if (this.invalidToken) throw new CollectorAgentAuthenticationError();
+    if (this.invalidToken || this.disabledToken) throw new CollectorAgentAuthenticationError();
     if (this.wrongOwner) throw new CollectorAgentRunOwnershipError();
   }
 }
@@ -165,6 +174,14 @@ test("agent routes require a bearer token and map invalid tokens to 401", async 
     () => controller.claim({ appVersion: "2.4.5", capabilities: [] }, request(), response()),
     (error) => statusOf(error) === 401
   );
+  await assert.rejects(
+    () => controller.claim(
+      { appVersion: "2.4.5", capabilities: [] },
+      request({ authorization: "Token invalid" }),
+      response()
+    ),
+    (error) => statusOf(error) === 401
+  );
 
   service.invalidToken = true;
   await assert.rejects(
@@ -175,6 +192,31 @@ test("agent routes require a bearer token and map invalid tokens to 401", async 
     ),
     (error) => statusOf(error) === 401
   );
+});
+
+test("invalid or disabled authentication takes precedence over malformed bodies", async () => {
+  for (const authenticationState of ["invalidToken", "disabledToken"] as const) {
+    const { controller, service } = createController();
+    service[authenticationState] = true;
+    const authenticated = request({ authorization: "Bearer syntactically-valid" });
+
+    await assert.rejects(
+      () => controller.claim({ appVersion: "", capabilities: "invalid" }, authenticated, response()),
+      (error) => statusOf(error) === 401
+    );
+    await assert.rejects(
+      () => controller.heartbeat("run-1", { discoveredCount: -1, skuCount: 2 }, authenticated),
+      (error) => statusOf(error) === 401
+    );
+    await assert.rejects(
+      () => controller.pause("run-1", { code: "RETRY", message: "" }, authenticated),
+      (error) => statusOf(error) === 401
+    );
+
+    assert.equal(service.claimCalls, 0);
+    assert.equal(service.heartbeatCalls, 0);
+    assert.equal(service.pauseCalls, 0);
+  }
 });
 
 test("claim returns a job with 200 and uses 204 when no job exists", async () => {
@@ -218,9 +260,14 @@ test("invalid progress and pause bodies return 422 without invoking the service"
   const authenticated = request({ authorization: "Bearer pmc_test" });
 
   await assert.rejects(
+    () => controller.claim({ appVersion: "", capabilities: "invalid" }, authenticated, response()),
+    (error) => statusOf(error) === 422
+  );
+  await assert.rejects(
     () => controller.heartbeat("run-1", { discoveredCount: -1, skuCount: 2 }, authenticated),
     (error) => statusOf(error) === 422
   );
+  assert.equal(service.claimCalls, 0);
   await assert.rejects(
     () => controller.pause(
       "run-1",

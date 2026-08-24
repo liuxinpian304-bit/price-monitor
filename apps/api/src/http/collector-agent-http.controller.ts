@@ -99,6 +99,7 @@ export class CollectorAgentHttpController {
 
   async claim(body: unknown, request: Request, response: Response) {
     const token = bearerToken(request);
+    await this.assertAuthenticated(token);
     const input = validated(claimSchema, body);
     try {
       const job = await this.service.claimNext(token, input);
@@ -114,6 +115,7 @@ export class CollectorAgentHttpController {
 
   async heartbeat(runId: string, body: unknown, request: Request) {
     const token = bearerToken(request);
+    await this.assertAuthenticated(token);
     const input = validated(heartbeatSchema, body);
     try {
       await this.service.heartbeat(token, runId, input);
@@ -125,10 +127,19 @@ export class CollectorAgentHttpController {
 
   async pause(runId: string, body: unknown, request: Request) {
     const token = bearerToken(request);
+    await this.assertAuthenticated(token);
     const input = validated(pauseSchema, body);
     try {
       await this.service.pause(token, runId, input.code, input.message);
       return undefined;
+    } catch (error) {
+      mapServiceError(error);
+    }
+  }
+
+  private async assertAuthenticated(token: string): Promise<void> {
+    try {
+      await this.service.assertAuthenticated(token);
     } catch (error) {
       mapServiceError(error);
     }

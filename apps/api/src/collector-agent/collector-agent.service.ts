@@ -106,6 +106,10 @@ export class CollectorAgentService {
     return { agentId: agent.id, runId };
   }
 
+  async assertAuthenticated(token: string): Promise<void> {
+    await this.authenticate(token);
+  }
+
   private async authenticate(token: string): Promise<{ id: string; enabled: boolean }> {
     const agent = await this.repository.authenticate(token);
     if (!agent?.enabled) {

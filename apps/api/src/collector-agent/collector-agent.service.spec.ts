@@ -192,6 +192,24 @@ test("disabled agents cannot claim jobs", async () => {
   assert.equal(repository.runs[0]!.status, "QUEUED");
 });
 
+test("assertAuthenticated validates credentials without claiming or updating a run", async () => {
+  const repository = new InMemoryCollectorAgentRepository();
+  const service = new CollectorAgentService(repository);
+  const registered = await registerAgent(service, "authentication-only-mac");
+  const run = repository.addRun({ id: "run-authentication-only" });
+
+  await service.assertAuthenticated(registered.token);
+  assert.equal(run.status, "QUEUED");
+  await assert.rejects(() => service.assertAuthenticated("invalid"), CollectorAgentAuthenticationError);
+
+  repository.agents[0]!.enabled = false;
+  await assert.rejects(
+    () => service.assertAuthenticated(registered.token),
+    CollectorAgentAuthenticationError
+  );
+  assert.equal(run.status, "QUEUED");
+});
+
 test("concurrent agents cannot claim the same run", async () => {
   const repository = new InMemoryCollectorAgentRepository();
   const service = new CollectorAgentService(repository);
