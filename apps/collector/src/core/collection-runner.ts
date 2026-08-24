@@ -27,6 +27,8 @@ import {
 import { enumerateSkuSelections } from "./sku-enumerator.ts";
 
 const PAUSE_INCOMPLETE_MESSAGE = "Collection paused before SKU enumeration completed";
+const SEARCH_ID_CONFLICT_MESSAGE = "Search results exposed conflicting stable item IDs for one canonical URL";
+const DETAIL_ID_MISMATCH_MESSAGE = "Search item identity changed during detail traversal";
 
 function canonicalValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -93,6 +95,40 @@ function optionalMoney(text: string | null): number | undefined {
 
 function addUnique(values: string[], value: string): void {
   if (!values.includes(value)) values.push(value);
+}
+
+function resolveIdentity(checkpoint: CollectorCheckpoint, identity: string): string {
+  let current = identity;
+  const visited = new Set<string>();
+  while (checkpoint.identityAliases[current] !== undefined) {
+    if (visited.has(current)) throw new UiContractChangedError("Checkpoint identity aliases contain a cycle");
+    visited.add(current);
+    current = checkpoint.identityAliases[current]!;
+  }
+  return current;
+}
+
+function persistIdentityAlias(
+  checkpoint: CollectorCheckpoint,
+  fallbackIdentity: string,
+  stableIdentity: string
+): void {
+  const resolvedStable = resolveIdentity(checkpoint, stableIdentity);
+  const existing = checkpoint.identityAliases[fallbackIdentity];
+  if (existing !== undefined && resolveIdentity(checkpoint, existing) !== resolvedStable) {
+    throw new UiContractChangedError(SEARCH_ID_CONFLICT_MESSAGE);
+  }
+  if (fallbackIdentity !== resolvedStable) checkpoint.identityAliases[fallbackIdentity] = resolvedStable;
+}
+
+function completeIdentityAndAliases(checkpoint: CollectorCheckpoint, identity: string): void {
+  const stableIdentity = resolveIdentity(checkpoint, identity);
+  addUnique(checkpoint.completedPlatformItemIds, stableIdentity);
+  for (const alias of Object.keys(checkpoint.identityAliases)) {
+    if (resolveIdentity(checkpoint, alias) === stableIdentity) {
+      addUnique(checkpoint.completedPlatformItemIds, alias);
+    }
+  }
 }
 
 function now(): string {
@@ -214,6 +250,7 @@ export class CollectionRunner {
     const startedAt = now();
     return {
       schemaVersion: 1,
+      checkpointFormatVersion: 2,
       runId: job.runId,
       jobHash,
       phase: "OWN_LISTINGS",
@@ -234,7 +271,8 @@ export class CollectionRunner {
         competitorItems: [],
         issues: []
       },
-      evidenceManifest: {}
+      evidenceManifest: {},
+      identityAliases: {}
     };
   }
 
@@ -280,6 +318,23 @@ export class CollectionRunner {
       capturedAt: position.capturedAt
     }));
 
+    const stableIdsByCanonicalUrl = new Map<string, Set<string>>();
+    for (const position of positions) {
+      const url = canonicalUrl(position.url);
+      const stableIds = stableIdsByCanonicalUrl.get(url) ?? new Set<string>();
+      if (position.platformItemId !== null) stableIds.add(position.platformItemId);
+      stableIdsByCanonicalUrl.set(url, stableIds);
+    }
+    for (const [url, stableIds] of stableIdsByCanonicalUrl) {
+      if (stableIds.size > 1) throw new UiContractChangedError(SEARCH_ID_CONFLICT_MESSAGE);
+      const stableIdentity = [...stableIds][0];
+      if (stableIdentity === undefined) continue;
+      persistIdentityAlias(checkpoint, url, stableIdentity);
+      for (const position of checkpoint.report.positions) {
+        if (position.platformItemId === url) position.platformItemId = stableIdentity;
+      }
+    }
+
     const ranksByIdentity = new Map<string, number[]>();
     for (const position of checkpoint.report.positions) {
       const ranks = ranksByIdentity.get(position.platformItemId) ?? [];
@@ -295,11 +350,14 @@ export class CollectionRunner {
     const firstPositionByIdentity = new Map<string, DriverSearchPosition>();
     for (const position of checkpoint.report.positions) {
       if (!firstPositionByIdentity.has(position.platformItemId)) {
+        const fallbackIdentity = canonicalUrl(position.url);
+        const normalizedIdentity = resolveIdentity(checkpoint, position.platformItemId);
         firstPositionByIdentity.set(position.platformItemId, {
           rank: position.rank,
-          platformItemId: position.platformItemId === canonicalUrl(position.url)
+          platformItemId: position.platformItemId === fallbackIdentity
+              && checkpoint.identityAliases[fallbackIdentity] === undefined
             ? null
-            : position.platformItemId,
+            : normalizedIdentity,
           url: position.url,
           shopName: position.shopName,
           title: position.title,
@@ -313,11 +371,21 @@ export class CollectionRunner {
     }
 
     for (const [identity, position] of firstPositionByIdentity) {
-      if (checkpoint.completedPlatformItemIds.includes(identity)) continue;
+      const resolvedIdentity = resolveIdentity(checkpoint, identity);
+      if (checkpoint.completedPlatformItemIds.includes(identity)
+        || checkpoint.completedPlatformItemIds.includes(resolvedIdentity)) continue;
 
       const page = await this.driver.openSearchPosition(position);
       const pageIdentity = itemIdentity(page.platformItemId, page.url);
-      if (page.platformItemId !== null && pageIdentity !== identity) {
+      const openedFromFallback = position.platformItemId === null;
+      if (!openedFromFallback && page.platformItemId !== position.platformItemId) {
+        throw new UiContractChangedError(DETAIL_ID_MISMATCH_MESSAGE);
+      }
+      if (openedFromFallback && page.platformItemId === null && pageIdentity !== identity) {
+        throw new UiContractChangedError(DETAIL_ID_MISMATCH_MESSAGE);
+      }
+      if (openedFromFallback && page.platformItemId !== null && pageIdentity !== identity) {
+        persistIdentityAlias(checkpoint, identity, pageIdentity);
         for (const reportPosition of checkpoint.report.positions) {
           if (reportPosition.platformItemId === identity) {
             reportPosition.platformItemId = pageIdentity;
@@ -343,8 +411,8 @@ export class CollectionRunner {
       }
 
       await this.collectItemSkus(page, item, checkpoint);
-      addUnique(checkpoint.completedPlatformItemIds, identity);
-      addUnique(checkpoint.completedPlatformItemIds, pageIdentity);
+      completeIdentityAndAliases(checkpoint, pageIdentity);
+      completeIdentityAndAliases(checkpoint, identity);
       await this.driver.returnToSearch();
       await this.checkpointStore.save(checkpoint.runId, checkpoint);
     }

@@ -30,6 +30,7 @@ function report(status: CollectorReport["status"]): CollectorReport {
 function checkpoint(phase: CollectorCheckpoint["phase"]): CollectorCheckpoint {
   return {
     schemaVersion: 1,
+    checkpointFormatVersion: 2,
     runId: "run-1",
     jobHash: `sha256:${"1".repeat(64)}`,
     phase,
@@ -37,7 +38,8 @@ function checkpoint(phase: CollectorCheckpoint["phase"]): CollectorCheckpoint {
     completedPlatformItemIds: [],
     completedSkuKeys: [],
     report: report(phase === "COMPLETE" ? "SUCCEEDED" : "FAILED"),
-    evidenceManifest: {}
+    evidenceManifest: {},
+    identityAliases: {}
   };
 }
 

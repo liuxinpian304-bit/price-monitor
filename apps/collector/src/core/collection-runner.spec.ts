@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -552,6 +552,191 @@ test("keeps delimiter and duplicate-option-ID combinations distinct across check
       return Array.isArray(parsed) && parsed.length === 2;
     }), true);
     assert.doesNotThrow(() => collectorReportSchema.parse(resumed));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("normalizes a stable-first search URL group before detail traversal", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-stable-first-"));
+  const stableFirstJob = { ...job, runId: "sony-stable-first-run" };
+  try {
+    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const path = await writeFixtureCopy(root, (fixture) => {
+      const matchingPositions = fixture.search.positions.filter((position) => position.url === itemUrl);
+      assert.equal(matchingPositions.length, 2);
+      matchingPositions[0]!.platformItemId = "competitor-a";
+      matchingPositions[1]!.platformItemId = null;
+    });
+    const driver = await FixtureDriver.fromFile(path);
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const report = await new CollectionRunner(driver, store).run(stableFirstJob, stableFirstJob.collectorId);
+
+    assert.equal(report.status, "SUCCEEDED");
+    assert.deepEqual(report.positions.filter((position) => position.url === itemUrl)
+      .map((position) => position.platformItemId), ["competitor-a", "competitor-a"]);
+    assert.deepEqual(report.competitorItems.find((item) =>
+      item.platformItemId === "competitor-a")?.searchRanks, [1, 3]);
+    assert.equal(driver.events.filter((event) =>
+      event.type === "OPEN_SEARCH_POSITION" && event.platformItemId === "competitor-a").length, 1);
+
+    const fallbackIdentity = new URL(itemUrl).toString();
+    const checkpoint = await store.load(stableFirstJob.runId);
+    assert.equal(checkpoint?.identityAliases[fallbackIdentity], "competitor-a");
+    assert.equal(checkpoint?.completedPlatformItemIds.includes(fallbackIdentity), true);
+    assert.equal(checkpoint?.completedPlatformItemIds.includes("competitor-a"), true);
+    assert.doesNotThrow(() => collectorReportSchema.parse(report));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects conflicting stable search IDs for one canonical URL", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-search-id-conflict-"));
+  const conflictJob = { ...job, runId: "sony-search-id-conflict-run" };
+  try {
+    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const path = await writeFixtureCopy(root, (fixture) => {
+      const matchingPositions = fixture.search.positions.filter((position) => position.url === itemUrl);
+      assert.equal(matchingPositions.length, 2);
+      matchingPositions[0]!.platformItemId = "search-stable-a";
+      matchingPositions[1]!.platformItemId = "search-stable-b";
+    });
+    const driver = await FixtureDriver.fromFile(path);
+    const report = await new CollectionRunner(
+      driver,
+      new AtomicCheckpointStore(join(root, "checkpoints"))
+    ).run(conflictJob, conflictJob.collectorId);
+
+    assert.equal(report.status, "PARTIAL_FAILED");
+    assert.equal(report.issues.some((entry) => entry.code === "UI_CONTRACT_CHANGED"
+      && entry.message === "Search results exposed conflicting stable item IDs for one canonical URL"), true);
+    assert.equal(driver.events.some((event) => event.type === "OPEN_SEARCH_POSITION"), false);
+    assert.deepEqual(report.competitorItems, []);
+    assert.doesNotThrow(() => collectorReportSchema.parse(report));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("persists a fallback detail alias across pause and resume without duplicate completed SKUs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-alias-resume-"));
+  const aliasJob = { ...job, runId: "sony-alias-resume-run" };
+  try {
+    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const fallbackIdentity = new URL(itemUrl).toString();
+    const path = await writeFixtureCopy(root, (fixture) => {
+      for (const position of fixture.search.positions) {
+        if (position.url === itemUrl) position.platformItemId = null;
+      }
+    });
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const pausedDriver = await FixtureDriver.fromFile(path, {
+      pauseAfterCompletedSkuCount: 2,
+      pauseType: "LOGIN_REQUIRED"
+    });
+    const paused = await new CollectionRunner(pausedDriver, store).run(aliasJob, aliasJob.collectorId);
+    assert.equal(paused.status, "PAUSED_LOGIN");
+    const pausedCheckpoint = await store.load(aliasJob.runId);
+    assert.equal(pausedCheckpoint?.identityAliases[fallbackIdentity], "competitor-a");
+    assert.deepEqual(paused.positions.filter((position) => position.url === itemUrl)
+      .map((position) => position.platformItemId), ["competitor-a", "competitor-a"]);
+
+    const resumedDriver = await FixtureDriver.fromFile(path);
+    const resumed = await new CollectionRunner(resumedDriver, store).run(aliasJob, aliasJob.collectorId);
+    assert.equal(resumed.status, "SUCCEEDED");
+    assert.equal(resumedDriver.events.some((event) => event.type === "SELECT_SKU"
+      && event.platformItemId === "competitor-a" && event.completed
+      && event.selection["型号"] === "7506 单机"), false);
+
+    const completed = await store.load(aliasJob.runId);
+    assert.equal(completed?.completedSkuKeys.length, 6);
+    assert.equal(new Set(completed?.completedSkuKeys).size, 6);
+    assert.equal(completed?.completedPlatformItemIds.includes(fallbackIdentity), true);
+    assert.equal(completed?.completedPlatformItemIds.includes("competitor-a"), true);
+    assert.equal(completed?.identityAliases[fallbackIdentity], "competitor-a");
+    assert.doesNotThrow(() => collectorReportSchema.parse(resumed));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects stable search ID A when detail returns stable ID B", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-detail-id-mismatch-"));
+  const mismatchJob = { ...job, runId: "sony-detail-id-mismatch-run" };
+  try {
+    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const path = await writeFixtureCopy(root, (fixture) => {
+      for (const position of fixture.search.positions) {
+        if (position.url === itemUrl) position.platformItemId = "search-stable-a";
+      }
+    });
+    const report = await new CollectionRunner(
+      await FixtureDriver.fromFile(path),
+      new AtomicCheckpointStore(join(root, "checkpoints"))
+    ).run(mismatchJob, mismatchJob.collectorId);
+
+    assert.equal(report.status, "PARTIAL_FAILED");
+    assert.equal(report.issues.some((entry) => entry.code === "UI_CONTRACT_CHANGED"
+      && entry.message === "Search item identity changed during detail traversal"), true);
+    assert.deepEqual(report.positions.filter((position) => position.url === itemUrl)
+      .map((position) => position.platformItemId), ["search-stable-a", "search-stable-a"]);
+    assert.equal(report.competitorItems.some((item) => item.platformItemId === "competitor-a"), false);
+    assert.doesNotThrow(() => collectorReportSchema.parse(report));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a legacy schema-version-1 checkpoint before any driver action", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-legacy-checkpoint-"));
+  const legacyJob = { ...job, runId: "sony-legacy-checkpoint-run" };
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const checkpointPath = store.pathFor(legacyJob.runId);
+    await mkdir(dirname(checkpointPath), { recursive: true });
+    await writeFile(checkpointPath, JSON.stringify({
+      schemaVersion: 1,
+      runId: legacyJob.runId,
+      jobHash: "sha256:legacy-format",
+      phase: "OWN_LISTINGS",
+      completedOwnListingIds: [],
+      completedPlatformItemIds: [],
+      completedSkuKeys: [],
+      report: {
+        schemaVersion: 1,
+        runId: legacyJob.runId,
+        collectorId: legacyJob.collectorId,
+        appVersion: "unknown",
+        startedAt: "2026-08-24T05:00:00.000Z",
+        completedAt: "2026-08-24T05:00:00.000Z",
+        status: "PAUSED_LOGIN",
+        searchLimit: legacyJob.searchLimit,
+        positions: [],
+        ownItems: [],
+        competitorItems: [],
+        issues: [{
+          code: "LOGIN_REQUIRED",
+          message: "Legacy checkpoint",
+          capturedAt: "2026-08-24T05:00:00.000Z"
+        }]
+      },
+      evidenceManifest: {}
+    }), "utf8");
+
+    await assert.rejects(store.load(legacyJob.runId), /checkpoint format version/i);
+    const fixture = await FixtureDriver.fromFile(fixturePath);
+    let diagnoseCalls = 0;
+    const driver = withDiagnose(fixture, async () => {
+      diagnoseCalls += 1;
+      return fixture.diagnose();
+    });
+    await assert.rejects(
+      new CollectionRunner(driver, store).run(legacyJob, legacyJob.collectorId),
+      /checkpoint format version/i
+    );
+    assert.equal(diagnoseCalls, 0);
+    assert.equal(fixture.events.length, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
