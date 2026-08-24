@@ -1,5 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
-
 import {
   collectorJobSchema,
   collectorReportSchema,
@@ -72,6 +70,7 @@ export interface CollectorWorkerOptions {
   appVersion: string;
   capabilities: string[];
   scheduler?: WorkerScheduler;
+  monotonicNow?: () => number;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   log?: (summary: CollectorLogSummary) => void;
 }
@@ -81,7 +80,6 @@ export class CollectorWorkerError extends Error {
     | "ALREADY_RUNNING"
     | "INVALID_JOB"
     | "INVALID_REPORT"
-    | "MISSING_CHECKPOINT"
     | "RUNNER_INITIALIZATION_FAILED"
     | "COLLECTION_FAILED"
     | "CHECKPOINT_FAILED";
@@ -134,24 +132,31 @@ class HeartbeatLoop {
   private readonly api: CollectorWorkerApi;
   private readonly checkpointStore: CollectorWorkerCheckpointStore;
   private readonly scheduler: WorkerScheduler;
+  private readonly monotonicNow: () => number;
   private readonly log: (summary: CollectorLogSummary) => void;
   private active = true;
   private timer: unknown;
   private pending: Promise<void> | null = null;
+  private nextDeadline: number;
 
   constructor(options: {
     runId: string;
     api: CollectorWorkerApi;
     checkpointStore: CollectorWorkerCheckpointStore;
     scheduler: WorkerScheduler;
+    monotonicNow: () => number;
     log: (summary: CollectorLogSummary) => void;
   }) {
     this.runId = options.runId;
     this.api = options.api;
     this.checkpointStore = options.checkpointStore;
     this.scheduler = options.scheduler;
+    this.monotonicNow = options.monotonicNow;
     this.log = options.log;
-    this.schedule();
+    const startedAt = this.monotonicNow();
+    this.nextDeadline = startedAt + HEARTBEAT_INTERVAL_MS;
+    this.scheduleDeadline(startedAt);
+    this.startHeartbeat();
   }
 
   async stop(): Promise<void> {
@@ -161,26 +166,37 @@ class HeartbeatLoop {
     await this.pending;
   }
 
-  private schedule(): void {
+  private scheduleDeadline(now = this.monotonicNow()): void {
     if (!this.active) return;
+    const delay = Math.max(0, this.nextDeadline - now);
     this.timer = this.scheduler.setTimeout(() => {
       this.timer = undefined;
-      this.pending = this.send()
-        .catch((error: unknown) => {
-          this.log({
-            event: "heartbeat_failed",
-            runId: this.runId,
-            phase: null,
-            discoveredCount: 0,
-            skuCount: 0,
-            errorCode: safeErrorCode(error)
-          });
-        })
-        .finally(() => {
-          this.pending = null;
-          this.schedule();
+      if (!this.active) return;
+      const now = this.monotonicNow();
+      do {
+        this.nextDeadline += HEARTBEAT_INTERVAL_MS;
+      } while (this.nextDeadline <= now);
+      if (this.pending === null) this.startHeartbeat();
+      this.scheduleDeadline();
+    }, delay);
+  }
+
+  private startHeartbeat(): void {
+    if (!this.active || this.pending !== null) return;
+    this.pending = this.send()
+      .catch((error: unknown) => {
+        this.log({
+          event: "heartbeat_failed",
+          runId: this.runId,
+          phase: null,
+          discoveredCount: 0,
+          skuCount: 0,
+          errorCode: safeErrorCode(error)
         });
-    }, HEARTBEAT_INTERVAL_MS);
+      })
+      .finally(() => {
+        this.pending = null;
+      });
   }
 
   private async send(): Promise<void> {
@@ -206,6 +222,7 @@ export class CollectorWorker {
     | "evidenceUploader" | "runnerFactory" | "appVersion" | "capabilities">>
     & Pick<CollectorWorkerOptions, "log">;
   private readonly scheduler: WorkerScheduler;
+  private readonly monotonicNow: () => number;
   private readonly sleep: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   private readonly stopController = new AbortController();
   private activeController: AbortController | null = null;
@@ -214,6 +231,7 @@ export class CollectorWorker {
   constructor(options: CollectorWorkerOptions) {
     this.options = options;
     this.scheduler = options.scheduler ?? defaultScheduler;
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now());
     this.sleep = options.sleep ?? defaultSleep;
   }
 
@@ -223,31 +241,54 @@ export class CollectorWorker {
   }
 
   async once(): Promise<OnceResult> {
-    return this.exclusive(() => this.claimAndProcess());
+    return this.exclusive(async () => {
+      const claimed = await this.claim();
+      if (claimed === "stopped" || claimed === null) return claimed === null ? "idle" : claimed;
+      return this.processJob(claimed);
+    });
   }
 
   async run(): Promise<void> {
     await this.exclusive(async () => {
       while (!this.stopController.signal.aborted) {
-        const result = await this.claimAndProcess();
+        let claimed: CollectorJob | null | "stopped";
+        try {
+          claimed = await this.claim();
+        } catch (error) {
+          if (!isTransient(error)) throw error;
+          this.emit({
+            event: "claim_failed",
+            runId: null,
+            phase: null,
+            discoveredCount: 0,
+            skuCount: 0,
+            errorCode: safeErrorCode(error)
+          });
+          if (!this.stopController.signal.aborted) {
+            await this.sleep(CLAIM_WAIT_MS, this.stopController.signal);
+          }
+          continue;
+        }
+        if (claimed === "stopped") break;
+        const result = claimed === null ? "idle" : await this.processJob(claimed);
         if (result === "stopped") break;
-        if (result === "idle") {
+        if (result === "idle" && !this.stopController.signal.aborted) {
           await this.sleep(CLAIM_WAIT_MS, this.stopController.signal);
         }
       }
     });
   }
 
-  private async claimAndProcess(): Promise<OnceResult> {
+  private async claim(): Promise<CollectorJob | null | "stopped"> {
     if (this.stopController.signal.aborted) return "stopped";
     const inputJob = await this.options.api.claim({
       appVersion: this.options.appVersion,
       capabilities: [...this.options.capabilities]
     });
-    if (inputJob === null) return "idle";
+    if (inputJob === null) return null;
     const parsedJob = collectorJobSchema.safeParse(inputJob);
     if (!parsedJob.success) throw new CollectorWorkerError("INVALID_JOB");
-    return this.processJob(parsedJob.data);
+    return parsedJob.data;
   }
 
   private async processJob(job: CollectorJob): Promise<OnceResult> {
@@ -266,6 +307,7 @@ export class CollectorWorker {
       api: this.options.api,
       checkpointStore: this.options.checkpointStore,
       scheduler: this.scheduler,
+      monotonicNow: this.monotonicNow,
       log: (summary) => this.emit(summary)
     });
 
@@ -325,22 +367,15 @@ export class CollectorWorker {
       this.activeController = null;
       throw new CollectorWorkerError("CHECKPOINT_FAILED");
     }
-    if (!checkpoint) {
-      this.activeController = null;
-      throw new CollectorWorkerError("MISSING_CHECKPOINT");
-    }
-    if (checkpoint.phase !== "COMPLETE" || !isDeepStrictEqual(checkpoint.report, report)) {
-      this.activeController = null;
-      throw new CollectorWorkerError("INVALID_REPORT");
-    }
-
     try {
-      await this.retryTransient(
-        () => this.options.evidenceUploader.upload(job.runId, checkpoint.evidenceManifest),
-        job.runId,
-        "evidence_upload",
-        controller.signal
-      );
+      if (checkpoint !== null) {
+        await this.retryTransient(
+          () => this.options.evidenceUploader.upload(job.runId, checkpoint.evidenceManifest),
+          job.runId,
+          "evidence_upload",
+          controller.signal
+        );
+      }
       await this.retryTransient(
         () => this.options.api.uploadReport(job.runId, report),
         job.runId,
@@ -353,18 +388,20 @@ export class CollectorWorker {
       throw error;
     }
 
-    try {
-      await this.options.checkpointStore.remove(job.runId);
-    } catch {
-      this.activeController = null;
-      throw new CollectorWorkerError("CHECKPOINT_FAILED");
+    if (checkpoint !== null) {
+      try {
+        await this.options.checkpointStore.remove(job.runId);
+      } catch {
+        this.activeController = null;
+        throw new CollectorWorkerError("CHECKPOINT_FAILED");
+      }
     }
     this.options.evidenceUploader.clear(job.runId);
     this.activeController = null;
     this.emit({
       event: "job_acknowledged",
       runId: job.runId,
-      phase: "COMPLETE",
+      phase: report.status,
       discoveredCount: report.positions.length,
       skuCount: this.reportSkuCount(report),
       errorCode: null

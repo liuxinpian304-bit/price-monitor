@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, open, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -73,6 +73,23 @@ test("does not mark a hash uploaded until the API acknowledges the same hash", a
   assert.equal(api.calls.length, 2);
 });
 
+test("does not mark a hash uploaded when acknowledgement times out", async () => {
+  const { workRoot, evidencePath, evidenceKey } = await fixture();
+  const api = new FakeEvidenceApi();
+  const uploader = new EvidenceUploader(api, workRoot);
+  api.failure = Object.assign(new Error("unsafe body timeout detail"), {
+    code: "TIMEOUT",
+    transient: true
+  });
+
+  await assert.rejects(() => uploader.upload("run-1", { [evidenceKey]: evidencePath }), {
+    code: "TIMEOUT"
+  });
+  api.failure = null;
+  await uploader.upload("run-1", { [evidenceKey]: evidencePath });
+  assert.equal(api.calls.length, 2);
+});
+
 test("retains earlier acknowledgements when a later evidence upload fails", async () => {
   const { workRoot, runDirectory, evidencePath, evidenceKey } = await fixture();
   const secondBytes = Uint8Array.from([...pngBytes, 4]);
@@ -121,6 +138,70 @@ test("rejects a symlink escape from the run directory", { skip: process.platform
 
   await assert.rejects(
     () => uploader.upload("run-1", { [evidenceKey]: linkedPath }),
+    (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH"
+  );
+  assert.equal(api.calls.length, 0);
+});
+
+test("rejects a symlinked run directory that physically escapes the work root", {
+  skip: process.platform === "win32"
+}, async () => {
+  const { workRoot } = await fixture();
+  const outsideRoot = await mkdtemp(join(tmpdir(), "collector-evidence-outside-"));
+  const escapedRun = join(workRoot, "run-escaped");
+  const escapedEvidence = join(escapedRun, "capture.png");
+  await writeFile(join(outsideRoot, "capture.png"), pngBytes);
+  await symlink(outsideRoot, escapedRun);
+  const api = new FakeEvidenceApi();
+  const uploader = new EvidenceUploader(api, workRoot);
+
+  await assert.rejects(
+    () => uploader.upload("run-escaped", { [keyFor(pngBytes)]: escapedEvidence }),
+    (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH"
+  );
+  assert.equal(api.calls.length, 0);
+});
+
+test("rejects a final-file symlink even when its target remains in the run directory", {
+  skip: process.platform === "win32"
+}, async () => {
+  const { workRoot, runDirectory, evidencePath, evidenceKey } = await fixture();
+  const linkedPath = join(runDirectory, "linked-inside.png");
+  await symlink(evidencePath, linkedPath);
+  const api = new FakeEvidenceApi();
+  const uploader = new EvidenceUploader(api, workRoot);
+
+  await assert.rejects(
+    () => uploader.upload("run-1", { [evidenceKey]: linkedPath }),
+    (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH"
+  );
+  assert.equal(api.calls.length, 0);
+});
+
+test("rejects a regular-file replacement between validation and open", async () => {
+  const { workRoot, runDirectory, evidencePath, evidenceKey } = await fixture();
+  const replacementPath = join(runDirectory, "replacement.png");
+  const originalPath = join(runDirectory, "original.png");
+  await writeFile(replacementPath, pngBytes);
+  let swapped = false;
+  const api = new FakeEvidenceApi();
+  const uploader = new EvidenceUploader(api, workRoot, {
+    fileSystem: {
+      realpath,
+      lstat,
+      async open(path, flags) {
+        if (!swapped) {
+          swapped = true;
+          await rename(path, originalPath);
+          await rename(replacementPath, evidencePath);
+        }
+        return open(path, flags);
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => uploader.upload("run-1", { [evidenceKey]: evidencePath }),
     (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH"
   );
   assert.equal(api.calls.length, 0);

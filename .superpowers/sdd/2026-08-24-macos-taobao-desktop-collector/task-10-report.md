@@ -85,3 +85,47 @@ Final focused agent/CLI coverage includes URL and token validation, timeout/reda
 - Task 11 evidence/report endpoints are intentionally not implemented yet; their route and response contracts are covered only by fake fetch until Task 11 lands.
 - Task 9 live Accessibility acceptance remains the existing Task 14 gap and was not expanded in this task.
 - An independent external review command was not authorized to export the uncommitted diff, so the final race/security review was completed locally with added regressions.
+
+## Fix Round 1
+
+This section supersedes the original report statements that terminal upload required a matching `COMPLETE` checkpoint and that heartbeat scheduling waited 30 seconds after the preceding request completed.
+
+### RED
+
+- Focused worker probes failed because transient claim errors escaped `run()`, SIGTERM-equivalent stop could not interrupt the intended retry wait, valid `FAILED` reports without checkpoints raised `MISSING_CHECKPOINT`, and valid `PARTIAL_FAILED` reports with non-`COMPLETE` checkpoints raised `INVALID_REPORT`.
+- Fake and streaming response bodies remained unsettled after their 15-second request signal aborted. A test watchdog demonstrated that neither returned the required typed transient `TIMEOUT`.
+- Heartbeat probes showed no immediate post-claim heartbeat and exposed completion-relative scheduling rather than fixed monotonic start deadlines.
+- Evidence probes accepted a symlinked run directory outside the work root, a final-file symlink whose target remained inside the run, and a same-content regular-file replacement between validation and open.
+- The combined RED run had 11 focused failures, each attributable to one of the five review findings.
+
+### GREEN
+
+- Every validated terminal `SUCCEEDED`, `PARTIAL_FAILED`, or `FAILED` report is now submitted. A valid checkpoint contributes its evidence manifest regardless of phase; an absent checkpoint skips evidence. Pause reports still call only the Task 3 pause endpoint. A present checkpoint is removed only after report acknowledgement.
+- Response parsing carries the original 15-second signal through JSON consumption and races both fake and real body reads against abort. Abort-driven stalls and rejections produce safe transient `TIMEOUT`; completed malformed JSON remains non-transient `INVALID_RESPONSE`.
+- Worker mode catches only transient claim failures, logs fixed safe metadata, waits 30,000 ms, and continues. Non-transient claim failures still escape, `once` still makes at most one claim, and stop interrupts the polling wait.
+- Heartbeat starts immediately after a validated claim and runner construction. A monotonic deadline timer starts subsequent non-overlapping heartbeats at 30-second boundaries, independent of request duration, and skips missed ticks without a catch-up burst.
+- Evidence validation resolves the physical work root and run directory, requires the run directory beneath the root, rejects final symlinks, opens with `O_NOFOLLOW` where available, and compares the validated device/inode identity with the opened handle before reading and hashing bytes.
+
+### Verification
+
+- Focused API/worker/evidence tests: 41 passed, 0 failed.
+- `pnpm test:collector`: 139 passed, 0 failed.
+- `pnpm verify:portable`: local-env 4, config 16, contracts 13, portable API 89, collector 139, and web 10 passed; all typechecks and the production web build passed without Swift, Taobao, Accessibility, or helper launch.
+- `pnpm typecheck`: passed for API, web, and collector.
+- `node --test scripts/public-audit.test.mjs`: 3 passed, 0 failed.
+- Changed-file public audit: 7 files passed with no secret, webhook, or local-user-path finding.
+- `git diff --check`: passed.
+
+### Self-Review
+
+- Cancellation: stop prevents future claims, aborts an active runner only at its durable boundary, interrupts claim/retry sleeps, drains heartbeat, and leaves unacknowledged checkpoint and upload state intact.
+- Retry: evidence and report body timeouts receive exactly three attempts with 1,000 ms and 2,000 ms delays; authentication, validation, payload, and conflict errors remain non-retryable.
+- Logging: transient claim and heartbeat failures retain only fixed keys and sanitized error codes. Response errors, file errors, and evidence errors retain no body, token, account value, bytes, or path.
+- Acknowledgement ordering: evidence keys mutate uploaded state only after same-hash acknowledgement; checkpoint deletion and uploader-state clearing occur only after validated report acknowledgement.
+- Heartbeat: the independent deadline timer cannot overlap an in-flight request, a 15-second first timeout leaves the next start at 30 seconds, delayed callbacks advance to the next future deadline, and stop clears the timer before pause or upload.
+- Filesystem: canonical root/run/candidate containment, final-symlink rejection, `O_NOFOLLOW`, opened-handle regular-file checks, identity comparison, PNG signature, size bound, and SHA-256 verification jointly close traversal and check/read replacement paths.
+
+### Remaining Concerns
+
+- Task 11 evidence/report endpoints remain isolated fake-fetch contracts until Task 11 implements the server routes.
+- Task 9 live Accessibility behavior remains the Task 14 acceptance gap and was not changed in this fix round.

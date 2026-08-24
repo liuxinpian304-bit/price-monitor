@@ -7,7 +7,9 @@ import { CollectionInterruptedError } from "../core/collection-runner.ts";
 import {
   CollectorWorker,
   type CollectorWorkerApi,
+  type CollectorWorkerCheckpoint,
   type CollectorWorkerCheckpointStore,
+  type CollectorWorkerOptions,
   type CollectorWorkerRunner,
   type WorkerEvidenceUploader,
   type WorkerScheduler
@@ -65,6 +67,7 @@ class FakeApi implements CollectorWorkerApi {
   lastHeartbeat: { runId: string; input: { discoveredCount: number; skuCount: number } } | null = null;
   pauseCalls: Array<{ runId: string; code: string; message: string }> = [];
   reportCalls = 0;
+  reportStatuses: CollectorReport["status"][] = [];
   reportFailure: Error | null = null;
 
   async claim() {
@@ -81,8 +84,9 @@ class FakeApi implements CollectorWorkerApi {
     this.pauseCalls.push({ runId, code, message });
   }
 
-  async uploadReport() {
+  async uploadReport(_runId: string, inputReport: CollectorReport) {
     this.reportCalls += 1;
+    this.reportStatuses.push(inputReport.status);
     if (this.reportFailure) throw this.reportFailure;
     return {
       runId: "run-1",
@@ -98,8 +102,9 @@ class FakeApi implements CollectorWorkerApi {
 }
 
 class FakeStore implements CollectorWorkerCheckpointStore {
+  loadCalls = 0;
   removeCalls = 0;
-  checkpoint = {
+  checkpoint: CollectorWorkerCheckpoint | null = {
     phase: "COMPLETE" as const,
     completedSkuKeys: ["sku-1", "sku-2"],
     report: report(),
@@ -107,6 +112,7 @@ class FakeStore implements CollectorWorkerCheckpointStore {
   };
 
   async load() {
+    this.loadCalls += 1;
     return this.checkpoint;
   }
 
@@ -119,9 +125,11 @@ class FakeUploader implements WorkerEvidenceUploader {
   uploadCalls = 0;
   clearCalls = 0;
   failure: Error | null = null;
+  manifests: Record<string, string>[] = [];
 
-  async upload() {
+  async upload(_runId: string, manifest: Record<string, string>) {
     this.uploadCalls += 1;
+    this.manifests.push(manifest);
     if (this.failure) throw this.failure;
     return { uploadedCount: 0, totalCount: 0 };
   }
@@ -133,11 +141,16 @@ class FakeUploader implements WorkerEvidenceUploader {
 
 class ManualScheduler implements WorkerScheduler {
   private nextId = 1;
-  readonly timers = new Map<number, { callback: () => void; milliseconds: number }>();
+  now = 0;
+  readonly timers = new Map<number, {
+    callback: () => void;
+    deadline: number;
+    milliseconds: number;
+  }>();
 
   setTimeout(callback: () => void, milliseconds: number): number {
     const id = this.nextId++;
-    this.timers.set(id, { callback, milliseconds });
+    this.timers.set(id, { callback, deadline: this.now + milliseconds, milliseconds });
     return id;
   }
 
@@ -146,10 +159,26 @@ class ManualScheduler implements WorkerScheduler {
   }
 
   fireNext(): void {
-    const entry = this.timers.entries().next().value as [number, { callback: () => void }] | undefined;
+    const entry = [...this.timers.entries()]
+      .sort((left, right) => left[1].deadline - right[1].deadline)[0];
     assert.ok(entry);
     this.timers.delete(entry[0]);
+    this.now = entry[1].deadline;
     entry[1].callback();
+  }
+
+  advanceBy(milliseconds: number): void {
+    const target = this.now + milliseconds;
+    for (;;) {
+      const entry = [...this.timers.entries()]
+        .filter(([, timer]) => timer.deadline <= target)
+        .sort((left, right) => left[1].deadline - right[1].deadline)[0];
+      if (!entry) break;
+      this.timers.delete(entry[0]);
+      this.now = entry[1].deadline;
+      entry[1].callback();
+    }
+    this.now = target;
   }
 }
 
@@ -159,14 +188,16 @@ function createWorker(overrides: {
   uploader?: FakeUploader;
   runner?: CollectorWorkerRunner;
   scheduler?: ManualScheduler;
+  monotonicNow?: () => number;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+  log?: (summary: Parameters<NonNullable<CollectorWorkerOptions["log"]>>[0]) => void;
 } = {}) {
   const api = overrides.api ?? new FakeApi();
   const store = overrides.store ?? new FakeStore();
   const uploader = overrides.uploader ?? new FakeUploader();
   const scheduler = overrides.scheduler ?? new ManualScheduler();
   const runner = overrides.runner ?? { run: async () => report() };
-  const worker = new CollectorWorker({
+  const options: CollectorWorkerOptions = {
     api,
     checkpointStore: store,
     evidenceUploader: uploader,
@@ -175,8 +206,10 @@ function createWorker(overrides: {
     sleep: overrides.sleep ?? (async () => undefined),
     appVersion: "2.4.5",
     capabilities: ["accessibility", "png-evidence"],
-    log: () => undefined
-  });
+    log: overrides.log ?? (() => undefined)
+  };
+  if (overrides.monotonicNow) options.monotonicNow = overrides.monotonicNow;
+  const worker = new CollectorWorker(options);
   return { worker, api, store, uploader, scheduler };
 }
 
@@ -220,6 +253,105 @@ test("worker waits exactly 30 seconds after a 204-equivalent empty claim", async
   assert.equal(api.claimCalls, 1);
 });
 
+test("worker waits after a transient claim failure and continues claiming", async () => {
+  const api = new FakeApi();
+  const transient = Object.assign(new Error("unsafe transport detail"), {
+    code: "SERVICE_UNAVAILABLE",
+    transient: true
+  });
+  let worker!: CollectorWorker;
+  api.claim = async () => {
+    api.claimCalls += 1;
+    if (api.claimCalls === 1) throw transient;
+    worker.stop();
+    return null;
+  };
+  const waits: number[] = [];
+  const logs: Array<Parameters<NonNullable<CollectorWorkerOptions["log"]>>[0]> = [];
+  ({ worker } = createWorker({
+    api,
+    sleep: async (milliseconds) => { waits.push(milliseconds); },
+    log: (summary) => { logs.push(summary); }
+  }));
+
+  await worker.run();
+  assert.equal(api.claimCalls, 2);
+  assert.deepEqual(waits, [30_000]);
+  assert.deepEqual(logs, [{
+    event: "claim_failed",
+    runId: null,
+    phase: null,
+    discoveredCount: 0,
+    skuCount: 0,
+    errorCode: "SERVICE_UNAVAILABLE"
+  }]);
+  assert.equal(JSON.stringify(logs).includes("unsafe transport detail"), false);
+});
+
+test("SIGTERM during polling wait stops future claims deterministically", async () => {
+  const api = new FakeApi();
+  api.claim = async () => {
+    api.claimCalls += 1;
+    throw Object.assign(new Error("unsafe timeout detail"), {
+      code: "TIMEOUT",
+      transient: true
+    });
+  };
+  let waitStarted!: () => void;
+  const started = new Promise<void>((resolve) => { waitStarted = resolve; });
+  const { worker } = createWorker({
+    api,
+    sleep: async (milliseconds, signal) => {
+      assert.equal(milliseconds, 30_000);
+      waitStarted();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), {
+        once: true
+      }));
+    }
+  });
+
+  const running = worker.run();
+  await started;
+  worker.stop();
+  await running;
+  assert.equal(api.claimCalls, 1);
+});
+
+test("worker mode does not swallow a non-transient claim failure", async () => {
+  const api = new FakeApi();
+  api.claim = async () => {
+    api.claimCalls += 1;
+    throw Object.assign(new Error("unsafe authentication detail"), {
+      code: "AUTHENTICATION_FAILED",
+      transient: false
+    });
+  };
+  const waits: number[] = [];
+  const { worker } = createWorker({
+    api,
+    sleep: async (milliseconds) => { waits.push(milliseconds); }
+  });
+
+  await assert.rejects(() => worker.run(), { code: "AUTHENTICATION_FAILED" });
+  assert.equal(api.claimCalls, 1);
+  assert.deepEqual(waits, []);
+});
+
+test("once makes at most one claim when that claim fails transiently", async () => {
+  const api = new FakeApi();
+  api.claim = async () => {
+    api.claimCalls += 1;
+    throw Object.assign(new Error("unsafe transport detail"), {
+      code: "NETWORK_ERROR",
+      transient: true
+    });
+  };
+  const { worker } = createWorker({ api });
+
+  await assert.rejects(() => worker.once(), { code: "NETWORK_ERROR" });
+  assert.equal(api.claimCalls, 1);
+});
+
 test("heartbeat starts after claim and is fully stopped before evidence upload", async () => {
   const scheduler = new ManualScheduler();
   const uploader = new FakeUploader();
@@ -245,7 +377,9 @@ test("heartbeat publishes checkpoint position and completed-SKU counts", async (
   const scheduler = new ManualScheduler();
   const api = new FakeApi();
   const store = new FakeStore();
-  store.checkpoint.report.positions = [{}, {}, {}] as never;
+  const checkpoint = store.checkpoint;
+  assert.ok(checkpoint);
+  checkpoint.report.positions = [{}, {}, {}] as never;
   let release!: (value: CollectorReport) => void;
   const runner: CollectorWorkerRunner = {
     run: async () => new Promise<CollectorReport>((resolve) => { release = resolve; })
@@ -254,16 +388,93 @@ test("heartbeat publishes checkpoint position and completed-SKU counts", async (
   const running = worker.once();
   await new Promise((resolve) => setImmediate(resolve));
 
-  scheduler.fireNext();
-  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(api.heartbeatCalls, 1);
   assert.deepEqual(api.lastHeartbeat, {
     runId: "run-1",
     input: { discoveredCount: 3, skuCount: 2 }
   });
 
-  store.checkpoint.report = report();
+  checkpoint.report = report();
   release(report());
+  await running;
+});
+
+test("heartbeat keeps 30-second start deadlines after a 15-second request", async () => {
+  const scheduler = new ManualScheduler();
+  const api = new FakeApi();
+  const starts: number[] = [];
+  let finishFirst!: () => void;
+  api.heartbeat = async () => {
+    starts.push(scheduler.now);
+    if (starts.length === 1) {
+      await new Promise<void>((resolve) => { finishFirst = resolve; });
+      throw Object.assign(new Error("unsafe timeout detail"), {
+        code: "TIMEOUT",
+        transient: true
+      });
+    }
+  };
+  let releaseRunner!: (value: CollectorReport) => void;
+  const runner: CollectorWorkerRunner = {
+    run: async () => new Promise<CollectorReport>((resolve) => { releaseRunner = resolve; })
+  };
+  const { worker } = createWorker({
+    api,
+    runner,
+    scheduler,
+    monotonicNow: () => scheduler.now
+  });
+
+  const running = worker.once();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts, [0]);
+  scheduler.advanceBy(15_000);
+  finishFirst();
+  await new Promise((resolve) => setImmediate(resolve));
+  scheduler.advanceBy(14_999);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts, [0]);
+  scheduler.advanceBy(1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts, [0, 30_000]);
+
+  releaseRunner(report());
+  await running;
+});
+
+test("heartbeat skips missed ticks without overlap or a catch-up burst", async () => {
+  const scheduler = new ManualScheduler();
+  const api = new FakeApi();
+  const starts: number[] = [];
+  let finishFirst!: () => void;
+  api.heartbeat = async () => {
+    starts.push(scheduler.now);
+    if (starts.length === 1) {
+      await new Promise<void>((resolve) => { finishFirst = resolve; });
+    }
+  };
+  let releaseRunner!: (value: CollectorReport) => void;
+  const runner: CollectorWorkerRunner = {
+    run: async () => new Promise<CollectorReport>((resolve) => { releaseRunner = resolve; })
+  };
+  const { worker } = createWorker({
+    api,
+    runner,
+    scheduler,
+    monotonicNow: () => scheduler.now
+  });
+
+  const running = worker.once();
+  await new Promise((resolve) => setImmediate(resolve));
+  scheduler.advanceBy(75_000);
+  assert.deepEqual(starts, [0]);
+  finishFirst();
+  await new Promise((resolve) => setImmediate(resolve));
+  scheduler.advanceBy(15_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts, [0, 90_000]);
+
+  releaseRunner(report());
   await running;
 });
 
@@ -291,10 +502,45 @@ test("login and challenge reports pause without evidence or successful-report up
   }
 });
 
-test("transient evidence failure makes exactly three attempts with bounded exponential delays", async () => {
+test("submits a valid FAILED report when no checkpoint was created", async () => {
+  const store = new FakeStore();
+  store.checkpoint = null;
+  const { worker, api, uploader } = createWorker({
+    store,
+    runner: { run: async () => report("FAILED") }
+  });
+
+  assert.equal(await worker.once(), "processed");
+  assert.deepEqual(api.reportStatuses, ["FAILED"]);
+  assert.equal(uploader.uploadCalls, 0);
+  assert.equal(store.removeCalls, 0);
+});
+
+test("uploads a valid non-COMPLETE manifest before submitting PARTIAL_FAILED", async () => {
+  const store = new FakeStore();
+  const partialReport = report("PARTIAL_FAILED");
+  const manifest = { [`sha256:${"a".repeat(64)}`]: "capture.png" };
+  store.checkpoint = {
+    phase: "ITEMS",
+    completedSkuKeys: ["sku-1"],
+    report: report("FAILED"),
+    evidenceManifest: manifest
+  };
+  const { worker, api, uploader } = createWorker({
+    store,
+    runner: { run: async () => partialReport }
+  });
+
+  assert.equal(await worker.once(), "processed");
+  assert.deepEqual(uploader.manifests, [manifest]);
+  assert.deepEqual(api.reportStatuses, ["PARTIAL_FAILED"]);
+  assert.equal(store.removeCalls, 1);
+});
+
+test("evidence body timeout makes exactly three attempts without checkpoint acknowledgement", async () => {
   const uploader = new FakeUploader();
   uploader.failure = Object.assign(new Error("unsafe response"), {
-    code: "SERVICE_UNAVAILABLE",
+    code: "TIMEOUT",
     transient: true
   });
   const waits: number[] = [];
@@ -303,11 +549,31 @@ test("transient evidence failure makes exactly three attempts with bounded expon
     sleep: async (milliseconds) => { waits.push(milliseconds); }
   });
 
-  await assert.rejects(() => worker.once(), { code: "SERVICE_UNAVAILABLE" });
+  await assert.rejects(() => worker.once(), { code: "TIMEOUT" });
   assert.equal(uploader.uploadCalls, 3);
   assert.deepEqual(waits, [1_000, 2_000]);
   assert.equal(api.reportCalls, 0);
   assert.equal(store.removeCalls, 0);
+});
+
+test("report body timeout makes exactly three attempts without checkpoint acknowledgement", async () => {
+  const api = new FakeApi();
+  api.reportFailure = Object.assign(new Error("unsafe response"), {
+    code: "TIMEOUT",
+    transient: true
+  });
+  const waits: number[] = [];
+  const { worker, store, uploader } = createWorker({
+    api,
+    sleep: async (milliseconds) => { waits.push(milliseconds); }
+  });
+
+  await assert.rejects(() => worker.once(), { code: "TIMEOUT" });
+  assert.equal(api.reportCalls, 3);
+  assert.deepEqual(waits, [1_000, 2_000]);
+  assert.equal(uploader.uploadCalls, 1);
+  assert.equal(store.removeCalls, 0);
+  assert.equal(uploader.clearCalls, 0);
 });
 
 test("report retries three attempts and removes the checkpoint only after acknowledgement", async () => {

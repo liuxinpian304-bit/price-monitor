@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 
 export interface EvidenceUploadApi {
@@ -9,6 +9,16 @@ export interface EvidenceUploadApi {
     evidenceKey: string,
     bytes: Uint8Array
   ): Promise<{ evidenceKey: string }>;
+}
+
+export interface EvidenceFileSystem {
+  realpath(path: string): Promise<string>;
+  lstat(path: string): Promise<Stats>;
+  open(path: string, flags: number): Promise<FileHandle>;
+}
+
+export interface EvidenceUploaderOptions {
+  fileSystem?: EvidenceFileSystem;
 }
 
 export type EvidenceUploadErrorCode =
@@ -36,6 +46,7 @@ const EVIDENCE_KEY_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const SAFE_RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const PNG_SIGNATURE = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MAX_EVIDENCE_BYTES = 2 * 1024 * 1024;
+const defaultFileSystem: EvidenceFileSystem = { realpath, lstat, open };
 
 function isStrictDescendant(parent: string, candidate: string): boolean {
   const path = relative(parent, candidate);
@@ -60,11 +71,13 @@ function validateManifest(manifest: Record<string, string>): Array<[string, stri
 export class EvidenceUploader {
   private readonly api: EvidenceUploadApi;
   private readonly workRoot: string;
+  private readonly fileSystem: EvidenceFileSystem;
   private readonly uploadedByRun = new Map<string, Set<string>>();
 
-  constructor(api: EvidenceUploadApi, workRoot: string) {
+  constructor(api: EvidenceUploadApi, workRoot: string, options: EvidenceUploaderOptions = {}) {
     this.api = api;
     this.workRoot = resolve(workRoot);
+    this.fileSystem = options.fileSystem ?? defaultFileSystem;
   }
 
   async upload(
@@ -80,11 +93,22 @@ export class EvidenceUploader {
       throw new EvidenceUploadError("INVALID_PATH");
     }
 
+    let realWorkRoot: string;
     let realRunDirectory: string;
     try {
-      realRunDirectory = await realpath(runDirectory);
-    } catch {
+      realWorkRoot = await this.fileSystem.realpath(this.workRoot);
+      realRunDirectory = await this.fileSystem.realpath(runDirectory);
+      const workMetadata = await this.fileSystem.lstat(realWorkRoot);
+      const runMetadata = await this.fileSystem.lstat(realRunDirectory);
+      if (!workMetadata.isDirectory() || !runMetadata.isDirectory()) {
+        throw new EvidenceUploadError("INVALID_PATH");
+      }
+    } catch (error) {
+      if (error instanceof EvidenceUploadError) throw error;
       throw new EvidenceUploadError("READ_FAILED");
+    }
+    if (!isStrictDescendant(realWorkRoot, realRunDirectory)) {
+      throw new EvidenceUploadError("INVALID_PATH");
     }
     const uploaded = this.uploadedByRun.get(runId) ?? new Set<string>();
     this.uploadedByRun.set(runId, uploaded);
@@ -97,16 +121,26 @@ export class EvidenceUploader {
       }
 
       let realCandidate: string;
+      let expectedMetadata: Stats;
       try {
-        realCandidate = await realpath(candidate);
-      } catch {
+        const candidateMetadata = await this.fileSystem.lstat(candidate);
+        if (candidateMetadata.isSymbolicLink() || !candidateMetadata.isFile()) {
+          throw new EvidenceUploadError("INVALID_PATH");
+        }
+        realCandidate = await this.fileSystem.realpath(candidate);
+        expectedMetadata = await this.fileSystem.lstat(realCandidate);
+      } catch (error) {
+        if (error instanceof EvidenceUploadError) throw error;
         throw new EvidenceUploadError("READ_FAILED");
       }
       if (!isStrictDescendant(realRunDirectory, realCandidate)) {
         throw new EvidenceUploadError("INVALID_PATH");
       }
+      if (!expectedMetadata.isFile() || expectedMetadata.isSymbolicLink()) {
+        throw new EvidenceUploadError("INVALID_PATH");
+      }
 
-      const bytes = await this.readValidatedFile(realCandidate);
+      const bytes = await this.readValidatedFile(realCandidate, expectedMetadata);
       if (!hasPngSignature(bytes)) throw new EvidenceUploadError("INVALID_PNG");
       const actualKey = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
       if (actualKey !== evidenceKey) throw new EvidenceUploadError("HASH_MISMATCH");
@@ -128,12 +162,16 @@ export class EvidenceUploader {
     this.uploadedByRun.delete(runId);
   }
 
-  private async readValidatedFile(path: string): Promise<Uint8Array> {
-    let handle;
+  private async readValidatedFile(path: string, expectedMetadata: Stats): Promise<Uint8Array> {
+    let handle: FileHandle | undefined;
     try {
-      handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+      handle = await this.fileSystem.open(path, constants.O_RDONLY | noFollow);
       const metadata = await handle.stat();
       if (!metadata.isFile()) throw new EvidenceUploadError("INVALID_PATH");
+      if (metadata.dev !== expectedMetadata.dev || metadata.ino !== expectedMetadata.ino) {
+        throw new EvidenceUploadError("INVALID_PATH");
+      }
       if (metadata.size > MAX_EVIDENCE_BYTES) {
         throw new EvidenceUploadError("PAYLOAD_TOO_LARGE");
       }

@@ -121,6 +121,16 @@ function contractError(
   return new CollectorApiError({ method, route, status: null, code, transient: false });
 }
 
+function timeoutError(method: string, route: string): CollectorApiError {
+  return new CollectorApiError({
+    method,
+    route,
+    status: null,
+    code: "TIMEOUT",
+    transient: true
+  });
+}
+
 function validatedInput<T>(
   schema: z.ZodType<T>,
   input: unknown,
@@ -148,10 +158,10 @@ export class CollectorApiClient {
   async claim(input: { appVersion: string; capabilities: string[] }): Promise<CollectorJob | null> {
     const route = "/api/collector-agent/jobs/claim";
     const body = validatedInput(claimInputSchema, input, "POST", route);
-    const response = await this.request("POST", route, route, { json: body });
+    const { response, signal } = await this.request("POST", route, route, { json: body });
     if (response.status === 204) return null;
     if (response.status !== 200) throw statusError("POST", route, response.status);
-    return this.parseResponse(response, collectorJobSchema, "POST", route);
+    return this.parseResponse(response, collectorJobSchema, "POST", route, signal);
   }
 
   async heartbeat(
@@ -161,7 +171,7 @@ export class CollectorApiClient {
     const route = "/api/collector-agent/jobs/:runId/heartbeat";
     const body = validatedInput(progressSchema, input, "POST", route);
     const path = `/api/collector-agent/jobs/${encodeURIComponent(runId)}/heartbeat`;
-    const response = await this.request("POST", route, path, { json: body });
+    const { response } = await this.request("POST", route, path, { json: body });
     this.requireNoContent(response, "POST", route);
   }
 
@@ -174,7 +184,7 @@ export class CollectorApiClient {
     const parsedCode = validatedInput(pauseCodeSchema, code, "POST", route);
     if (!message.trim()) throw contractError("POST", route, "INVALID_REQUEST");
     const path = `/api/collector-agent/jobs/${encodeURIComponent(runId)}/pause`;
-    const response = await this.request("POST", route, path, {
+    const { response } = await this.request("POST", route, path, {
       json: { code: parsedCode, message }
     });
     this.requireNoContent(response, "POST", route);
@@ -192,7 +202,7 @@ export class CollectorApiClient {
     const copiedBytes = Uint8Array.from(bytes);
     form.append("evidence", new Blob([copiedBytes.buffer], { type: "image/png" }), `${digest}.png`);
     const path = `/api/collector-agent/jobs/${encodeURIComponent(runId)}/evidence/${digest}`;
-    const response = await this.request("PUT", route, path, { body: form });
+    const { response, signal } = await this.request("PUT", route, path, { body: form });
     if (response.status !== 200 && response.status !== 201) {
       throw statusError("PUT", route, response.status);
     }
@@ -200,7 +210,8 @@ export class CollectorApiClient {
       response,
       evidenceAcknowledgementSchema,
       "PUT",
-      route
+      route,
+      signal
     );
     if (acknowledgement.evidenceKey !== evidenceKey) {
       throw contractError("PUT", route, "INVALID_RESPONSE");
@@ -215,11 +226,11 @@ export class CollectorApiClient {
       throw contractError("POST", route, "INVALID_REQUEST");
     }
     const path = `/api/collector-agent/jobs/${encodeURIComponent(runId)}/report`;
-    const response = await this.request("POST", route, path, { json: report });
+    const { response, signal } = await this.request("POST", route, path, { json: report });
     if (response.status !== 200 && response.status !== 202) {
       throw statusError("POST", route, response.status);
     }
-    const summary = await this.parseResponse(response, ingestionSummarySchema, "POST", route);
+    const summary = await this.parseResponse(response, ingestionSummarySchema, "POST", route, signal);
     if (summary.runId !== runId || summary.status !== report.status) {
       throw contractError("POST", route, "INVALID_RESPONSE");
     }
@@ -228,15 +239,15 @@ export class CollectorApiClient {
 
   async checkReachability(): Promise<CollectorHealth> {
     const route = "/api/health";
-    const response = await this.request("GET", route, route, { authenticated: false });
+    const { response, signal } = await this.request("GET", route, route, { authenticated: false });
     if (response.status !== 200) throw statusError("GET", route, response.status);
-    return this.parseResponse(response, healthSchema, "GET", route);
+    return this.parseResponse(response, healthSchema, "GET", route, signal);
   }
 
   async checkPairing(): Promise<void> {
     const route = "/api/collector-agent/jobs/:runId/heartbeat";
     const path = "/api/collector-agent/jobs/__collector_diagnose__/heartbeat";
-    const response = await this.request("POST", route, path, {
+    const { response } = await this.request("POST", route, path, {
       json: { discoveredCount: 0, skuCount: 0 }
     });
     if (response.status === 204 || response.status === 409 || response.status === 422) return;
@@ -248,7 +259,7 @@ export class CollectorApiClient {
     route: string,
     path: string,
     options: { json?: unknown; body?: BodyInit; authenticated?: boolean }
-  ): Promise<Response> {
+  ): Promise<{ response: Response; signal: AbortSignal }> {
     const signal = this.timeoutSignal(15_000);
     const headers = new Headers();
     if (options.authenticated !== false) headers.set("authorization", `Bearer ${this.pairingToken}`);
@@ -265,7 +276,8 @@ export class CollectorApiClient {
     try {
       const init: RequestInit = { method, headers, signal };
       if (body !== undefined) init.body = body;
-      return await this.fetch(`${this.apiUrl}${path}`, init);
+      const response = await this.fetch(`${this.apiUrl}${path}`, init);
+      return { response, signal };
     } catch {
       throw new CollectorApiError({
         method,
@@ -285,16 +297,45 @@ export class CollectorApiClient {
     response: Response,
     schema: z.ZodType<T>,
     method: string,
-    route: string
+    route: string,
+    signal: AbortSignal
   ): Promise<T> {
     let body: unknown;
     try {
-      body = await response.json();
-    } catch {
+      body = await this.readResponseBody(response, signal, method, route);
+    } catch (error) {
+      if (error instanceof CollectorApiError) throw error;
+      if (signal.aborted) throw timeoutError(method, route);
       throw contractError(method, route, "INVALID_RESPONSE");
     }
     const parsed = schema.safeParse(body);
     if (!parsed.success) throw contractError(method, route, "INVALID_RESPONSE");
     return parsed.data;
+  }
+
+  private readResponseBody(
+    response: Response,
+    signal: AbortSignal,
+    method: string,
+    route: string
+  ): Promise<unknown> {
+    if (signal.aborted) return Promise.reject(timeoutError(method, route));
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (operation: () => void) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        operation();
+      };
+      const onAbort = () => finish(() => reject(timeoutError(method, route)));
+      signal.addEventListener("abort", onAbort, { once: true });
+      Promise.resolve()
+        .then(() => response.json())
+        .then(
+          (body) => finish(() => resolve(body)),
+          (error: unknown) => finish(() => reject(error))
+        );
+    });
   }
 }

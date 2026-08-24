@@ -230,3 +230,80 @@ test("uses timeout cancellation and converts fetch failures without retaining un
   assert.equal(JSON.stringify(error).includes("unsafe-local-evidence-path"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(error, "cause"), false);
 });
+
+for (const [kind, responseFactory] of [
+  ["fake", () => ({
+    status: 200,
+    json: () => new Promise<never>(() => undefined)
+  }) as unknown as Response],
+  ["stream", () => new Response(new ReadableStream({ start() {} }), {
+    status: 200,
+    headers: { "content-type": "application/json" }
+  })]
+] as const) {
+  test(`maps an aborted stalled ${kind} response body to a transient timeout`, async () => {
+    const controller = new AbortController();
+    const client = new CollectorApiClient({
+      apiUrl: "https://collector.example.test",
+      pairingToken: token,
+      timeoutSignal: () => controller.signal,
+      fetch: async () => responseFactory()
+    });
+
+    const pending = client.claim({ appVersion: "2.4.5", capabilities: [] });
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort(new Error("unsafe response-body timeout detail"));
+    const error = await Promise.race([
+      pending.then(() => null, (caught: unknown) => caught),
+      new Promise<"STALLED">((resolve) => setTimeout(() => resolve("STALLED"), 100))
+    ]);
+
+    assert.ok(error instanceof CollectorApiError);
+    assert.deepEqual(
+      { code: error.code, transient: error.transient, status: error.status },
+      { code: "TIMEOUT", transient: true, status: null }
+    );
+    assert.equal(JSON.stringify(error).includes("unsafe response-body timeout detail"), false);
+  });
+}
+
+test("keeps a completed malformed response body non-transient", async () => {
+  const { client } = clientWith(() => new Response("{", {
+    status: 200,
+    headers: { "content-type": "application/json" }
+  }));
+
+  const error = await client.claim({ appVersion: "2.4.5", capabilities: [] })
+    .then(() => null, (caught: unknown) => caught);
+  assert.ok(error instanceof CollectorApiError);
+  assert.deepEqual(
+    { code: error.code, transient: error.transient },
+    { code: "INVALID_RESPONSE", transient: false }
+  );
+});
+
+test("maps a body rejection caused by abort to a transient timeout", async () => {
+  const controller = new AbortController();
+  const client = new CollectorApiClient({
+    apiUrl: "https://collector.example.test",
+    pairingToken: token,
+    timeoutSignal: () => controller.signal,
+    fetch: async () => ({
+      status: 200,
+      json: () => new Promise<never>((_resolve, reject) => {
+        controller.signal.addEventListener("abort", () => reject(controller.signal.reason), {
+          once: true
+        });
+      })
+    }) as unknown as Response
+  });
+
+  const pending = client.claim({ appVersion: "2.4.5", capabilities: [] });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(new Error("unsafe body rejection detail"));
+  await assert.rejects(() => pending, {
+    code: "TIMEOUT",
+    transient: true,
+    status: null
+  });
+});
