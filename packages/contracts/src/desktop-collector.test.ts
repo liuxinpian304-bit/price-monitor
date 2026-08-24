@@ -56,9 +56,9 @@ function sku(itemId: string, skuId: string) {
   };
 }
 
-const position = (rank: number) => ({
+const position = (rank: number, platformItemId = `item-${rank}`) => ({
   rank,
-  platformItemId: `item-${rank}`,
+  platformItemId,
   url: `https://item.taobao.com/item.htm?id=${rank}`,
   shopName: `店铺${rank}`,
   title: `索尼 7506 商品${rank}`,
@@ -77,7 +77,10 @@ const report = {
   completedAt: "2026-08-24T01:40:00.000Z",
   status: "SUCCEEDED",
   searchLimit: 50,
-  positions: Array.from({ length: 50 }, (_, index) => position(index + 1)),
+  positions: Array.from({ length: 50 }, (_, index) => position(
+    index + 1,
+    index === 0 ? "competitor-1" : index === 1 ? "competitor-2" : undefined
+  )),
   ownItems: [
     {
       ownListingId: "own-1",
@@ -150,4 +153,117 @@ test("rejects missing ranks, unsafe money, invalid confidence, and excess positi
 test("rejects unknown fields at every contract boundary", () => {
   assert.throws(() => collectorJobSchema.parse({ ...job, unexpected: true }));
   assert.throws(() => collectorReportSchema.parse({ ...report, unexpected: true }));
+});
+
+test("enforces the confirmed payable price formula", () => {
+  assert.doesNotThrow(() => collectorReportSchema.parse(report));
+  assert.throws(() => collectorReportSchema.parse({
+    ...report,
+    competitorItems: [{
+      ...report.competitorItems[0],
+      skus: [{ ...report.competitorItems[0].skus[0], payableFen: 62_801 }]
+    }, report.competitorItems[1]]
+  }));
+  assert.throws(() => collectorReportSchema.parse({
+    ...report,
+    competitorItems: [{
+      ...report.competitorItems[0],
+      skus: [{
+        ...report.competitorItems[0].skus[0],
+        couponDiscountFen: 70_000,
+        payableFen: 0
+      }]
+    }, report.competitorItems[1]]
+  }));
+});
+
+test("accepts nullable uncertain promotion details and limits payable null to manual review", () => {
+  const manualReviewReport = {
+    ...report,
+    competitorItems: [{
+      ...report.competitorItems[0],
+      skus: [{
+        ...report.competitorItems[0].skus[0],
+        priceConfidence: "MANUAL_REVIEW" as const,
+        payableFen: null,
+        promotions: [{
+          ...report.competitorItems[0].skus[0].promotions[0],
+          amountFen: null,
+          thresholdFen: null,
+          stackGroup: null
+        }]
+      }]
+    }, report.competitorItems[1]]
+  };
+  assert.doesNotThrow(() => collectorReportSchema.parse(manualReviewReport));
+  assert.doesNotThrow(() => collectorReportSchema.parse({
+    ...manualReviewReport,
+    competitorItems: [{
+      ...manualReviewReport.competitorItems[0],
+      skus: [{ ...manualReviewReport.competitorItems[0].skus[0], payableFen: 62_800 }]
+    }, manualReviewReport.competitorItems[1]]
+  }));
+  assert.throws(() => collectorReportSchema.parse({
+    ...report,
+    competitorItems: [{
+      ...report.competitorItems[0],
+      skus: [{
+        ...report.competitorItems[0].skus[0],
+        priceConfidence: "ESTIMATED" as const,
+        payableFen: null
+      }]
+    }, report.competitorItems[1]]
+  }));
+});
+
+test("requires a matching issue for items with no collected SKUs", () => {
+  const emptyItemReport = {
+    ...report,
+    competitorItems: [{ ...report.competitorItems[0], skus: [] }, report.competitorItems[1]],
+    issues: [{
+      code: "ITEM_UNAVAILABLE" as const,
+      message: "商品已下架",
+      platformItemId: "competitor-1",
+      capturedAt
+    }]
+  };
+  assert.doesNotThrow(() => collectorReportSchema.parse(emptyItemReport));
+  assert.throws(() => collectorReportSchema.parse({ ...emptyItemReport, issues: [] }));
+  assert.throws(() => collectorReportSchema.parse({
+    ...emptyItemReport,
+    issues: [{ ...emptyItemReport.issues[0], platformItemId: "competitor-2" }]
+  }));
+});
+
+test("requires item-level issue codes to identify their item", () => {
+  for (const code of ["SKU_ENUMERATION_INCOMPLETE", "SKU_SELECTION_MISMATCH", "PRICE_UNSTABLE"] as const) {
+    assert.throws(() => collectorReportSchema.parse({
+      ...report,
+      issues: [{ code, message: "需要复核", capturedAt }]
+    }));
+  }
+});
+
+test("bounds job and report search limits to 50", () => {
+  assert.throws(() => collectorJobSchema.parse({ ...job, searchLimit: 51 }));
+  assert.throws(() => collectorReportSchema.parse({ ...report, searchLimit: 51 }));
+});
+
+test("requires item search ranks to point to the same item in positions", () => {
+  assert.throws(() => collectorReportSchema.parse({
+    ...report,
+    competitorItems: [{
+      ...report.competitorItems[0],
+      searchRanks: [3]
+    }, report.competitorItems[1]]
+  }));
+});
+
+test("requires each displayed price range to be ordered", () => {
+  assert.throws(() => collectorReportSchema.parse({
+    ...report,
+    positions: report.positions.map((entry, index) => index === 0
+      ? { ...entry, displayPriceMinFen: 70_000 }
+      : entry)
+  }));
 });

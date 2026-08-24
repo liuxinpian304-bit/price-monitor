@@ -17,6 +17,7 @@ const timestampSchema = z.iso.datetime({ offset: true });
 const moneyFenSchema = z.number().int().nonnegative().safe();
 const positiveCountSchema = z.number().int().positive().safe();
 const nonNegativeCountSchema = z.number().int().nonnegative().safe();
+const searchLimitSchema = positiveCountSchema.max(50);
 const identifierSchema = z.string().min(1);
 const urlSchema = z.url();
 const evidenceKeySchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -51,7 +52,7 @@ export const collectorJobSchema = z.object({
   collectorId: identifierSchema,
   monitoredModelId: identifierSchema,
   searchQuery: z.string().min(1),
-  searchLimit: positiveCountSchema,
+  searchLimit: searchLimitSchema,
   ownShopName: z.string().min(1),
   ownListings: z.array(ownListingSchema),
   rule: ruleSchema
@@ -60,10 +61,10 @@ export const collectorJobSchema = z.object({
 const promotionEvidenceSchema = z.object({
   kind: z.string().min(1),
   label: z.string().min(1),
-  amountFen: moneyFenSchema,
-  thresholdFen: moneyFenSchema,
+  amountFen: moneyFenSchema.nullable(),
+  thresholdFen: moneyFenSchema.nullable(),
   audience: z.string().min(1),
-  stackGroup: z.string().min(1),
+  stackGroup: z.string().min(1).nullable(),
   includedInActivityPrice: z.boolean()
 }).strict();
 
@@ -80,7 +81,7 @@ const collectedSkuSchema = z.object({
   promotions: z.array(promotionEvidenceSchema),
   mandatoryFeeFen: moneyFenSchema,
   priceConfidence: priceConfidenceSchema,
-  payableFen: moneyFenSchema,
+  payableFen: moneyFenSchema.nullable(),
   capturedAt: timestampSchema,
   evidenceKey: evidenceKeySchema.nullable()
 }).strict();
@@ -130,7 +131,7 @@ const reportBodySchema = z.object({
   startedAt: timestampSchema,
   completedAt: timestampSchema,
   status: reportStatusSchema,
-  searchLimit: positiveCountSchema,
+  searchLimit: searchLimitSchema,
   positions: z.array(searchPositionSchema),
   ownItems: z.array(ownItemSchema),
   competitorItems: z.array(competitorItemSchema),
@@ -162,6 +163,34 @@ export const collectorReportSchema = reportBodySchema.superRefine((report, conte
       path: ["positions"],
       message: "positions must have unique contiguous ranks starting at 1"
     });
+  }
+
+  for (const [positionIndex, position] of report.positions.entries()) {
+    if (position.displayPriceMinFen > position.displayPriceMaxFen) {
+      context.addIssue({
+        code: "custom",
+        path: ["positions", positionIndex, "displayPriceMinFen"],
+        message: "displayPriceMinFen must not exceed displayPriceMaxFen"
+      });
+    }
+  }
+
+  const positionsByRank = new Map(report.positions.map((position) => [position.rank, position.platformItemId]));
+  const itemIssueCodes = new Set([
+    "SKU_ENUMERATION_INCOMPLETE",
+    "SKU_SELECTION_MISMATCH",
+    "PRICE_UNSTABLE"
+  ]);
+  const emptyItemIssueCodes = new Set(["ITEM_UNAVAILABLE", "SKU_ENUMERATION_INCOMPLETE"]);
+
+  for (const [issueIndex, issue] of report.issues.entries()) {
+    if (itemIssueCodes.has(issue.code) && !issue.platformItemId) {
+      context.addIssue({
+        code: "custom",
+        path: ["issues", issueIndex, "platformItemId"],
+        message: `${issue.code} must identify a platformItemId`
+      });
+    }
   }
 
   const items = [...report.ownItems, ...report.competitorItems];
@@ -201,7 +230,27 @@ export const collectorReportSchema = reportBodySchema.superRefine((report, conte
       });
     }
 
-    for (const sku of item.skus) {
+    for (const [rankIndex, rank] of item.searchRanks.entries()) {
+      if (positionsByRank.get(rank) !== item.platformItemId) {
+        context.addIssue({
+          code: "custom",
+          path: [itemCollection, itemIndex, "searchRanks", rankIndex],
+          message: "searchRanks must reference positions for the same platformItemId"
+        });
+      }
+    }
+
+    if (item.skus.length === 0 && !report.issues.some((issue) =>
+      issue.platformItemId === item.platformItemId && emptyItemIssueCodes.has(issue.code)
+    )) {
+      context.addIssue({
+        code: "custom",
+        path: [itemCollection, itemIndex, "skus"],
+        message: "an item without SKUs requires a matching availability or enumeration issue"
+      });
+    }
+
+    for (const [skuIndex, sku] of item.skus.entries()) {
       const skuKey = `${item.platformItemId}:${sku.skuId}`;
       if (skuKeys.has(skuKey)) {
         context.addIssue({
@@ -211,6 +260,27 @@ export const collectorReportSchema = reportBodySchema.superRefine((report, conte
         });
       }
       skuKeys.add(skuKey);
+
+      if (sku.priceConfidence === "ESTIMATED" && sku.payableFen === null) {
+        context.addIssue({
+          code: "custom",
+          path: [itemCollection, itemIndex, "skus", skuIndex, "payableFen"],
+          message: "ESTIMATED prices require payableFen"
+        });
+      }
+
+      if (sku.priceConfidence === "CONFIRMED") {
+        const expectedPayableFen = sku.activityPriceFen - sku.couponDiscountFen
+          - sku.fullReductionFen - sku.directDiscountFen + sku.mandatoryFeeFen;
+        if (!Number.isSafeInteger(expectedPayableFen) || expectedPayableFen < 0
+          || sku.payableFen === null || sku.payableFen !== expectedPayableFen) {
+          context.addIssue({
+            code: "custom",
+            path: [itemCollection, itemIndex, "skus", skuIndex, "payableFen"],
+            message: "CONFIRMED payableFen must equal the non-negative component formula"
+          });
+        }
+      }
     }
   }
 });
