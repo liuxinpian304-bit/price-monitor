@@ -60,13 +60,21 @@ function sameSelection(left: SkuSelection, right: SkuSelection): boolean {
 }
 
 function skuIdFor(page: DriverItemPage, selection: SkuSelection): string {
-  if (page.skuDimensions.length === 0) return "default";
-  return page.skuDimensions.map((dimension) => {
+  const tuple = page.skuDimensions.map((dimension) => {
     const selectedLabel = selection[dimension.name];
     const option = dimension.options.find((candidate) => candidate.label === selectedLabel);
     if (!option) throw new TypeError(`Selection has no option ID for ${dimension.name}`);
-    return option.id;
-  }).join("|");
+    return {
+      dimension: dimension.name,
+      optionId: option.id,
+      optionLabel: option.label
+    };
+  });
+  return `sku_${createHash("sha256").update(JSON.stringify(tuple)).digest("hex")}`;
+}
+
+function completedSkuKeyFor(itemIdentity: string, skuId: string): string {
+  return JSON.stringify([itemIdentity, skuId]);
 }
 
 function selectionLabel(page: DriverItemPage, selection: SkuSelection): string {
@@ -138,12 +146,17 @@ export class CollectionRunner {
     }
     if (existing?.phase === "COMPLETE") return collectorReportSchema.parse(existing.report);
 
-    const checkpoint = existing ?? await this.newCheckpoint(job, collectorId, jobHash);
+    const checkpoint = existing ?? this.newCheckpoint(job, collectorId, jobHash);
     checkpoint.report.issues = checkpoint.report.issues.filter((entry) =>
       entry.code !== "LOGIN_REQUIRED" && entry.code !== "PLATFORM_CHALLENGE"
       && entry.message !== PAUSE_INCOMPLETE_MESSAGE);
 
     try {
+      if (!existing) {
+        const diagnostic = await this.driver.diagnose();
+        checkpoint.report.appVersion = diagnostic.appVersion ?? "unknown";
+      }
+
       if (checkpoint.phase === "OWN_LISTINGS") {
         await this.collectOwnListings(job, checkpoint);
         checkpoint.phase = "SEARCH";
@@ -193,12 +206,11 @@ export class CollectionRunner {
     }
   }
 
-  private async newCheckpoint(
+  private newCheckpoint(
     job: CollectorJob,
     collectorId: string,
     jobHash: string
-  ): Promise<CollectorCheckpoint> {
-    const diagnostic = await this.driver.diagnose();
+  ): CollectorCheckpoint {
     const startedAt = now();
     return {
       schemaVersion: 1,
@@ -212,7 +224,7 @@ export class CollectionRunner {
         schemaVersion: 1,
         runId: job.runId,
         collectorId,
-        appVersion: diagnostic.appVersion ?? "unknown",
+        appVersion: "unknown",
         startedAt,
         completedAt: startedAt,
         status: "FAILED",
@@ -305,8 +317,15 @@ export class CollectionRunner {
 
       const page = await this.driver.openSearchPosition(position);
       const pageIdentity = itemIdentity(page.platformItemId, page.url);
+      if (page.platformItemId !== null && pageIdentity !== identity) {
+        for (const reportPosition of checkpoint.report.positions) {
+          if (reportPosition.platformItemId === identity) {
+            reportPosition.platformItemId = pageIdentity;
+          }
+        }
+      }
       const ranks = checkpoint.report.positions
-        .filter((candidate) => candidate.platformItemId === identity)
+        .filter((candidate) => candidate.platformItemId === pageIdentity)
         .map((candidate) => candidate.rank);
       let item = findItem(checkpoint.report, pageIdentity);
       if (!item) {
@@ -325,7 +344,7 @@ export class CollectionRunner {
 
       await this.collectItemSkus(page, item, checkpoint);
       addUnique(checkpoint.completedPlatformItemIds, identity);
-      if (pageIdentity !== identity) addUnique(checkpoint.completedPlatformItemIds, pageIdentity);
+      addUnique(checkpoint.completedPlatformItemIds, pageIdentity);
       await this.driver.returnToSearch();
       await this.checkpointStore.save(checkpoint.runId, checkpoint);
     }
@@ -368,7 +387,7 @@ export class CollectionRunner {
 
     for (const selection of selections) {
       const skuId = skuIdFor(page, selection);
-      const completedSkuKey = `${item.platformItemId}:${skuId}`;
+      const completedSkuKey = completedSkuKeyFor(item.platformItemId, skuId);
       if (checkpoint.completedSkuKeys.includes(completedSkuKey)) continue;
 
       const result = await this.driver.selectSku(selection);
@@ -442,7 +461,13 @@ export class CollectionRunner {
 
     let evidenceKey: string | null = null;
     if (view.evidencePath !== undefined) {
-      evidenceKey = `sha256:${createHash("sha256").update(await readFile(view.evidencePath)).digest("hex")}`;
+      let evidence: Buffer;
+      try {
+        evidence = await readFile(view.evidencePath);
+      } catch {
+        throw new Error("Selected SKU evidence could not be read");
+      }
+      evidenceKey = `sha256:${createHash("sha256").update(evidence).digest("hex")}`;
       checkpoint.evidenceManifest[evidenceKey] = view.evidencePath;
     }
 

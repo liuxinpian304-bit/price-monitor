@@ -6,12 +6,16 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import type { CollectorJob } from "@stau-price-monitor/contracts";
+import { collectorReportSchema, type CollectorJob } from "@stau-price-monitor/contracts";
 
 import { AtomicCheckpointStore, type CollectorCheckpoint } from "./checkpoint-store.ts";
 import { CollectionRunner } from "./collection-runner.ts";
 import { FixtureDriver } from "../drivers/fixture/fixture-driver.ts";
-import type { TaobaoDesktopDriver } from "./desktop-driver.ts";
+import {
+  LoginRequiredError,
+  PlatformChallengeError,
+  type TaobaoDesktopDriver
+} from "./desktop-driver.ts";
 
 const fixturePath = fileURLToPath(new URL("../../test/fixtures/sony-7506.json", import.meta.url));
 
@@ -60,13 +64,27 @@ interface MutableFixtureResult {
   };
 }
 
+interface MutableFixtureItem {
+  platformItemId: string | null;
+  pageSkuCount?: number;
+  skuDimensions: Array<{
+    name: string;
+    options: Array<{ id: string; label: string; enabled: boolean }>;
+  }>;
+  skuResults: MutableFixtureResult[];
+}
+
 interface MutableFixture {
-  ownListings: Array<{ item: { skuResults: MutableFixtureResult[] } }>;
+  ownListings: Array<{ item: MutableFixtureItem }>;
   search: {
     positions: Array<{ platformItemId: string | null; url: string }>;
-    items: Array<{ platformItemId: string | null; skuResults: MutableFixtureResult[] }>;
+    items: MutableFixtureItem[];
   };
 }
+
+const fixtureUnavailableSkuId = "sku_cca30add7d15231188fb6dbd5341169c66f18a53dc721c2e18935778b1cf3c93";
+const fixtureBareSkuId = "sku_1ae01c6469db4c89ecca7aff8cd91222c2b4219748c199c77a4caa0e1cd7710a";
+const fixtureCableSkuId = "sku_e16888693c1b2e4802d1d639857cea046a8e384fb0c67aaf195b5d64310617ce";
 
 async function writeFixtureCopy(
   root: string,
@@ -77,6 +95,20 @@ async function writeFixtureCopy(
   const path = join(root, "fixture.json");
   await writeFile(path, `${JSON.stringify(fixture)}\n`, "utf8");
   return path;
+}
+
+function withDiagnose(
+  driver: FixtureDriver,
+  diagnose: TaobaoDesktopDriver["diagnose"]
+): TaobaoDesktopDriver {
+  return {
+    diagnose,
+    openOwnListing: (url) => driver.openOwnListing(url),
+    search: (query, limit) => driver.search(query, limit),
+    openSearchPosition: (position) => driver.openSearchPosition(position),
+    selectSku: (selection) => driver.selectSku(selection),
+    returnToSearch: () => driver.returnToSearch()
+  };
 }
 
 test("collects every enabled Sony SKU while preserving duplicate search ranks", async () => {
@@ -224,7 +256,7 @@ test("records a dynamic unavailable selection as an explicit incomplete SKU issu
     assert.ok(item);
     assert.deepEqual(item.skus, []);
     assert.equal(report.issues.some((entry) => entry.code === "SKU_ENUMERATION_INCOMPLETE"
-      && entry.platformItemId === "competitor-b" && entry.skuId === "b-bare"
+      && entry.platformItemId === "competitor-b" && entry.skuId === fixtureUnavailableSkuId
       && entry.message.includes("Out of stock")), true);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -255,9 +287,9 @@ test("does not manufacture prices after selection mismatch or unstable price tex
     assert.ok(item);
     assert.deepEqual(item.skus.map((sku) => sku.label), ["M1", "MV1"]);
     assert.equal(report.issues.some((entry) =>
-      entry.code === "SKU_SELECTION_MISMATCH" && entry.skuId === "a-bare"), true);
+      entry.code === "SKU_SELECTION_MISMATCH" && entry.skuId === fixtureBareSkuId), true);
     assert.equal(report.issues.some((entry) =>
-      entry.code === "PRICE_UNSTABLE" && entry.skuId === "a-cable"), true);
+      entry.code === "PRICE_UNSTABLE" && entry.skuId === fixtureCableSkuId), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -325,6 +357,201 @@ test("uses canonical URL fallback without presenting it to the driver as a stabl
       item.platformItemId === fallbackIdentity)?.searchRanks, [1, 3]);
     assert.equal(fixtureDriver.events.filter((event) =>
       event.type === "OPEN_SEARCH_POSITION" && event.platformItemId === null).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("upgrades fallback search identities when detail traversal discovers a stable item ID", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-identity-upgrade-"));
+  const upgradeJob = { ...job, runId: "sony-identity-upgrade-run" };
+  try {
+    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const path = await writeFixtureCopy(root, (fixture) => {
+      const matchingPositions = fixture.search.positions.filter((position) => position.url === itemUrl);
+      assert.equal(matchingPositions.length, 2);
+      matchingPositions[0]!.platformItemId = null;
+      matchingPositions[1]!.platformItemId = "competitor-a";
+    });
+    const driver = await FixtureDriver.fromFile(path);
+    const report = await new CollectionRunner(
+      driver,
+      new AtomicCheckpointStore(join(root, "checkpoints"))
+    ).run(upgradeJob, upgradeJob.collectorId);
+
+    assert.equal(report.status, "SUCCEEDED");
+    assert.deepEqual(report.positions.filter((position) => position.url === itemUrl)
+      .map((position) => position.platformItemId), ["competitor-a", "competitor-a"]);
+    assert.deepEqual(report.competitorItems.find((item) =>
+      item.platformItemId === "competitor-a")?.searchRanks, [1, 3]);
+    assert.equal(driver.events.filter((event) =>
+      event.type === "OPEN_SEARCH_POSITION" && event.platformItemId === "competitor-a").length, 1);
+    assert.doesNotThrow(() => collectorReportSchema.parse(report));
+
+    const checkpoint = await new AtomicCheckpointStore(join(root, "checkpoints")).load(upgradeJob.runId);
+    const fallbackIdentity = new URL(itemUrl).toString();
+    assert.equal(checkpoint?.completedPlatformItemIds.includes(fallbackIdentity), true);
+    assert.equal(checkpoint?.completedPlatformItemIds.includes("competitor-a"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pauses a fresh run when diagnosis requires login and resumes without diagnosing again", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-diagnose-login-"));
+  const diagnoseJob = { ...job, runId: "sony-diagnose-login-run" };
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const blockedFixture = await FixtureDriver.fromFile(fixturePath);
+    let blockedDiagnoseCalls = 0;
+    const blockedDriver = withDiagnose(blockedFixture, async () => {
+      blockedDiagnoseCalls += 1;
+      throw new LoginRequiredError("Fixture diagnosis requires login");
+    });
+    const paused = await new CollectionRunner(blockedDriver, store)
+      .run(diagnoseJob, diagnoseJob.collectorId);
+
+    assert.equal(paused.status, "PAUSED_LOGIN");
+    assert.equal(paused.appVersion, "unknown");
+    assert.equal(blockedDiagnoseCalls, 1);
+    assert.equal(blockedFixture.events.length, 0);
+    assert.equal((await store.load(diagnoseJob.runId))?.report.status, "PAUSED_LOGIN");
+    assert.doesNotThrow(() => collectorReportSchema.parse(paused));
+
+    const healthyFixture = await FixtureDriver.fromFile(fixturePath);
+    let resumedDiagnoseCalls = 0;
+    const resumedDriver = withDiagnose(healthyFixture, async () => {
+      resumedDiagnoseCalls += 1;
+      return healthyFixture.diagnose();
+    });
+    const resumed = await new CollectionRunner(resumedDriver, store)
+      .run(diagnoseJob, diagnoseJob.collectorId);
+    assert.equal(resumed.status, "SUCCEEDED");
+    assert.equal(resumed.appVersion, "unknown");
+    assert.equal(resumedDiagnoseCalls, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pauses a fresh run when diagnosis encounters a platform challenge without retrying", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-diagnose-challenge-"));
+  const diagnoseJob = { ...job, runId: "sony-diagnose-challenge-run" };
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const fixture = await FixtureDriver.fromFile(fixturePath);
+    let diagnoseCalls = 0;
+    const driver = withDiagnose(fixture, async () => {
+      diagnoseCalls += 1;
+      throw new PlatformChallengeError("Fixture diagnosis encountered a challenge");
+    });
+    const paused = await new CollectionRunner(driver, store).run(diagnoseJob, diagnoseJob.collectorId);
+
+    assert.equal(paused.status, "PAUSED_CHALLENGE");
+    assert.equal(paused.appVersion, "unknown");
+    assert.equal(diagnoseCalls, 1);
+    assert.equal(fixture.events.length, 0);
+    assert.equal((await store.load(diagnoseJob.runId))?.report.status, "PAUSED_CHALLENGE");
+    assert.doesNotThrow(() => collectorReportSchema.parse(paused));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("sanitizes unreadable selected-SKU evidence errors and leaves the manifest empty", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-missing-evidence-"));
+  const evidenceJob = { ...job, runId: "sony-missing-evidence-run" };
+  try {
+    const evidencePath = join(root, "private-selected-sku-evidence.png");
+    const path = await writeFixtureCopy(root, (fixture) => {
+      const view = fixture.ownListings[0]?.item.skuResults[0]?.view;
+      assert.ok(view);
+      view.evidencePath = evidencePath;
+    });
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const report = await new CollectionRunner(await FixtureDriver.fromFile(path), store)
+      .run(evidenceJob, evidenceJob.collectorId);
+
+    const evidenceIssue = report.issues.find((entry) =>
+      entry.code === "PRICE_UNSTABLE" && entry.platformItemId === "own-7506");
+    assert.equal(evidenceIssue?.message, "Selected SKU evidence could not be read");
+    assert.equal(JSON.stringify(report).includes(evidencePath), false);
+    assert.equal(Object.keys((await store.load(evidenceJob.runId))?.evidenceManifest ?? {}).length, 0);
+    assert.doesNotThrow(() => collectorReportSchema.parse(report));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("keeps delimiter and duplicate-option-ID combinations distinct across checkpoint resume", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-sku-collision-"));
+  const collisionJob = { ...job, runId: "sony-sku-collision-run" };
+  try {
+    const path = await writeFixtureCopy(root, (fixture) => {
+      const item = fixture.search.items.find((candidate) => candidate.platformItemId === "competitor-b");
+      assert.ok(item);
+      const template = item.skuResults[0];
+      assert.equal(template?.availability, "AVAILABLE");
+      assert.ok(template?.view);
+      item.pageSkuCount = 6;
+      item.skuDimensions = [
+        {
+          name: "第一维",
+          options: [
+            { id: "left|shared", label: "甲", enabled: true },
+            { id: "left", label: "乙", enabled: true },
+            { id: "left", label: "丙", enabled: true }
+          ]
+        },
+        {
+          name: "第二维",
+          options: [
+            { id: "right", label: "丁", enabled: true },
+            { id: "shared|right", label: "戊", enabled: true }
+          ]
+        }
+      ];
+      item.skuResults = [];
+      for (const first of ["甲", "乙", "丙"]) {
+        for (const second of ["丁", "戊"]) {
+          const selection = { 第一维: first, 第二维: second };
+          const result: MutableFixtureResult = structuredClone(template);
+          assert.ok(result.view);
+          result.selection = selection;
+          result.view.selectedLabels = selection;
+          item.skuResults.push(result);
+        }
+      }
+    });
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const pausedDriver = await FixtureDriver.fromFile(path, {
+      pauseAfterCompletedSkuCount: 7,
+      pauseType: "LOGIN_REQUIRED"
+    });
+    const paused = await new CollectionRunner(pausedDriver, store)
+      .run(collisionJob, collisionJob.collectorId);
+    assert.equal(paused.status, "PAUSED_LOGIN");
+
+    const resumed = await new CollectionRunner(await FixtureDriver.fromFile(path), store)
+      .run(collisionJob, collisionJob.collectorId);
+    const item = resumed.competitorItems.find((candidate) => candidate.platformItemId === "competitor-b");
+    assert.equal(resumed.status, "SUCCEEDED");
+    assert.ok(item);
+    assert.equal(item.skus.length, 6);
+    assert.equal(new Set(item.skus.map((sku) => sku.skuId)).size, 6);
+    assert.equal(item.skus.every((sku) => /^sku_[0-9a-f]{64}$/.test(sku.skuId)), true);
+    assert.deepEqual(item.skus.map((sku) => sku.label), [
+      "甲 / 丁", "甲 / 戊", "乙 / 丁", "乙 / 戊", "丙 / 丁", "丙 / 戊"
+    ]);
+
+    const checkpoint = await store.load(collisionJob.runId);
+    assert.equal(checkpoint?.completedSkuKeys.length, 11);
+    assert.equal(new Set(checkpoint?.completedSkuKeys).size, 11);
+    assert.equal(checkpoint?.completedSkuKeys.every((key) => {
+      const parsed: unknown = JSON.parse(key);
+      return Array.isArray(parsed) && parsed.length === 2;
+    }), true);
+    assert.doesNotThrow(() => collectorReportSchema.parse(resumed));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
