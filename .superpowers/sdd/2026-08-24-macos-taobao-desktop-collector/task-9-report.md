@@ -149,3 +149,52 @@ The required full `pnpm audit:public` command was run after staging Task 9. Task
 - The new result-query marker and duplicate-boundary fixture are minimal sanitized synthetic profile data. Accessibility permission remains unavailable, so Task 14 must validate or replace them against a live sanitized Taobao Desktop 2.4.5 build 15 snapshot.
 - SwiftPM XCTest remains unavailable on this host for the documented compiler/SDK mismatch; all available direct Swift checks pass.
 - The full public audit remains nonzero only for the three unrelated pre-existing historical-plan paths; the Fix Round 1 changed-file audit passes.
+
+## Fix Round 2
+
+### RED Evidence
+
+- Duplicate continuity: the focused merge contract did not exist because overlap was embedded in the driver and depended on viewport-local occurrence ordinals. The reviewed `A1,A2 -> A2,A3` sequence therefore changed the shared `A2` key between snapshots and could append the second viewport incorrectly.
+- Fixture path validity: the recursive invariant failed on both search fixtures. `search-result-query-marker` advertised `[0,1,4]` at child index `0`, and selector action paths such as `[0,1,0,0]` could not resolve through `children[index]`.
+- Missing-ID rollback: after an own item received search rank `1`, a later unresolved card raised `MISSING_ITEM_ID`, then report parsing failed with `searchRanks must reference positions for the same platformItemId`.
+- Repeated query: a loading selector miss followed by the original query/results exhausted the 15-second deadline because every final signature still had to differ from pre-submit state.
+- Blank search start: a page with a valid semantic search field but no result container failed before `setValue` because pre-submit result context was mandatory.
+- The no-transition repeated-query control already timed out at exactly 15 seconds, establishing the stale-state behavior that had to remain unchanged.
+
+### GREEN Evidence
+
+- Removed viewport-local occurrence ordinals from selector output and persistent card identity.
+- Added a pure viewport merge using semantic card content plus stable AX action path. It finds maximal strict suffix/prefix overlap, appends only previously unseen strict occurrences, preserves `A1,A2,A3`, and adds nothing for unchanged or reordered known sibling occurrences.
+- Search aggregation and later rank location now share the same merge behavior, while unchanged nonterminal scrolling still raises a typed no-progress contract error.
+- Repaired every path in both search fixtures so each node path recursively equals its parent path plus child index. A reusable test scans all six committed AX fixtures and resolves every selected search action path back to the intended `AXLink` node.
+- Missing-ID rollback clears `searchRanks` on every report item before removing search positions and search-discovered competitors. Completed own items, SKU evidence, and Task 6 checkpoint invariants remain intact.
+- Pre-submit search context is optional. Post-submit transition is now a one-way latch set by a selector miss/loading snapshot or any valid context change; after latching, three equal final query/result observations may match the original signature.
+- Login and challenge checks remain outside transition recovery and propagate immediately. A repeated query with no observed transition still consumes the exact 15,000 ms deadline at 250 ms intervals.
+
+### Verification
+
+- Focused checkpoint/fixture/helper/continuity/selector/driver run: PASS, 74 tests, 0 failures.
+- `pnpm test:collector`: PASS, 83 tests, 0 failures.
+- `pnpm typecheck`: PASS for API, web, and collector projects.
+- Fix Round 2 changed-file public audit: PASS for all implementation, test, fixture, and report changes.
+- `git diff --check`: PASS.
+- Swift production and XCTest source parse: PASS.
+- Swift 5 production typecheck with warnings as errors: PASS.
+- Strict Swift 6 production typecheck with complete concurrency and warnings as errors: PASS.
+- Direct helper build for `arm64-apple-macosx12.0`: PASS.
+- Direct read-only helper protocol probe: one UUID-correlated `ACCESSIBILITY_PERMISSION_REQUIRED` response line and zero stderr bytes; no permission prompt or UI challenge was triggered.
+
+### Self-Review
+
+- Verified strict overlap uses semantic content plus action path and does not use geometry, coordinate, OCR, DOM, or viewport-local ordinals.
+- Verified a distinct duplicate with a new stable action path survives, while exact and reordered known occurrences cannot manufacture ranks.
+- Verified every committed synthetic AX node path and selected action path through the same child-index semantics used by the Swift helper.
+- Verified missing-ID rollback order: rank references clear before positions, search-discovered items are removed consistently, own completion/evidence remains, and the persisted checkpoint passes semantic validation.
+- Verified the transition latch is action-local, never latches from elapsed time alone, permits repeated-query restoration only after an observable miss/change, and preserves immediate typed stop propagation.
+- Rechecked the five Round 1 fixes: rank-scoped unresolved identities, wrong-item SKU rejection, split UTF-8 decoding, detail transition tolerance, and exact back-context verification remain covered and passing.
+
+### Fix Round 2 Concerns
+
+- Search and duplicate-boundary fixtures remain minimal sanitized synthetic data because Accessibility permission is unavailable. Task 14 must validate or replace them against a live sanitized Taobao Desktop 2.4.5 build 15 snapshot.
+- SwiftPM XCTest remains unavailable on this host for the documented compiler/SDK mismatch; all requested direct Swift checks pass.
+- The repository-wide public audit baseline still contains the three unrelated historical-plan paths documented above; the Fix Round 2 changed-file audit passes.

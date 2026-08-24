@@ -19,8 +19,6 @@ export interface SelectedDetailPage {
 
 export interface SelectedSearchCard {
   rank: number;
-  occurrenceIndex: number;
-  occurrenceKey: string;
   platformItemId: string | null;
   url: string;
   title: string;
@@ -109,7 +107,6 @@ export function readSearchCards(root: AxNode): SelectedSearchCard[] {
   const container = findSearchResultContainer(root);
   const cards = container.children.filter((node) => node.identifier === "result-card"
     && node.role === "AXGroup" && node.title === "商品结果");
-  const occurrences = new Map<string, number>();
   return cards.map((cardNode, index) => {
     const actionNode = cardNode.children.find((node) => node.identifier === "item-link"
       && node.role === "AXLink" && node.actions.includes("AXPress"));
@@ -119,21 +116,8 @@ export function readSearchCards(root: AxNode): SelectedSearchCard[] {
     const title = requiredText(actionNode);
     const shopName = requiredText(childByIdentifier(cardNode, "shop-name"));
     const sponsored = childByIdentifier(cardNode, "sponsored-label") !== null;
-    const contentKey = JSON.stringify([
-      identity.platformItemId,
-      identity.url,
-      title,
-      shopName,
-      displayPriceMinText,
-      displayPriceMaxText,
-      sponsored
-    ]);
-    const occurrenceIndex = (occurrences.get(contentKey) ?? 0) + 1;
-    occurrences.set(contentKey, occurrenceIndex);
     return {
       rank: index + 1,
-      occurrenceIndex,
-      occurrenceKey: JSON.stringify([cardNode.path, actionNode.path, occurrenceIndex]),
       platformItemId: identity.platformItemId,
       url: identity.url,
       title,

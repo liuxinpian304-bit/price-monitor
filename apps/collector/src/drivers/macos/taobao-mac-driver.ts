@@ -100,12 +100,15 @@ function sameSelection(left: SkuSelection, right: SkuSelection): boolean {
   return selectionKey(left) === selectionKey(right);
 }
 
-function cardKey(card: SelectedSearchCard): string {
+function semanticCardKey(card: SelectedSearchCard): string {
   return JSON.stringify([
-    card.occurrenceKey,
     card.platformItemId, card.url, card.title, card.shopName,
     card.displayPriceMinText, card.displayPriceMaxText, card.sponsored
   ]);
+}
+
+function strictCardKey(card: SelectedSearchCard): string {
+  return JSON.stringify([semanticCardKey(card), card.actionNode.path]);
 }
 
 interface SearchContext {
@@ -120,18 +123,37 @@ function readSearchContext(root: AxNode): SearchContext {
   return {
     query,
     cards,
-    signature: JSON.stringify([query, cards.map(cardKey), hasSearchEndMarker(root)])
+    signature: JSON.stringify([query, cards.map(strictCardKey), hasSearchEndMarker(root)])
   };
 }
 
-function overlapLength(existing: SelectedSearchCard[], next: SelectedSearchCard[]): number {
+function optionalSearchContext(root: AxNode): SearchContext | null {
+  try {
+    return readSearchContext(root);
+  } catch (error) {
+    if (error instanceof UiContractChangedError) return null;
+    throw error;
+  }
+}
+
+function strictOverlapLength(existing: SelectedSearchCard[], next: SelectedSearchCard[]): number {
   const max = Math.min(existing.length, next.length);
   for (let length = max; length > 0; length -= 1) {
-    const suffix = existing.slice(existing.length - length).map(cardKey);
-    const prefix = next.slice(0, length).map(cardKey);
+    const suffix = existing.slice(existing.length - length).map(strictCardKey);
+    const prefix = next.slice(0, length).map(strictCardKey);
     if (suffix.every((value, index) => value === prefix[index])) return length;
   }
   return 0;
+}
+
+export function mergeSearchCardViewports(
+  existing: SelectedSearchCard[],
+  next: SelectedSearchCard[]
+): SelectedSearchCard[] {
+  const overlap = strictOverlapLength(existing, next);
+  const known = new Set(existing.map(strictCardKey));
+  const additions = next.slice(overlap).filter((card) => !known.has(strictCardKey(card)));
+  return [...existing, ...additions];
 }
 
 export class TaobaoMacDriver implements TaobaoDesktopDriver {
@@ -211,7 +233,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     const initial = await this.client.snapshot();
     assertNoStopState(initial);
     const field = findSearchField(initial);
-    const preSubmitSignature = readSearchContext(initial).signature;
+    const preSubmitSignature = optionalSearchContext(initial)?.signature ?? null;
     await this.client.command("setValue", {
       nodePath: field.path,
       value: query,
@@ -236,11 +258,11 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
       });
       root = await this.waitForStableSearch(query, beforeScroll);
       const next = readSearchCards(root);
-      const overlap = overlapLength(cards, next);
-      if (overlap === next.length && !hasSearchEndMarker(root)) {
+      const merged = mergeSearchCardViewports(cards, next);
+      if (merged.length === cards.length && !hasSearchEndMarker(root)) {
         throw new UiContractChangedError("Taobao search result scrolling made no semantic progress.");
       }
-      cards.push(...next.slice(overlap));
+      cards.splice(0, cards.length, ...merged);
       scrollCount += 1;
     }
 
@@ -417,26 +439,31 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     return diagnostic;
   }
 
-  private async waitForStableSearch(query: string, preActionSignature: string): Promise<AxNode> {
+  private async waitForStableSearch(query: string, preActionSignature: string | null): Promise<AxNode> {
     const deadline = this.now() + STABILITY_TIMEOUT_MS;
     let previous = "";
     let consecutive = 0;
+    let sawTransition = false;
     while (true) {
       const root = await this.client.snapshot();
       assertNoStopState(root);
       try {
         const field = findSearchField(root);
         const context = readSearchContext(root);
-        const matches = field.value === query
-          && context.query === query
-          && context.signature !== preActionSignature;
-        consecutive = matches && context.signature === previous
+        if (preActionSignature === null || context.signature !== preActionSignature) {
+          sawTransition = true;
+        }
+        const matchesFinalState = sawTransition
+          && field.value === query
+          && context.query === query;
+        consecutive = matchesFinalState && context.signature === previous
           ? consecutive + 1
-          : matches ? 1 : 0;
+          : matchesFinalState ? 1 : 0;
         previous = context.signature;
         if (consecutive === STABLE_OBSERVATION_COUNT) return root;
       } catch (error) {
         if (!(error instanceof UiContractChangedError)) throw error;
+        sawTransition = true;
         previous = "";
         consecutive = 0;
       }
@@ -469,16 +496,16 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     const beforeHome = readSearchContext(root).signature;
     await this.client.command("keyPress", { keyCode: 115 });
     let current = await this.waitForStableSearch(this.currentSearchQuery, beforeHome);
-    const aggregate: SelectedSearchCard[] = [];
+    let aggregate: SelectedSearchCard[] = [];
     for (let scrollCount = 0; scrollCount <= 50; scrollCount += 1) {
       const next = readSearchCards(current);
-      const overlap = overlapLength(aggregate, next);
-      const viewportStart = aggregate.length - overlap;
-      aggregate.push(...next.slice(overlap));
-      const localIndex = position.rank - 1 - viewportStart;
-      if (localIndex >= 0 && localIndex < next.length) {
-        const candidate = next[localIndex];
-        if (candidate && this.cardMatchesPosition(candidate, position)) return { card: candidate, root: current };
+      aggregate = mergeSearchCardViewports(aggregate, next);
+      const target = aggregate[position.rank - 1];
+      if (target) {
+        const candidate = next.find((card) => strictCardKey(card) === strictCardKey(target));
+        if (candidate && this.cardMatchesPosition(candidate, position)) {
+          return { card: candidate, root: current };
+        }
       }
       if (hasSearchEndMarker(current)) break;
       const container = findSearchResultContainer(current);

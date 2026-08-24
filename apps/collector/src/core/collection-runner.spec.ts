@@ -500,6 +500,112 @@ test("resets search-derived progress coherently when a later rank has no stable 
   }
 });
 
+test("clears own-item search ranks when missing-ID rollback removes every search position", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-own-rank-rollback-"));
+  const rollbackJob: CollectorJob = {
+    ...job,
+    runId: "own-rank-rollback-run",
+    ownListings: [{
+      id: "own-ranked-listing",
+      url: "https://item.example.test/item.htm?id=own-ranked",
+      skuText: "标准款"
+    }],
+    searchLimit: 2
+  };
+  const capturedAt = "2026-08-24T10:00:00.000Z";
+  let currentItemId: string | null = null;
+  const driver: TaobaoDesktopDriver = {
+    async diagnose() {
+      return {
+        accessibilityTrusted: true,
+        appRunning: true,
+        processId: 123,
+        bundleId: "fixture.taobao.desktop",
+        appVersion: "2.4.5",
+        appBuild: "15",
+        hasFrontWindow: true,
+        loginState: "LOGGED_IN",
+        rawEvidence: { source: "test", capturedAt, metadata: {} }
+      };
+    },
+    async openOwnListing() {
+      currentItemId = "own-ranked";
+      return {
+        platformItemId: "own-ranked",
+        url: "https://item.example.test/item.htm?id=own-ranked",
+        shopName: rollbackJob.ownShopName,
+        title: "自有商品",
+        skuDimensions: [],
+        pageSkuCount: 1,
+        rawEvidence: { source: "test", capturedAt, metadata: {} }
+      };
+    },
+    async search() {
+      return [
+        { rank: 1, platformItemId: "own-ranked", url: "https://item.example.test/item.htm?id=own-ranked" },
+        { rank: 2, platformItemId: null, url: "https://item.example.test/" }
+      ].map((entry) => ({
+        ...entry,
+        shopName: entry.rank === 1 ? rollbackJob.ownShopName : "示例店",
+        title: entry.rank === 1 ? "自有商品" : "无稳定编号商品",
+        displayPriceMinText: "100.00",
+        displayPriceMaxText: "100.00",
+        sponsored: false,
+        capturedAt,
+        rawEvidence: { source: "test", capturedAt, metadata: { rank: entry.rank } }
+      }));
+    },
+    async openSearchPosition(position) {
+      assert.equal(position.rank, 2);
+      currentItemId = null;
+      return {
+        platformItemId: null,
+        url: "https://item.example.test/",
+        shopName: position.shopName,
+        title: position.title,
+        skuDimensions: [],
+        pageSkuCount: 1,
+        rawEvidence: { source: "test", capturedAt, metadata: { rank: position.rank } }
+      };
+    },
+    async selectSku() {
+      assert.equal(currentItemId, "own-ranked");
+      return {
+        availability: "AVAILABLE" as const,
+        view: {
+          selectedLabels: {},
+          listPriceText: "100.00",
+          activityPriceText: "100.00",
+          officialEstimatedPayablePriceText: null,
+          promotions: [],
+          mandatoryFeeText: "0.00",
+          stockState: "IN_STOCK" as const,
+          capturedAt,
+          rawEvidence: { source: "test", capturedAt, metadata: {} }
+        }
+      };
+    },
+    async returnToSearch() { currentItemId = null; }
+  };
+
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const report = await new CollectionRunner(driver, store)
+      .run(rollbackJob, rollbackJob.collectorId);
+    assert.equal(report.status, "PARTIAL_FAILED");
+    assert.equal(report.issues.some((entry) => entry.code === "MISSING_ITEM_ID"), true);
+    assert.deepEqual(report.positions, []);
+    assert.deepEqual(report.ownItems[0]?.searchRanks, []);
+    assert.doesNotThrow(() => collectorReportSchema.parse(report));
+
+    const checkpoint = await store.load(rollbackJob.runId);
+    assert.ok(checkpoint);
+    assert.doesNotThrow(() => assertCheckpointSemanticCoherence(checkpoint, rollbackJob));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("upgrades fallback search identities when detail traversal discovers a stable item ID", async () => {
   const root = await mkdtemp(join(tmpdir(), "collector-identity-upgrade-"));
   const upgradeJob = { ...job, runId: "sony-identity-upgrade-run" };

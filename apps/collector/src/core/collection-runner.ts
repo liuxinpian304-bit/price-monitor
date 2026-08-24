@@ -131,6 +131,9 @@ function resetSearchProgress(checkpoint: CollectorCheckpoint): void {
   });
   checkpoint.report.issues = checkpoint.report.issues.filter((entry) =>
     entry.platformItemId == null || ownItemIds.has(entry.platformItemId));
+  for (const item of [...checkpoint.report.ownItems, ...checkpoint.report.competitorItems]) {
+    item.searchRanks = [];
+  }
   checkpoint.report.positions = [];
   checkpoint.report.competitorItems = [];
   checkpoint.identityAliases = {};

@@ -114,6 +114,14 @@ function emptySearchResults(root: AxNode): AxNode {
   return clone;
 }
 
+function blankSearchPage(root: AxNode): AxNode {
+  const clone = structuredClone(root);
+  const window = clone.children[0];
+  assert.ok(window);
+  window.children = window.children.filter((node) => node.identifier === "search-region");
+  return clone;
+}
+
 test("rejects every version/build mismatch before any UI mutation", async () => {
   const client = new FakeClient();
   client.diagnostic.shortVersion = "2.4.6/private";
@@ -165,6 +173,64 @@ test("rejects the pre-submit stale list until the result query context transitio
   const results = await driver.search("索尼 7506", 1);
   assert.equal(results[0]?.title, "Sony MDR-7506 监听耳机");
   assert.deepEqual(sleeps, [250, 250, 250]);
+});
+
+test("accepts repeated-query results after a loading miss latches the submit transition", async () => {
+  const client = new FakeClient();
+  const search = await fixture("search-results.json");
+  const loading = blankSearchPage(search);
+  client.snapshotQueue.push(
+    search,
+    loading,
+    search, search, search,
+    ...Array.from({ length: 58 }, () => search)
+  );
+  const sleeps: number[] = [];
+  let now = 0;
+  const driver = new TaobaoMacDriver({
+    client,
+    now: () => now,
+    sleep: async (milliseconds) => { sleeps.push(milliseconds); now += milliseconds; }
+  });
+
+  const results = await driver.search("索尼 7506", 3);
+  assert.equal(results.length, 3);
+  assert.deepEqual(sleeps, [250, 250, 250]);
+});
+
+test("starts a search from a blank page without a pre-submit result context", async () => {
+  const client = new FakeClient();
+  const search = await fixture("search-results.json");
+  client.snapshotQueue.push(blankSearchPage(search), search, search, search);
+  const sleeps: number[] = [];
+  let now = 0;
+  const driver = new TaobaoMacDriver({
+    client,
+    now: () => now,
+    sleep: async (milliseconds) => { sleeps.push(milliseconds); now += milliseconds; }
+  });
+
+  const results = await driver.search("索尼 7506", 3);
+  assert.equal(results.length, 3);
+  assert.deepEqual(sleeps, [250, 250]);
+});
+
+test("times out when repeated-query results never show a post-submit transition", async () => {
+  const client = new FakeClient();
+  const search = await fixture("search-results.json");
+  client.snapshotQueue.push(search, ...Array.from({ length: 61 }, () => search));
+  const sleeps: number[] = [];
+  let now = 0;
+  const driver = new TaobaoMacDriver({
+    client,
+    now: () => now,
+    sleep: async (milliseconds) => { sleeps.push(milliseconds); now += milliseconds; }
+  });
+
+  await assert.rejects(driver.search("索尼 7506", 3), UiContractChangedError);
+  assert.equal(now, 15_000);
+  assert.equal(sleeps.length, 60);
+  assert.equal(sleeps.every((milliseconds) => milliseconds === 250), true);
 });
 
 test("resolves a host-only detail URL through restored copied-link capture", async () => {
