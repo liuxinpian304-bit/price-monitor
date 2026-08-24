@@ -14,6 +14,7 @@ import {
 } from "@stau-price-monitor/contracts";
 
 import { AtomicCheckpointStore, type CollectorCheckpoint } from "./checkpoint-store.ts";
+import { assertCheckpointSemanticCoherence } from "./checkpoint-semantics.ts";
 import {
   LoginRequiredError,
   PlatformChallengeError,
@@ -180,6 +181,7 @@ export class CollectionRunner {
     if (existing && existing.jobHash !== jobHash) {
       throw new TypeError("Checkpoint job hash mismatch; refusing resume");
     }
+    if (existing) assertCheckpointSemanticCoherence(existing, job);
     if (existing?.phase === "COMPLETE") return collectorReportSchema.parse(existing.report);
 
     const checkpoint = existing ?? this.newCheckpoint(job, collectorId, jobHash);

@@ -111,6 +111,39 @@ function withDiagnose(
   };
 }
 
+function emptyCheckpoint(
+  checkpointJob: CollectorJob,
+  reportCollectorId = checkpointJob.collectorId
+): CollectorCheckpoint {
+  const capturedAt = "2026-08-24T05:00:00.000Z";
+  return {
+    schemaVersion: 1,
+    checkpointFormatVersion: 2,
+    runId: checkpointJob.runId,
+    jobHash: hashCollectorJob(checkpointJob),
+    phase: "OWN_LISTINGS",
+    completedOwnListingIds: [],
+    completedPlatformItemIds: [],
+    completedSkuKeys: [],
+    report: {
+      schemaVersion: 1,
+      runId: checkpointJob.runId,
+      collectorId: reportCollectorId,
+      appVersion: "fixture-1.0",
+      startedAt: capturedAt,
+      completedAt: capturedAt,
+      status: "FAILED",
+      searchLimit: checkpointJob.searchLimit,
+      positions: [],
+      ownItems: [],
+      competitorItems: [],
+      issues: []
+    },
+    evidenceManifest: {},
+    identityAliases: {}
+  };
+}
+
 test("collects every enabled Sony SKU while preserving duplicate search ranks", async () => {
   const root = await mkdtemp(join(tmpdir(), "collector-workflow-"));
   try {
@@ -799,6 +832,270 @@ test("rejects a corrupt format-2 checkpoint before driver action without rewriti
     assert.equal(diagnoseCalls, 0);
     assert.equal(fixture.events.length, 0);
     assert.equal(await readFile(checkpointPath, "utf8"), serialized);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a ghost-completed own listing before every driver action without rewriting it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-ghost-own-checkpoint-"));
+  const ghostJob = { ...job, runId: "sony-ghost-own-checkpoint-run" };
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const checkpointPath = store.pathFor(ghostJob.runId);
+    const ghostCheckpoint = emptyCheckpoint(ghostJob);
+    ghostCheckpoint.completedOwnListingIds = ["own-listing-7506"];
+    const serialized = `${JSON.stringify(ghostCheckpoint)}\n`;
+    await mkdir(dirname(checkpointPath), { recursive: true });
+    await writeFile(checkpointPath, serialized, "utf8");
+
+    const fixture = await FixtureDriver.fromFile(fixturePath);
+    let diagnoseCalls = 0;
+    const driver = withDiagnose(fixture, async () => {
+      diagnoseCalls += 1;
+      return fixture.diagnose();
+    });
+    await assert.rejects(
+      new CollectionRunner(driver, store).run(ghostJob, ghostJob.collectorId),
+      { name: "TypeError", message: "Checkpoint semantic validation failed" }
+    );
+    assert.equal(diagnoseCalls, 0);
+    assert.deepEqual(fixture.events, []);
+    assert.equal(await readFile(checkpointPath, "utf8"), serialized);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a checkpoint report for the wrong collector before every driver action without rewriting it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-wrong-report-collector-"));
+  const collectorJob = { ...job, runId: "sony-wrong-report-collector-run" };
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const checkpointPath = store.pathFor(collectorJob.runId);
+    const wrongCollectorCheckpoint = emptyCheckpoint(collectorJob, "collector-tampered");
+    const serialized = `${JSON.stringify(wrongCollectorCheckpoint)}\n`;
+    await mkdir(dirname(checkpointPath), { recursive: true });
+    await writeFile(checkpointPath, serialized, "utf8");
+
+    const fixture = await FixtureDriver.fromFile(fixturePath);
+    let diagnoseCalls = 0;
+    const driver = withDiagnose(fixture, async () => {
+      diagnoseCalls += 1;
+      return fixture.diagnose();
+    });
+    await assert.rejects(
+      new CollectionRunner(driver, store).run(collectorJob, collectorJob.collectorId),
+      { name: "TypeError", message: "Checkpoint semantic validation failed" }
+    );
+    assert.equal(diagnoseCalls, 0);
+    assert.deepEqual(fixture.events, []);
+    assert.equal(await readFile(checkpointPath, "utf8"), serialized);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects shape-valid checkpoints that contradict job, progress, alias, phase, or evidence semantics", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-semantic-checkpoint-"));
+  const semanticJob = { ...job, runId: "sony-semantic-checkpoint-run" };
+  try {
+    const store = new RecordingCheckpointStore(join(root, "checkpoints"));
+    await new CollectionRunner(await FixtureDriver.fromFile(fixturePath), store)
+      .run(semanticJob, semanticJob.collectorId);
+    const complete = await store.load(semanticJob.runId);
+    assert.ok(complete);
+    const canonicalCompetitorBUrl = new URL("https://item.example.test/item.htm?id=competitor-b").toString();
+    const unknownSkuId = `sku_${"f".repeat(64)}`;
+    const unknownEvidenceKey = `sha256:${"e".repeat(64)}`;
+
+    const tamperCases: Array<{
+      name: string;
+      mutate(checkpoint: CollectorCheckpoint): void;
+    }> = [
+      {
+        name: "report search limit",
+        mutate: (checkpoint) => { checkpoint.report.searchLimit = semanticJob.searchLimit + 1; }
+      },
+      {
+        name: "own listing identity",
+        mutate: (checkpoint) => {
+          checkpoint.report.ownItems[0]!.ownListingId = "wrong-own-listing";
+          checkpoint.completedOwnListingIds = ["wrong-own-listing"];
+        }
+      },
+      {
+        name: "own listing URL",
+        mutate: (checkpoint) => {
+          checkpoint.report.ownItems[0]!.url = "https://detail.example.test/item.htm?id=other-product";
+        }
+      },
+      {
+        name: "own shop identity",
+        mutate: (checkpoint) => { checkpoint.report.ownItems[0]!.shopName = "Different shop"; }
+      },
+      {
+        name: "ghost completed platform item",
+        mutate: (checkpoint) => { checkpoint.completedPlatformItemIds.push("ghost-item"); }
+      },
+      {
+        name: "ghost completed SKU",
+        mutate: (checkpoint) => {
+          checkpoint.completedSkuKeys.push(JSON.stringify(["competitor-a", unknownSkuId]));
+        }
+      },
+      {
+        name: "uncommitted report SKU",
+        mutate: (checkpoint) => { checkpoint.completedSkuKeys.shift(); }
+      },
+      {
+        name: "rank alias identity",
+        mutate: (checkpoint) => {
+          checkpoint.identityAliases[canonicalCompetitorBUrl] = "competitor-a";
+        }
+      },
+      {
+        name: "phase progress",
+        mutate: (checkpoint) => {
+          checkpoint.phase = "OWN_LISTINGS";
+          checkpoint.report.status = "FAILED";
+        }
+      },
+      {
+        name: "complete status",
+        mutate: (checkpoint) => { checkpoint.report.status = "PAUSED_LOGIN"; }
+      },
+      {
+        name: "complete result status",
+        mutate: (checkpoint) => { checkpoint.report.status = "PARTIAL_FAILED"; }
+      },
+      {
+        name: "missing evidence manifest entry",
+        mutate: (checkpoint) => { checkpoint.report.ownItems[0]!.skus[0]!.evidenceKey = unknownEvidenceKey; }
+      }
+    ];
+
+    for (const tamperCase of tamperCases) {
+      const checkpoint: CollectorCheckpoint = structuredClone(complete);
+      tamperCase.mutate(checkpoint);
+      const serialized: string = `${JSON.stringify(checkpoint)}\n`;
+      await writeFile(store.pathFor(semanticJob.runId), serialized, "utf8");
+
+      const fixture = await FixtureDriver.fromFile(fixturePath);
+      let diagnoseCalls = 0;
+      const driver = withDiagnose(fixture, async () => {
+        diagnoseCalls += 1;
+        return fixture.diagnose();
+      });
+      await assert.rejects(
+        new CollectionRunner(driver, store).run(semanticJob, semanticJob.collectorId),
+        { name: "TypeError", message: "Checkpoint semantic validation failed" },
+        tamperCase.name
+      );
+      assert.equal(diagnoseCalls, 0, tamperCase.name);
+      assert.deepEqual(fixture.events, [], tamperCase.name);
+      assert.equal(await readFile(store.pathFor(semanticJob.runId), "utf8"), serialized, tamperCase.name);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resumes every persisted successful and paused workflow boundary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-checkpoint-boundaries-"));
+  const boundaryJob = { ...job, runId: "sony-checkpoint-boundaries-run" };
+  try {
+    const successfulStore = new RecordingCheckpointStore(join(root, "successful"));
+    await new CollectionRunner(await FixtureDriver.fromFile(fixturePath), successfulStore)
+      .run(boundaryJob, boundaryJob.collectorId);
+
+    const pausedStore = new RecordingCheckpointStore(join(root, "paused"));
+    const pausedReport = await new CollectionRunner(await FixtureDriver.fromFile(fixturePath, {
+      pauseAfterCompletedSkuCount: 1,
+      pauseType: "LOGIN_REQUIRED"
+    }), pausedStore).run(boundaryJob, boundaryJob.collectorId);
+    assert.equal(pausedReport.status, "PAUSED_LOGIN");
+
+    const challengedStore = new RecordingCheckpointStore(join(root, "challenged"));
+    const challengedReport = await new CollectionRunner(await FixtureDriver.fromFile(fixturePath, {
+      pauseAfterCompletedSkuCount: 1,
+      pauseType: "PLATFORM_CHALLENGE"
+    }), challengedStore).run(boundaryJob, boundaryJob.collectorId);
+    assert.equal(challengedReport.status, "PAUSED_CHALLENGE");
+
+    const snapshots = [
+      ...successfulStore.snapshots,
+      ...pausedStore.snapshots,
+      ...challengedStore.snapshots
+    ];
+    assert.equal(snapshots.some((snapshot) => snapshot.phase === "OWN_LISTINGS"), true);
+    assert.equal(snapshots.some((snapshot) => snapshot.phase === "SEARCH"), true);
+    assert.equal(snapshots.some((snapshot) => snapshot.phase === "ITEMS"), true);
+    assert.equal(snapshots.some((snapshot) => snapshot.phase === "COMPLETE"), true);
+    assert.equal(snapshots.some((snapshot) => snapshot.report.status === "PAUSED_LOGIN"), true);
+    assert.equal(snapshots.some((snapshot) => snapshot.report.status === "PAUSED_CHALLENGE"), true);
+
+    for (const [index, snapshot] of snapshots.entries()) {
+      const replayStore = new AtomicCheckpointStore(join(root, "replays", String(index)));
+      await replayStore.save(boundaryJob.runId, snapshot);
+      const resumed = await new CollectionRunner(await FixtureDriver.fromFile(fixturePath), replayStore)
+        .run(boundaryJob, boundaryJob.collectorId);
+      assert.equal(resumed.status, "SUCCEEDED", `snapshot ${index} at ${snapshot.phase}`);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resumes issue-backed terminal SKU checkpoints without retrying completed outcomes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-terminal-issue-resume-"));
+  try {
+    const variants: Array<{
+      name: string;
+      mutate(fixture: MutableFixture): void;
+    }> = [
+      {
+        name: "unavailable",
+        mutate: (fixture) => {
+          const result = fixture.ownListings[0]!.item.skuResults[0]!;
+          fixture.ownListings[0]!.item.skuResults = [{
+            selection: result.selection,
+            availability: "UNAVAILABLE",
+            reason: "Unavailable fixture outcome"
+          }];
+        }
+      },
+      {
+        name: "selection-mismatch",
+        mutate: (fixture) => {
+          fixture.ownListings[0]!.item.skuResults[0]!.view!.selectedLabels = { 配置: "Different SKU" };
+        }
+      },
+      {
+        name: "unstable-price",
+        mutate: (fixture) => {
+          fixture.ownListings[0]!.item.skuResults[0]!.view!.activityPriceText = null;
+        }
+      }
+    ];
+
+    for (const [index, variant] of variants.entries()) {
+      const path = await writeFixtureCopy(root, variant.mutate);
+      const variantJob = { ...job, runId: `sony-terminal-${index}-run` };
+      const store = new AtomicCheckpointStore(join(root, "checkpoints", String(index)));
+      const paused = await new CollectionRunner(await FixtureDriver.fromFile(path, {
+        pauseAfterCompletedSkuCount: 1,
+        pauseType: "LOGIN_REQUIRED"
+      }), store).run(variantJob, variantJob.collectorId);
+      assert.equal(paused.status, "PAUSED_LOGIN", variant.name);
+
+      const resumedDriver = await FixtureDriver.fromFile(path);
+      const resumed = await new CollectionRunner(resumedDriver, store)
+        .run(variantJob, variantJob.collectorId);
+      assert.equal(resumed.status, "PARTIAL_FAILED", variant.name);
+      assert.equal(resumedDriver.events.some((event) => event.type === "SELECT_SKU"
+        && event.platformItemId === "own-7506"), false, variant.name);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
