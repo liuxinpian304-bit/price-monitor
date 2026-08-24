@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "diagnostic": {
+    "appVersion": "fixture-1.0",
+    "capturedAt": "2026-08-24T05:00:00.000Z"
+  },
+  "ownListings": [
+    {
+      "url": "https://detail.example.test/item.htm?id=own-7506",
+      "item": {
+        "platformItemId": "own-7506",
+        "url": "https://detail.example.test/item.htm?id=own-7506",
+        "shopName": "星空乐器专营店",
+        "title": "Sony MDR-7506 监听耳机",
+        "pageSkuCount": 1,
+        "skuDimensions": [
+          {
+            "name": "配置",
+            "options": [
+              { "id": "own-bare", "label": "7506 单机", "enabled": true }
+            ]
+          }
+        ],
+        "skuResults": [
+          {
+            "selection": { "配置": "7506 单机" },
+            "availability": "AVAILABLE",
+            "view": {
+              "selectedLabels": { "配置": "7506 单机" },
+              "listPriceText": "775.00",
+              "activityPriceText": "668.00",
+              "officialEstimatedPayablePriceText": null,
+              "promotions": [],
+              "mandatoryFeeText": "0.00",
+              "stockState": "IN_STOCK",
+              "capturedAt": "2026-08-24T05:00:01.000Z"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "search": {
+    "query": "索尼 7506",
+    "positions": [
+      {
+        "rank": 1,
+        "platformItemId": "competitor-a",
+        "url": "https://item.example.test/item.htm?id=competitor-a",
+        "shopName": "专业音频店A",
+        "title": "Sony MDR-7506 全系列",
+        "displayPriceMinText": "658.00",
+        "displayPriceMaxText": "1280.00",
+        "sponsored": false,
+        "capturedAt": "2026-08-24T05:01:00.000Z"
+      },
+      {
+        "rank": 2,
+        "platformItemId": "competitor-b",
+        "url": "https://item.example.test/item.htm?id=competitor-b",
+        "shopName": "专业音频店B",
+        "title": "Sony MDR-7506 监听耳机",
+        "displayPriceMinText": "648.00",
+        "displayPriceMaxText": "648.00",
+        "sponsored": false,
+        "capturedAt": "2026-08-24T05:01:01.000Z"
+      },
+      {
+        "rank": 3,
+        "platformItemId": "competitor-a",
+        "url": "https://item.example.test/item.htm?id=competitor-a",
+        "shopName": "专业音频店A",
+        "title": "Sony MDR-7506 全系列",
+        "displayPriceMinText": "658.00",
+        "displayPriceMaxText": "1280.00",
+        "sponsored": false,
+        "capturedAt": "2026-08-24T05:01:02.000Z"
+      }
+    ],
+    "items": [
+      {
+        "platformItemId": "competitor-a",
+        "url": "https://item.example.test/item.htm?id=competitor-a",
+        "shopName": "专业音频店A",
+        "title": "Sony MDR-7506 全系列",
+        "pageSkuCount": 4,
+        "skuDimensions": [
+          {
+            "name": "型号",
+            "options": [
+              { "id": "a-bare", "label": "7506 单机", "enabled": true },
+              { "id": "a-cable", "label": "7506 + C口转换线", "enabled": true },
+              { "id": "a-m1", "label": "M1", "enabled": true },
+              { "id": "a-mv1", "label": "MV1", "enabled": true }
+            ]
+          }
+        ],
+        "skuResults": [
+          {
+            "selection": { "型号": "7506 单机" },
+            "availability": "AVAILABLE",
+            "view": {
+              "selectedLabels": { "型号": "7506 单机" },
+              "listPriceText": "775.00",
+              "activityPriceText": "658.00",
+              "officialEstimatedPayablePriceText": null,
+              "promotions": [
+                { "kind": "COUPON", "label": "满600减20", "amountFen": 2000, "thresholdFen": 60000, "audience": "PUBLIC", "stackGroup": "shop-coupon", "includedInActivityPrice": false },
+                { "kind": "FULL_REDUCTION", "label": "满800减30", "amountFen": 3000, "thresholdFen": 80000, "audience": "PUBLIC", "stackGroup": "shop-full-reduction", "includedInActivityPrice": false }
+              ],
+              "mandatoryFeeText": "0.00",
+              "stockState": "IN_STOCK",
+              "capturedAt": "2026-08-24T05:02:00.000Z"
+            }
+          },
+          {
+            "selection": { "型号": "7506 + C口转换线" },
+            "availability": "AVAILABLE",
+            "view": {
+              "selectedLabels": { "型号": "7506 + C口转换线" },
+              "listPriceText": "845.00",
+              "activityPriceText": "728.00",
+              "officialEstimatedPayablePriceText": null,
+              "promotions": [
+                { "kind": "COUPON", "label": "满600减20", "amountFen": 2000, "thresholdFen": 60000, "audience": "PUBLIC", "stackGroup": "shop-coupon", "includedInActivityPrice": false },
+                { "kind": "FULL_REDUCTION", "label": "满800减30", "amountFen": 3000, "thresholdFen": 80000, "audience": "PUBLIC", "stackGroup": "shop-full-reduction", "includedInActivityPrice": false }
+              ],
+              "mandatoryFeeText": "0.00",
+              "stockState": "IN_STOCK",
+              "capturedAt": "2026-08-24T05:02:01.000Z"
+            }
+          },
+          {
+            "selection": { "型号": "M1" },
+            "availability": "AVAILABLE",
+            "view": {
+              "selectedLabels": { "型号": "M1" },
+              "listPriceText": "1599.00",
+              "activityPriceText": "1280.00",
+              "officialEstimatedPayablePriceText": null,
+              "promotions": [],
+              "mandatoryFeeText": "0.00",
+              "stockState": "IN_STOCK",
+              "capturedAt": "2026-08-24T05:02:02.000Z"
+            }
+          },
+          {
+            "selection": { "型号": "MV1" },
+            "availability": "AVAILABLE",
+            "view": {
+              "selectedLabels": { "型号": "MV1" },
+              "listPriceText": "2699.00",
+              "activityPriceText": "2299.00",
+              "officialEstimatedPayablePriceText": null,
+              "promotions": [],
+              "mandatoryFeeText": "0.00",
+              "stockState": "IN_STOCK",
+              "capturedAt": "2026-08-24T05:02:03.000Z"
+            }
+          }
+        ]
+      },
+      {
+        "platformItemId": "competitor-b",
+        "url": "https://item.example.test/item.htm?id=competitor-b",
+        "shopName": "专业音频店B",
+        "title": "Sony MDR-7506 监听耳机",
+        "pageSkuCount": 1,
+        "skuDimensions": [
+          {
+            "name": "型号",
+            "options": [
+              { "id": "b-bare", "label": "7506 单机", "enabled": true }
+            ]
+          }
+        ],
+        "skuResults": [
+          {
+            "selection": { "型号": "7506 单机" },
+            "availability": "AVAILABLE",
+            "view": {
+              "selectedLabels": { "型号": "7506 单机" },
+              "listPriceText": "775.00",
+              "activityPriceText": "648.00",
+              "officialEstimatedPayablePriceText": null,
+              "promotions": [],
+              "mandatoryFeeText": "0.00",
+              "stockState": "OUT_OF_STOCK",
+              "capturedAt": "2026-08-24T05:03:00.000Z"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
