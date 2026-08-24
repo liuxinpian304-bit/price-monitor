@@ -188,7 +188,8 @@ export class AxHelperClient {
     const process = this.spawnHelper(this.helperPath);
     this.process = process;
     this.stdoutBuffer = "";
-    process.stdout.on("data", (chunk: Buffer | string) => this.consumeStdout(process, String(chunk)));
+    process.stdout.setEncoding("utf8");
+    process.stdout.on("data", (chunk: string) => this.consumeStdout(process, chunk));
     process.stderr.on("data", () => this.onDiagnostic("Taobao Accessibility helper stderr was redacted."));
     process.once("exit", () => this.failTransport(process, "Taobao Accessibility helper exited."));
     process.once("error", () => this.failTransport(process, "Taobao Accessibility helper could not start."));

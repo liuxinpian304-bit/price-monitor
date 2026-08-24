@@ -17,7 +17,9 @@ import { AtomicCheckpointStore, type CollectorCheckpoint } from "./checkpoint-st
 import {
   assertCheckpointSemanticCoherence,
   canonicalCheckpointIdentity,
-  canonicalCheckpointSkuKey
+  canonicalCheckpointSkuKey,
+  isUnresolvedSearchIdentity,
+  unresolvedSearchIdentity
 } from "./checkpoint-semantics.ts";
 import {
   DriverIssueError,
@@ -117,6 +119,33 @@ function persistIdentityAlias(
 
 function completeIdentity(checkpoint: CollectorCheckpoint, identity: string): void {
   addUnique(checkpoint.completedPlatformItemIds, canonicalCheckpointIdentity(checkpoint, identity));
+}
+
+function resetSearchProgress(checkpoint: CollectorCheckpoint): void {
+  const ownItemIds = new Set(checkpoint.report.ownItems.map((item) => item.platformItemId));
+  checkpoint.completedPlatformItemIds = checkpoint.completedPlatformItemIds.filter((identity) =>
+    ownItemIds.has(canonicalCheckpointIdentity(checkpoint, identity)));
+  checkpoint.completedSkuKeys = checkpoint.completedSkuKeys.filter((serialized) => {
+    const [identity] = JSON.parse(serialized) as [string, string];
+    return ownItemIds.has(canonicalCheckpointIdentity(checkpoint, identity));
+  });
+  checkpoint.report.issues = checkpoint.report.issues.filter((entry) =>
+    entry.platformItemId == null || ownItemIds.has(entry.platformItemId));
+  checkpoint.report.positions = [];
+  checkpoint.report.competitorItems = [];
+  checkpoint.identityAliases = {};
+
+  const retainedEvidenceKeys = new Set<string>();
+  for (const item of checkpoint.report.ownItems) {
+    for (const sku of item.skus) {
+      if (sku.evidenceKey) retainedEvidenceKeys.add(sku.evidenceKey);
+    }
+  }
+  for (const entry of checkpoint.report.issues) {
+    if (entry.evidenceKey) retainedEvidenceKeys.add(entry.evidenceKey);
+  }
+  checkpoint.evidenceManifest = Object.fromEntries(Object.entries(checkpoint.evidenceManifest)
+    .filter(([key]) => retainedEvidenceKeys.has(key)));
 }
 
 function now(): string {
@@ -222,12 +251,7 @@ export class CollectionRunner {
       if (error instanceof DriverIssueError) {
         const capturedAt = now();
         if (error.code === "MISSING_ITEM_ID") {
-          const firstMissingRank = checkpoint.report.positions.find((position) =>
-            position.platformItemId === canonicalUrl(position.url))?.rank;
-          if (firstMissingRank !== undefined) {
-            checkpoint.report.positions = checkpoint.report.positions.filter((position) =>
-              position.rank < firstMissingRank);
-          }
+          resetSearchProgress(checkpoint);
           if (checkpoint.phase === "ITEMS") checkpoint.phase = "SEARCH";
         }
         addIssueOnce(checkpoint.report, issue(error.code, error.message, capturedAt));
@@ -321,7 +345,7 @@ export class CollectionRunner {
     const positions = await this.driver.search(job.searchQuery, job.searchLimit);
     checkpoint.report.positions = positions.map((position) => ({
       rank: position.rank,
-      platformItemId: itemIdentity(position.platformItemId, position.url),
+      platformItemId: position.platformItemId ?? unresolvedSearchIdentity(position.rank, position.url),
       url: position.url,
       shopName: position.shopName,
       title: position.title,
@@ -338,14 +362,8 @@ export class CollectionRunner {
       if (position.platformItemId !== null) stableIds.add(position.platformItemId);
       stableIdsByCanonicalUrl.set(url, stableIds);
     }
-    for (const [url, stableIds] of stableIdsByCanonicalUrl) {
+    for (const stableIds of stableIdsByCanonicalUrl.values()) {
       if (stableIds.size > 1) throw new UiContractChangedError(SEARCH_ID_CONFLICT_MESSAGE);
-      const stableIdentity = [...stableIds][0];
-      if (stableIdentity === undefined) continue;
-      persistIdentityAlias(checkpoint, url, stableIdentity);
-      for (const position of checkpoint.report.positions) {
-        if (position.platformItemId === url) position.platformItemId = stableIdentity;
-      }
     }
 
     const ranksByIdentity = new Map<string, number[]>();
@@ -363,12 +381,12 @@ export class CollectionRunner {
     const firstPositionByIdentity = new Map<string, DriverSearchPosition>();
     for (const position of checkpoint.report.positions) {
       if (!firstPositionByIdentity.has(position.platformItemId)) {
-        const fallbackIdentity = canonicalUrl(position.url);
         const normalizedIdentity = canonicalCheckpointIdentity(checkpoint, position.platformItemId);
+        const unresolved = isUnresolvedSearchIdentity(position.platformItemId);
         firstPositionByIdentity.set(position.platformItemId, {
           rank: position.rank,
-          platformItemId: position.platformItemId === fallbackIdentity
-              && checkpoint.identityAliases[fallbackIdentity] === undefined
+          platformItemId: unresolved
+              && checkpoint.identityAliases[position.platformItemId] === undefined
             ? null
             : normalizedIdentity,
           url: position.url,
@@ -389,12 +407,12 @@ export class CollectionRunner {
 
       const page = await this.driver.openSearchPosition(position);
       const pageIdentity = itemIdentity(page.platformItemId, page.url);
-      const openedFromFallback = position.platformItemId === null;
+      const openedFromFallback = isUnresolvedSearchIdentity(identity);
       if (!openedFromFallback && page.platformItemId !== position.platformItemId) {
         throw new UiContractChangedError(DETAIL_ID_MISMATCH_MESSAGE);
       }
-      if (openedFromFallback && page.platformItemId === null && pageIdentity !== identity) {
-        throw new UiContractChangedError(DETAIL_ID_MISMATCH_MESSAGE);
+      if (openedFromFallback && page.platformItemId === null) {
+        throw new DriverIssueError("MISSING_ITEM_ID", "A stable Taobao item ID was not available.");
       }
       if (openedFromFallback && page.platformItemId !== null && pageIdentity !== identity) {
         persistIdentityAlias(checkpoint, identity, pageIdentity);

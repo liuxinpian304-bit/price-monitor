@@ -9,6 +9,7 @@ import {
   findSearchField,
   readDetailPage,
   readSearchCards,
+  readSearchResultQuery,
   readSkuDimensions
 } from "./taobao-selectors.ts";
 
@@ -39,6 +40,19 @@ test("reads ordered cards while preserving duplicate ranks and stable identities
     { rank: 2, id: "example-7506", title: "Sony MDR-7506 监听耳机", shop: "示例音频店", min: "658.00", max: "728.00" },
     { rank: 3, id: null, title: "MDR-7506 专业监听耳机", shop: "示例器材店", min: "699.00", max: "699.00" }
   ]);
+  assert.equal(new Set(cards.map((card) => card.occurrenceKey)).size, 3);
+  assert.deepEqual(cards.slice(0, 2).map((card) => card.occurrenceIndex), [1, 2]);
+  assert.equal(readSearchResultQuery(await fixture("search-results.json")), "索尼 7506");
+});
+
+test("distinguishes identical cards at a later scroll boundary by semantic AX occurrence", async () => {
+  const first = readSearchCards(await fixture("search-results.json"))[0];
+  const boundary = readSearchCards(await fixture("search-results-duplicate-boundary.json"))[0];
+  assert.ok(first);
+  assert.ok(boundary);
+  assert.equal(first.title, boundary.title);
+  assert.equal(first.url, boundary.url);
+  assert.notEqual(first.occurrenceKey, boundary.occurrenceKey);
 });
 
 test("reads detail title, shop, identity, and all SKU options from profiled regions", async () => {

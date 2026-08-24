@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { CollectorJob, CollectorReport } from "@stau-price-monitor/contracts";
 
 import type { CollectorCheckpoint } from "./checkpoint-store.ts";
@@ -24,6 +26,15 @@ function canonicalUrl(url: string): string {
   parsed.hash = "";
   parsed.searchParams.sort();
   return parsed.toString();
+}
+
+export function unresolvedSearchIdentity(rank: number, url: string): string {
+  const digest = createHash("sha256").update(canonicalUrl(url)).digest("hex");
+  return `unresolved:${rank}:sha256:${digest}`;
+}
+
+export function isUnresolvedSearchIdentity(identity: string): boolean {
+  return /^unresolved:[1-9][0-9]*:sha256:[0-9a-f]{64}$/.test(identity);
 }
 
 export function canonicalCheckpointIdentity(
@@ -93,7 +104,9 @@ export function assertCheckpointSemanticCoherence(
     .map((item) => item.platformItemId));
   for (const alias of Object.keys(checkpoint.identityAliases)) {
     const resolved = canonicalCheckpointIdentity(checkpoint, alias);
-    const matchingPositions = report.positions.filter((position) => canonicalUrl(position.url) === alias);
+    const matchingPositions = isUnresolvedSearchIdentity(alias)
+      ? report.positions.filter((position) => unresolvedSearchIdentity(position.rank, position.url) === alias)
+      : report.positions.filter((position) => canonicalUrl(position.url) === alias);
     if (matchingPositions.length === 0
       || matchingPositions.some((position) => position.platformItemId !== resolved)
       || !positionIds.has(resolved)
@@ -204,7 +217,8 @@ export function assertCheckpointSemanticCoherence(
     if (report.status !== expectedStatus) {
       throw semanticValidationError();
     }
-    if (report.positions.some((position) => !completedPlatformIds.has(position.platformItemId))
+    if (report.positions.some((position) => isUnresolvedSearchIdentity(position.platformItemId)
+      || !completedPlatformIds.has(position.platformItemId))
       || report.competitorItems.some((item) => !completedPlatformIds.has(item.platformItemId))) {
       throw semanticValidationError();
     }

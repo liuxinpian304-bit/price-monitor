@@ -1,0 +1,32 @@
+{
+  "fixtureMetadata": { "kind": "synthetic-sanitized", "profile": "taobao-desktop-2.4.5-build-15", "liveValidationRequiredBy": "Task 14" },
+  "path": [], "role": "AXApplication", "subrole": null, "identifier": "taobao-app", "title": "淘宝", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+  "children": [
+    {
+      "path": [0], "role": "AXWindow", "subrole": "AXStandardWindow", "identifier": "search-window", "title": "商品搜索", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+      "children": [
+        {
+          "path": [0, 0], "role": "AXGroup", "subrole": null, "identifier": "search-region", "title": "商品搜索", "description": "搜索商品", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+          "children": [
+            { "path": [0, 0, 0], "role": "AXTextField", "subrole": "AXSearchField", "identifier": "search-input", "title": null, "description": "搜索商品", "value": "索尼 7506", "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXConfirm"], "children": [] }
+          ]
+        },
+        {
+          "path": [0, 1], "role": "AXScrollArea", "subrole": null, "identifier": "search-result-list", "title": "商品搜索结果", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXScrollDown"],
+          "children": [
+            { "path": [0, 1, 4], "role": "AXStaticText", "subrole": null, "identifier": "search-result-query-marker", "title": null, "description": "结果查询", "value": "索尼 7506", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+            {
+              "path": [0, 1, 9], "role": "AXGroup", "subrole": null, "identifier": "result-card", "title": "商品结果", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+              "children": [
+                { "path": [0, 1, 9, 0], "role": "AXLink", "subrole": null, "identifier": "item-link", "title": "Sony MDR-7506 监听耳机", "description": "商品标题", "value": null, "url": "https://item.example.test/item.htm?id=example-7506", "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+                { "path": [0, 1, 9, 1], "role": "AXStaticText", "subrole": null, "identifier": "shop-name", "title": null, "description": "店铺", "value": "示例音频店", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                { "path": [0, 1, 9, 2], "role": "AXStaticText", "subrole": null, "identifier": "price-range", "title": null, "description": "价格", "value": "¥658.00-¥728.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+              ]
+            },
+            { "path": [0, 1, 10], "role": "AXStaticText", "subrole": null, "identifier": "search-end-marker", "title": null, "description": "列表状态", "value": "已到底", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+          ]
+        }
+      ]
+    }
+  ]
+}

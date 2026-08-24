@@ -9,6 +9,7 @@ import test from "node:test";
 import { collectorReportSchema, type CollectorJob } from "@stau-price-monitor/contracts";
 
 import { AtomicCheckpointStore, type CollectorCheckpoint } from "./checkpoint-store.ts";
+import { assertCheckpointSemanticCoherence, unresolvedSearchIdentity } from "./checkpoint-semantics.ts";
 import { CollectionRunner, hashCollectorJob } from "./collection-runner.ts";
 import { FixtureDriver } from "../drivers/fixture/fixture-driver.ts";
 import {
@@ -355,7 +356,7 @@ test("keeps local evidence paths only in the checkpoint manifest", async () => {
   }
 });
 
-test("uses canonical URL fallback without presenting it to the driver as a stable item ID", async () => {
+test("reports MISSING_ITEM_ID instead of completing a detail page without a stable ID", async () => {
   const root = await mkdtemp(join(tmpdir(), "collector-null-item-id-"));
   const fallbackJob = { ...job, runId: "sony-null-item-id-run" };
   try {
@@ -385,13 +386,115 @@ test("uses canonical URL fallback without presenting it to the driver as a stabl
       new AtomicCheckpointStore(join(root, "checkpoints"))
     ).run(fallbackJob, fallbackJob.collectorId);
 
-    const fallbackIdentity = new URL(itemUrl).toString();
-    assert.deepEqual(report.positions.filter((position) => position.url === itemUrl)
-      .map((position) => position.platformItemId), [fallbackIdentity, fallbackIdentity]);
-    assert.deepEqual(report.competitorItems.find((item) =>
-      item.platformItemId === fallbackIdentity)?.searchRanks, [1, 3]);
+    assert.equal(report.status, "PARTIAL_FAILED");
+    assert.equal(report.issues.some((issue) => issue.code === "MISSING_ITEM_ID"), true);
+    assert.equal(report.positions.some((position) => position.platformItemId.startsWith("unresolved:")), false);
+    assert.equal(report.competitorItems.some((item) => item.platformItemId.startsWith("unresolved:")), false);
     assert.equal(fixtureDriver.events.filter((event) =>
       event.type === "OPEN_SEARCH_POSITION" && event.platformItemId === null).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resets search-derived progress coherently when a later rank has no stable item ID", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-late-missing-item-id-"));
+  const missingJob: CollectorJob = {
+    ...job,
+    runId: "late-missing-item-id-run",
+    ownListings: [],
+    searchLimit: 2
+  };
+  const capturedAt = "2026-08-24T09:00:00.000Z";
+
+  function makeDriver(resolveSecond: boolean): TaobaoDesktopDriver & { openedRanks: number[] } {
+    let currentRank = 0;
+    const openedRanks: number[] = [];
+    return {
+      openedRanks,
+      async diagnose() {
+        return {
+          accessibilityTrusted: true,
+          appRunning: true,
+          processId: 123,
+          bundleId: "fixture.taobao.desktop",
+          appVersion: "2.4.5",
+          appBuild: "15",
+          hasFrontWindow: true,
+          loginState: "LOGGED_IN",
+          rawEvidence: { source: "test", capturedAt, metadata: {} }
+        };
+      },
+      async openOwnListing() { throw new Error("No own listing expected"); },
+      async search() {
+        return [
+          { rank: 1, platformItemId: "stable-a", url: "https://item.example.test/item.htm?id=stable-a" },
+          { rank: 2, platformItemId: null, url: "https://item.example.test/" }
+        ].map((entry) => ({
+          ...entry,
+          shopName: `示例店${entry.rank}`,
+          title: `示例商品${entry.rank}`,
+          displayPriceMinText: "100.00",
+          displayPriceMaxText: "100.00",
+          sponsored: false,
+          capturedAt,
+          rawEvidence: { source: "test", capturedAt, metadata: { rank: entry.rank } }
+        }));
+      },
+      async openSearchPosition(position) {
+        currentRank = position.rank;
+        openedRanks.push(position.rank);
+        const platformItemId = position.rank === 1 ? "stable-a" : resolveSecond ? "stable-b" : null;
+        return {
+          platformItemId,
+          url: platformItemId
+            ? `https://item.example.test/item.htm?id=${platformItemId}`
+            : "https://item.example.test/",
+          shopName: position.shopName,
+          title: position.title,
+          skuDimensions: [],
+          pageSkuCount: 1,
+          rawEvidence: { source: "test", capturedAt, metadata: { rank: position.rank } }
+        };
+      },
+      async selectSku() {
+        assert.notEqual(currentRank, 0);
+        return {
+          availability: "AVAILABLE" as const,
+          view: {
+            selectedLabels: {},
+            listPriceText: "100.00",
+            activityPriceText: "100.00",
+            officialEstimatedPayablePriceText: null,
+            promotions: [],
+            mandatoryFeeText: "0.00",
+            stockState: "IN_STOCK" as const,
+            capturedAt,
+            rawEvidence: { source: "test", capturedAt, metadata: {} }
+          }
+        };
+      },
+      async returnToSearch() { currentRank = 0; }
+    };
+  }
+
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const missingDriver = makeDriver(false);
+    const failed = await new CollectionRunner(missingDriver, store)
+      .run(missingJob, missingJob.collectorId);
+    assert.equal(failed.issues.some((entry) => entry.code === "MISSING_ITEM_ID"), true);
+
+    const checkpoint = await store.load(missingJob.runId);
+    assert.ok(checkpoint);
+    assert.doesNotThrow(() => assertCheckpointSemanticCoherence(checkpoint, missingJob));
+
+    const resumedDriver = makeDriver(true);
+    const resumed = await new CollectionRunner(resumedDriver, store)
+      .run(missingJob, missingJob.collectorId);
+    assert.equal(resumed.status, "SUCCEEDED");
+    assert.deepEqual(resumed.competitorItems.map((item) => item.platformItemId), ["stable-a", "stable-b"]);
+    assert.deepEqual(resumedDriver.openedRanks, [1, 2]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -424,9 +527,127 @@ test("upgrades fallback search identities when detail traversal discovers a stab
     assert.doesNotThrow(() => collectorReportSchema.parse(report));
 
     const checkpoint = await new AtomicCheckpointStore(join(root, "checkpoints")).load(upgradeJob.runId);
-    const fallbackIdentity = new URL(itemUrl).toString();
+    const fallbackIdentity = unresolvedSearchIdentity(1, itemUrl);
     assert.equal(checkpoint?.completedPlatformItemIds.includes(fallbackIdentity), false);
     assert.equal(checkpoint?.completedPlatformItemIds.includes("competitor-a"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resolves same-URL host-only ranks independently across pause and resume", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-rank-scoped-identities-"));
+  const sameUrl = "https://item.example.test/";
+  const identityJob: CollectorJob = {
+    ...job,
+    runId: "rank-scoped-identities-run",
+    ownListings: [],
+    searchLimit: 2
+  };
+  const capturedAt = "2026-08-24T08:00:00.000Z";
+
+  function makeDriver(pauseOnSecond: boolean): TaobaoDesktopDriver & { openedRanks: number[] } {
+    let currentId: string | null = null;
+    let paused = false;
+    const openedRanks: number[] = [];
+    return {
+      openedRanks,
+      async diagnose() {
+        return {
+          accessibilityTrusted: true,
+          appRunning: true,
+          processId: 123,
+          bundleId: "fixture.taobao.desktop",
+          appVersion: "2.4.5",
+          appBuild: "15",
+          hasFrontWindow: true,
+          loginState: "LOGGED_IN",
+          rawEvidence: { source: "test", capturedAt, metadata: {} }
+        };
+      },
+      async openOwnListing() { throw new Error("No own listing expected"); },
+      async search() {
+        return [1, 2].map((rank) => ({
+          rank,
+          platformItemId: null,
+          url: sameUrl,
+          shopName: `示例店${rank}`,
+          title: `示例商品${rank}`,
+          displayPriceMinText: "100.00",
+          displayPriceMaxText: "100.00",
+          sponsored: false,
+          capturedAt,
+          rawEvidence: { source: "test", capturedAt, metadata: { rank } }
+        }));
+      },
+      async openSearchPosition(position) {
+        openedRanks.push(position.rank);
+        currentId = `stable-item-${position.rank}`;
+        return {
+          platformItemId: currentId,
+          url: `https://item.example.test/item.htm?id=${currentId}`,
+          shopName: position.shopName,
+          title: position.title,
+          skuDimensions: [],
+          pageSkuCount: 1,
+          rawEvidence: { source: "test", capturedAt, metadata: { rank: position.rank } }
+        };
+      },
+      async selectSku() {
+        if (pauseOnSecond && currentId === "stable-item-2" && !paused) {
+          paused = true;
+          throw new LoginRequiredError("Pause after the first same-URL rank");
+        }
+        return {
+          availability: "AVAILABLE" as const,
+          view: {
+            selectedLabels: {},
+            listPriceText: "100.00",
+            activityPriceText: "100.00",
+            officialEstimatedPayablePriceText: null,
+            promotions: [],
+            mandatoryFeeText: "0.00",
+            stockState: "IN_STOCK" as const,
+            capturedAt,
+            rawEvidence: { source: "test", capturedAt, metadata: {} }
+          }
+        };
+      },
+      async returnToSearch() { currentId = null; }
+    };
+  }
+
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const pausedDriver = makeDriver(true);
+    const pausedReport = await new CollectionRunner(pausedDriver, store)
+      .run(identityJob, identityJob.collectorId);
+    assert.equal(pausedReport.status, "PAUSED_LOGIN");
+    assert.deepEqual(pausedReport.positions.map((position) => position.platformItemId), [
+      "stable-item-1", "stable-item-2"
+    ]);
+
+    const pausedCheckpoint = await store.load(identityJob.runId);
+    assert.ok(pausedCheckpoint);
+    const aliases = Object.entries(pausedCheckpoint.identityAliases)
+      .filter(([, target]) => target.startsWith("stable-item-"));
+    assert.equal(aliases.length, 2);
+    assert.equal(new Set(aliases.map(([alias]) => alias)).size, 2);
+    assert.equal(aliases.every(([alias]) => alias.startsWith("unresolved:")), true);
+
+    const resumedDriver = makeDriver(false);
+    const resumed = await new CollectionRunner(resumedDriver, store)
+      .run(identityJob, identityJob.collectorId);
+    assert.equal(resumed.status, "SUCCEEDED");
+    assert.deepEqual(resumed.competitorItems.map((item) => ({
+      id: item.platformItemId,
+      ranks: item.searchRanks
+    })), [
+      { id: "stable-item-1", ranks: [1] },
+      { id: "stable-item-2", ranks: [2] }
+    ]);
+    assert.deepEqual(resumedDriver.openedRanks, [2]);
+    assert.doesNotThrow(() => collectorReportSchema.parse(resumed));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -613,9 +834,9 @@ test("normalizes a stable-first search URL group before detail traversal", async
     assert.deepEqual(report.competitorItems.find((item) =>
       item.platformItemId === "competitor-a")?.searchRanks, [1, 3]);
     assert.equal(driver.events.filter((event) =>
-      event.type === "OPEN_SEARCH_POSITION" && event.platformItemId === "competitor-a").length, 1);
+      event.type === "OPEN_SEARCH_POSITION" && event.platformItemId === "competitor-a").length, 2);
 
-    const fallbackIdentity = new URL(itemUrl).toString();
+    const fallbackIdentity = unresolvedSearchIdentity(3, itemUrl);
     const checkpoint = await store.load(stableFirstJob.runId);
     assert.equal(checkpoint?.identityAliases[fallbackIdentity], "competitor-a");
     assert.equal(checkpoint?.completedPlatformItemIds.includes(fallbackIdentity), false);
@@ -659,7 +880,8 @@ test("persists a fallback detail alias across pause and resume without duplicate
   const aliasJob = { ...job, runId: "sony-alias-resume-run" };
   try {
     const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
-    const fallbackIdentity = new URL(itemUrl).toString();
+    const firstFallbackIdentity = unresolvedSearchIdentity(1, itemUrl);
+    const secondFallbackIdentity = unresolvedSearchIdentity(3, itemUrl);
     const path = await writeFixtureCopy(root, (fixture) => {
       for (const position of fixture.search.positions) {
         if (position.url === itemUrl) position.platformItemId = null;
@@ -673,9 +895,10 @@ test("persists a fallback detail alias across pause and resume without duplicate
     const paused = await new CollectionRunner(pausedDriver, store).run(aliasJob, aliasJob.collectorId);
     assert.equal(paused.status, "PAUSED_LOGIN");
     const pausedCheckpoint = await store.load(aliasJob.runId);
-    assert.equal(pausedCheckpoint?.identityAliases[fallbackIdentity], "competitor-a");
+    assert.equal(pausedCheckpoint?.identityAliases[firstFallbackIdentity], "competitor-a");
+    assert.equal(pausedCheckpoint?.identityAliases[secondFallbackIdentity], undefined);
     assert.deepEqual(paused.positions.filter((position) => position.url === itemUrl)
-      .map((position) => position.platformItemId), ["competitor-a", "competitor-a"]);
+      .map((position) => position.platformItemId), ["competitor-a", secondFallbackIdentity]);
 
     const resumedDriver = await FixtureDriver.fromFile(path);
     const resumed = await new CollectionRunner(resumedDriver, store).run(aliasJob, aliasJob.collectorId);
@@ -687,9 +910,11 @@ test("persists a fallback detail alias across pause and resume without duplicate
     const completed = await store.load(aliasJob.runId);
     assert.equal(completed?.completedSkuKeys.length, 6);
     assert.equal(new Set(completed?.completedSkuKeys).size, 6);
-    assert.equal(completed?.completedPlatformItemIds.includes(fallbackIdentity), false);
+    assert.equal(completed?.completedPlatformItemIds.includes(firstFallbackIdentity), false);
+    assert.equal(completed?.completedPlatformItemIds.includes(secondFallbackIdentity), false);
     assert.equal(completed?.completedPlatformItemIds.includes("competitor-a"), true);
-    assert.equal(completed?.identityAliases[fallbackIdentity], "competitor-a");
+    assert.equal(completed?.identityAliases[firstFallbackIdentity], "competitor-a");
+    assert.equal(completed?.identityAliases[secondFallbackIdentity], "competitor-a");
     assert.doesNotThrow(() => collectorReportSchema.parse(resumed));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -701,7 +926,7 @@ test("rejects a paused fallback-alias SKU completion before duplicate selection 
   const aliasJob = { ...job, runId: "sony-alias-sku-key-run" };
   try {
     const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
-    const fallbackIdentity = new URL(itemUrl).toString();
+    const fallbackIdentity = unresolvedSearchIdentity(1, itemUrl);
     const path = await writeFixtureCopy(root, (fixture) => {
       for (const position of fixture.search.positions) {
         if (position.url === itemUrl) position.platformItemId = null;
@@ -741,7 +966,7 @@ test("rejects an alias-form completed platform item before driver action or chec
   const aliasJob = { ...job, runId: "sony-alias-platform-key-run" };
   try {
     const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
-    const fallbackIdentity = new URL(itemUrl).toString();
+    const fallbackIdentity = unresolvedSearchIdentity(1, itemUrl);
     const path = await writeFixtureCopy(root, (fixture) => {
       for (const position of fixture.search.positions) {
         if (position.url === itemUrl) position.platformItemId = null;

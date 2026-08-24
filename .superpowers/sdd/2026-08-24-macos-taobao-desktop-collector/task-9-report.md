@@ -95,3 +95,57 @@ The required full `pnpm audit:public` command was run after staging Task 9. Task
 - Live Accessibility snapshots and UI actions remain unverified because Accessibility permission is absent. Task 14 must validate or replace the synthetic sanitized profile fixtures.
 - The full public audit remains blocked by three pre-existing historical-plan paths from the base commit, although the Task 9 changed-file audit passes.
 - SwiftPM XCTest remains blocked by the local compiler/SDK mismatch; direct compiler and protocol verification passed.
+
+## Fix Round 1
+
+### RED Evidence
+
+- Host-only identity regression: two ranks sharing one host-only URL initially collapsed to the first detail ID and incorrectly completed. The new pause/resume probe failed before rank-scoped unresolved identities were introduced.
+- Late missing-ID checkpoint regression: after an earlier competitor completed, a later `MISSING_ITEM_ID` left competitor data in `SEARCH` phase and failed Task 6 semantic validation on resume.
+- UTF-8 transport regression: splitting the first byte of `淘` from the remaining bytes decoded the payload as `���宝` before stream-level UTF-8 decoding was enabled.
+- SKU attribution regression: three stable selected-SKU snapshots for `different-item` were accepted after opening `example-7506`; the probe failed because no typed rejection occurred.
+- Search transition regression: a pre-submit list whose field already matched the requested query returned the stale `旧结果` card before the result-query marker changed.
+- Detail transition regression: the first temporary search snapshot threw the profile contract error instead of polling through to the stable detail page.
+- Scroll-boundary regression: an identical card at a distinct AX path was treated as complete overlap and no new rank was produced.
+- Back verification regression: a stable unrelated result list was accepted because only query text and generic list stability were checked. The selector probe also failed before result-query and occurrence metadata were exported.
+
+### GREEN Evidence
+
+- Null-ID search positions now use deterministic `unresolved:<rank>:sha256:<canonical-url-hash>` checkpoint identities. Each rank resolves independently, aliases only its own position, survives pause/resume, and cannot enter a complete checkpoint while unresolved.
+- A detail page without a stable ID records `MISSING_ITEM_ID`, removes unresolved completion claims, and returns the checkpoint to search for a later retry.
+- Missing-ID rollback now clears all search-derived positions, competitor items, aliases, completion keys, and evidence together while preserving coherent completed own-listing progress.
+- Helper stdout now uses stream-level UTF-8 decoding, preserving arbitrary multibyte chunk boundaries while retaining UUID correlation and the one-line JSON protocol.
+- SKU selection establishes or reuses the opened item identity and rejects every subsequently observed conflicting stable ID with `UI_CONTRACT_CHANGED` before evidence capture.
+- Search submit and semantic scrolling capture the pre-action result context, require a marker/signature transition, and then require three equal observations. Polling remains 250 ms with a 15-second deadline.
+- Detail polling tolerates temporary search/empty/profile-miss snapshots until the deadline while propagating login and challenge stops immediately.
+- Search-card overlap now includes stable AX card/action paths and a per-snapshot duplicate occurrence index. The new sanitized synthetic boundary fixture proves an identical new card receives the next rank while unchanged paths remain overlap.
+- Opening a result retains the query and exact semantic result-context signature. Accessible back requires that same context for three consecutive observations; stable unrelated and empty lists time out, while a transitional sequence followed by the original context succeeds.
+
+### Verification
+
+- Focused checkpoint/helper/selector/driver run: PASS, 65 tests, 0 failures.
+- `pnpm test:collector`: PASS, 74 tests, 0 failures.
+- `pnpm typecheck`: PASS for API, web, and collector projects.
+- `git diff --check`: PASS.
+- Fix Round 1 changed-file public audit: PASS for all implementation, test, fixture, and report changes.
+- Full `pnpm audit:public`: unchanged nonzero baseline caused only by the three historical local paths documented above.
+- Swift production and XCTest source parse: PASS.
+- Swift 5 production typecheck with warnings as errors: PASS.
+- Strict Swift 6 production typecheck with complete concurrency and warnings as errors: PASS.
+- Direct helper build for `arm64-apple-macosx12.0`: PASS.
+- Direct read-only helper protocol probe: one UUID-correlated `ACCESSIBILITY_PERMISSION_REQUIRED` response line and zero stderr bytes; no permission prompt or UI challenge was triggered.
+- `swift test --package-path apps/collector-macos`: blocked before test discovery by the unchanged unwritable default module cache and Apple Swift 6.3.3 compiler versus 6.3.2 SDK mismatch.
+
+### Self-Review
+
+- Rechecked every helper timeout, malformed line, process exit, concurrent rejection, and exactly-one-restart path; no raw stderr or unsafe helper message is exposed.
+- Rechecked checkpoint aliases at fresh, paused, resumed, missing-ID, and complete boundaries. Unresolved identities are rank-scoped internal identities, never treated as Taobao IDs, and never accepted in complete reports.
+- Rechecked search, detail, SKU, scroll, and back deadlines for 250 ms polling, a 15,000 ms maximum, and three equal stable observations where required.
+- Rechecked selectors and actions for coordinate, geometry, DOM, OCR, and brittle global-text identity use; none was added.
+- Rechecked evidence capture ordering: a conflicting item ID fails before parsing or screenshot capture, and generated evidence remains one collision-resistant flat PNG filename.
+
+### Fix Round 1 Concerns
+
+- The new result-query marker and duplicate-boundary fixture are minimal sanitized synthetic profile data. Accessibility permission remains unavailable, so Task 14 must validate or replace them against a live sanitized Taobao Desktop 2.4.5 build 15 snapshot.
+- SwiftPM XCTest remains unavailable on this host for the documented compiler/SDK mismatch; all available direct Swift checks pass.
+- The full public audit remains nonzero only for the three unrelated pre-existing historical-plan paths; the Fix Round 1 changed-file audit passes.

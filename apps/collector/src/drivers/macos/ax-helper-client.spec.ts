@@ -81,6 +81,28 @@ test("correlates concurrent one-line responses by UUID", async () => {
   client.close();
 });
 
+test("preserves a Chinese JSON payload when stdout splits one UTF-8 code point", async () => {
+  const process = new FakeProcess();
+  const client = new AxHelperClient({ spawn: () => process });
+  let commandId = "";
+  process.stdin.once("data", (chunk) => {
+    commandId = (JSON.parse(String(chunk)) as { id: string }).id;
+    const encoded = Buffer.from(JSON.stringify({
+      id: commandId,
+      ok: true,
+      payload: { text: "淘宝" }
+    }) + "\n", "utf8");
+    const characterStart = encoded.indexOf(Buffer.from("淘", "utf8"));
+    assert.notEqual(characterStart, -1);
+    process.stdout.write(encoded.subarray(0, characterStart + 1));
+    process.stdout.write(encoded.subarray(characterStart + 1));
+  });
+
+  assert.deepEqual(await client.command("captureCopiedText"), { text: "淘宝" });
+  assert.match(commandId, /^[0-9a-f-]{36}$/);
+  client.close();
+});
+
 test("restarts a failed helper exactly once and then surfaces a sanitized contract error", async () => {
   const processes = [new FakeProcess(), new FakeProcess(), new FakeProcess()];
   let spawns = 0;

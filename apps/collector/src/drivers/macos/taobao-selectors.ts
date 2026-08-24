@@ -19,6 +19,8 @@ export interface SelectedDetailPage {
 
 export interface SelectedSearchCard {
   rank: number;
+  occurrenceIndex: number;
+  occurrenceKey: string;
   platformItemId: string | null;
   url: string;
   title: string;
@@ -86,6 +88,14 @@ export function findSearchResultContainer(root: AxNode): AxNode {
     && node.role === "AXScrollArea" && node.title === "商品搜索结果") ?? profileError();
 }
 
+export function readSearchResultQuery(root: AxNode): string {
+  const container = findSearchResultContainer(root);
+  const markers = container.children.filter((node) => node.identifier === "search-result-query-marker"
+    && node.role === "AXStaticText" && node.description === "结果查询");
+  if (markers.length !== 1) return profileError();
+  return requiredText(markers[0] ?? null);
+}
+
 function readPriceRange(card: AxNode): [string, string] {
   const text = requiredText(childByIdentifier(card, "price-range"));
   const match = /^\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?)(?:\s*[-–—至]\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?))?\s*$/.exec(text);
@@ -99,21 +109,38 @@ export function readSearchCards(root: AxNode): SelectedSearchCard[] {
   const container = findSearchResultContainer(root);
   const cards = container.children.filter((node) => node.identifier === "result-card"
     && node.role === "AXGroup" && node.title === "商品结果");
+  const occurrences = new Map<string, number>();
   return cards.map((cardNode, index) => {
     const actionNode = cardNode.children.find((node) => node.identifier === "item-link"
       && node.role === "AXLink" && node.actions.includes("AXPress"));
     if (!actionNode) return profileError();
     const identity = canonicalItemIdentity(actionNode.url);
     const [displayPriceMinText, displayPriceMaxText] = readPriceRange(cardNode);
-    return {
-      rank: index + 1,
-      platformItemId: identity.platformItemId,
-      url: identity.url,
-      title: requiredText(actionNode),
-      shopName: requiredText(childByIdentifier(cardNode, "shop-name")),
+    const title = requiredText(actionNode);
+    const shopName = requiredText(childByIdentifier(cardNode, "shop-name"));
+    const sponsored = childByIdentifier(cardNode, "sponsored-label") !== null;
+    const contentKey = JSON.stringify([
+      identity.platformItemId,
+      identity.url,
+      title,
+      shopName,
       displayPriceMinText,
       displayPriceMaxText,
-      sponsored: childByIdentifier(cardNode, "sponsored-label") !== null,
+      sponsored
+    ]);
+    const occurrenceIndex = (occurrences.get(contentKey) ?? 0) + 1;
+    occurrences.set(contentKey, occurrenceIndex);
+    return {
+      rank: index + 1,
+      occurrenceIndex,
+      occurrenceKey: JSON.stringify([cardNode.path, actionNode.path, occurrenceIndex]),
+      platformItemId: identity.platformItemId,
+      url: identity.url,
+      title,
+      shopName,
+      displayPriceMinText,
+      displayPriceMaxText,
+      sponsored,
       actionNode,
       cardNode
     };
