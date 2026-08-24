@@ -144,22 +144,7 @@ final class AXNodeTests: XCTestCase {
         XCTAssertEqual(pasteboard.archive(), original)
     }
 
-    func testEvidencePathResolverAcceptsOnlyPNGFilesInsideCanonicalRoot() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let resolved = try EvidencePathResolver.resolve(root: root.path, destination: "run/evidence.png")
-
-        XCTAssertTrue(resolved.path.hasPrefix(root.resolvingSymlinksInPath().path + "/"))
-        XCTAssertEqual(resolved.pathExtension, "png")
-        XCTAssertThrowsError(try EvidencePathResolver.resolve(root: root.path, destination: "../escape.png"))
-        XCTAssertThrowsError(try EvidencePathResolver.resolve(root: root.path, destination: "/tmp/escape.png"))
-        XCTAssertThrowsError(try EvidencePathResolver.resolve(root: root.path, destination: "run/evidence.jpg"))
-    }
-
-    func testEvidencePathResolverRejectsSymlinkEscape() throws {
+    func testDescriptorWriterRejectsIntermediateAndFinalSymlinks() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let root = base.appendingPathComponent("root", isDirectory: true)
@@ -170,10 +155,93 @@ final class AXNodeTests: XCTestCase {
             at: root.appendingPathComponent("linked"),
             withDestinationURL: outside
         )
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("final.png"),
+            withDestinationURL: outside.appendingPathComponent("escaped.png")
+        )
         defer { try? FileManager.default.removeItem(at: base) }
 
+        let writer = EvidenceFileWriter()
         XCTAssertThrowsError(
-            try EvidencePathResolver.resolve(root: root.path, destination: "linked/evidence.png")
+            try writer.write(Data("blocked".utf8), root: root.path, destination: "linked/evidence.png")
+        )
+        XCTAssertThrowsError(
+            try writer.write(Data("blocked".utf8), root: root.path, destination: "final.png")
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("evidence.png").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("escaped.png").path))
+    }
+
+    func testDescriptorWriterStaysInOpenedDirectoryAcrossSymlinkSwapRace() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = base.appendingPathComponent("root", isDirectory: true)
+        let safe = root.appendingPathComponent("safe", isDirectory: true)
+        let anchored = root.appendingPathComponent("anchored", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: safe, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let writer = EvidenceFileWriter(afterParentOpened: {
+            try FileManager.default.moveItem(at: safe, to: anchored)
+            try FileManager.default.createSymbolicLink(at: safe, withDestinationURL: outside)
+        })
+        let expected = Data("descriptor-rooted".utf8)
+
+        try writer.write(expected, root: root.path, destination: "safe/evidence.png")
+
+        XCTAssertEqual(
+            try Data(contentsOf: anchored.appendingPathComponent("evidence.png")),
+            expected
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("evidence.png").path))
+    }
+
+    func testDescriptorWriterRejectsUnsafeComponentsAndSafelyReplacesRegularFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let writer = EvidenceFileWriter()
+        let unsafeDestinations = [
+            "", ".", "..", "/tmp/escape.png", "evidence.jpg",
+            "a//evidence.png", "a/./evidence.png", "a/../evidence.png",
+        ]
+        for destination in unsafeDestinations {
+            XCTAssertThrowsError(try writer.write(Data(), root: root.path, destination: destination))
+        }
+        XCTAssertThrowsError(try writer.write(Data(), root: "", destination: "evidence.png"))
+
+        let destination = root.appendingPathComponent("evidence.png")
+        try Data("old".utf8).write(to: destination)
+        try writer.write(Data("new".utf8), root: root.path, destination: "evidence.png")
+
+        XCTAssertEqual(try Data(contentsOf: destination), Data("new".utf8))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["evidence.png"])
+    }
+
+    func testScreenshotCaptureRoutingSupportsEveryMacOS12And13Version() {
+        XCTAssertEqual(
+            ScreenshotCaptureRouting.backend(for: OperatingSystemVersion(majorVersion: 12, minorVersion: 0, patchVersion: 0)),
+            .coreGraphics
+        )
+        XCTAssertEqual(
+            ScreenshotCaptureRouting.backend(for: OperatingSystemVersion(majorVersion: 12, minorVersion: 2, patchVersion: 9)),
+            .coreGraphics
+        )
+        XCTAssertEqual(
+            ScreenshotCaptureRouting.backend(for: OperatingSystemVersion(majorVersion: 12, minorVersion: 3, patchVersion: 0)),
+            .screenCaptureKitStream
+        )
+        XCTAssertEqual(
+            ScreenshotCaptureRouting.backend(for: OperatingSystemVersion(majorVersion: 13, minorVersion: 6, patchVersion: 0)),
+            .screenCaptureKitStream
+        )
+        XCTAssertEqual(
+            ScreenshotCaptureRouting.backend(for: OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0)),
+            .screenshotManager
         )
     }
 
