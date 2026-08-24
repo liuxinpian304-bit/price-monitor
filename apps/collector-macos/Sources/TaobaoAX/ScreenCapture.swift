@@ -27,27 +27,20 @@ enum ScreenshotCaptureRouting {
 }
 
 private struct EvidenceDestination {
-    let directories: [String]
     let filename: String
 
     init(_ destination: String) throws {
         guard !destination.isEmpty,
               !destination.contains("\0"),
-              !(destination as NSString).isAbsolutePath else {
+              !destination.contains("/"),
+              !destination.contains("\\"),
+              destination != ".",
+              destination != "..",
+              destination.lowercased().hasSuffix(".png") else {
             throw Self.invalidDestination()
         }
 
-        let components = destination.split(separator: "/", omittingEmptySubsequences: false)
-            .map(String.init)
-        guard !components.isEmpty,
-              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
-              let filename = components.last,
-              filename.lowercased().hasSuffix(".png") else {
-            throw Self.invalidDestination()
-        }
-
-        self.directories = Array(components.dropLast())
-        self.filename = filename
+        self.filename = destination
     }
 
     static func invalidDestination() -> HelperError {
@@ -56,10 +49,10 @@ private struct EvidenceDestination {
 }
 
 struct EvidenceFileWriter {
-    private let afterParentOpened: () throws -> Void
+    private let afterRootOpened: () throws -> Void
 
-    init(afterParentOpened: @escaping () throws -> Void = {}) {
-        self.afterParentOpened = afterParentOpened
+    init(afterRootOpened: @escaping () throws -> Void = {}) {
+        self.afterRootOpened = afterRootOpened
     }
 
     func write(_ data: Data, root: String, destination: String) throws {
@@ -69,23 +62,13 @@ struct EvidenceFileWriter {
         }
         let canonicalRoot = try canonicalRootPath(root)
         let rootDescriptor = try openCanonicalRoot(canonicalRoot)
-
-        var descriptors = [rootDescriptor]
-        defer { descriptors.reversed().forEach { close($0) } }
-
-        for component in destination.directories {
-            let parent = descriptors[descriptors.count - 1]
-            let descriptor = try openOrCreateDirectory(component, relativeTo: parent)
-            descriptors.append(descriptor)
-        }
-
-        let parent = descriptors[descriptors.count - 1]
+        defer { close(rootDescriptor) }
         do {
-            try afterParentOpened()
+            try afterRootOpened()
         } catch {
             throw HelperError(code: "EVIDENCE_WRITE_FAILED", message: "Evidence could not be written.")
         }
-        try writeAtomically(data, filename: destination.filename, parentDescriptor: parent)
+        try writeAtomically(data, filename: destination.filename, rootDescriptor: rootDescriptor)
     }
 
     private func canonicalRootPath(_ path: String) throws -> String {
@@ -116,31 +99,11 @@ struct EvidenceFileWriter {
         return current
     }
 
-    private func openOrCreateDirectory(_ name: String, relativeTo parent: Int32) throws -> Int32 {
-        let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
-        var descriptor = name.withCString { openat(parent, $0, flags) }
-        if descriptor >= 0 {
-            return descriptor
-        }
-
-        guard errno == ENOENT else {
-            throw pathComponentError()
-        }
-        let createResult = name.withCString { mkdirat(parent, $0, mode_t(0o700)) }
-        guard createResult == 0 || errno == EEXIST else {
-            throw HelperError(code: "EVIDENCE_WRITE_FAILED", message: "Evidence could not be written.")
-        }
-
-        descriptor = name.withCString { openat(parent, $0, flags) }
-        guard descriptor >= 0 else { throw pathComponentError() }
-        return descriptor
-    }
-
-    private func writeAtomically(_ data: Data, filename: String, parentDescriptor: Int32) throws {
+    private func writeAtomically(_ data: Data, filename: String, rootDescriptor: Int32) throws {
         let temporaryName = ".collector-\(UUID().uuidString).tmp"
         let descriptor = temporaryName.withCString {
             openat(
-                parentDescriptor,
+                rootDescriptor,
                 $0,
                 O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
                 mode_t(0o600)
@@ -150,11 +113,14 @@ struct EvidenceFileWriter {
             throw HelperError(code: "EVIDENCE_WRITE_FAILED", message: "Evidence could not be written.")
         }
 
-        var removeTemporary = true
+        var descriptorIsOpen = true
+        var temporaryExists = true
         defer {
-            close(descriptor)
-            if removeTemporary {
-                temporaryName.withCString { _ = unlinkat(parentDescriptor, $0, 0) }
+            if descriptorIsOpen {
+                close(descriptor)
+            }
+            if temporaryExists {
+                temporaryName.withCString { _ = unlinkat(rootDescriptor, $0, 0) }
             }
         }
 
@@ -162,24 +128,29 @@ struct EvidenceFileWriter {
         guard fsync(descriptor) == 0 else {
             throw HelperError(code: "EVIDENCE_WRITE_FAILED", message: "Evidence could not be written.")
         }
-        try rejectNonRegularDestination(filename, parentDescriptor: parentDescriptor)
+        let closeResult = close(descriptor)
+        descriptorIsOpen = false
+        guard closeResult == 0 else {
+            throw HelperError(code: "EVIDENCE_WRITE_FAILED", message: "Evidence could not be written.")
+        }
+        try rejectNonRegularDestination(filename, rootDescriptor: rootDescriptor)
 
         let renameResult = temporaryName.withCString { temporaryPointer in
             filename.withCString { filenamePointer in
-                renameat(parentDescriptor, temporaryPointer, parentDescriptor, filenamePointer)
+                renameat(rootDescriptor, temporaryPointer, rootDescriptor, filenamePointer)
             }
         }
         guard renameResult == 0 else {
             throw HelperError(code: "EVIDENCE_WRITE_FAILED", message: "Evidence could not be written.")
         }
-        removeTemporary = false
-        _ = fsync(parentDescriptor)
+        temporaryExists = false
+        _ = fsync(rootDescriptor)
     }
 
-    private func rejectNonRegularDestination(_ filename: String, parentDescriptor: Int32) throws {
+    private func rejectNonRegularDestination(_ filename: String, rootDescriptor: Int32) throws {
         var information = stat()
         let result = filename.withCString {
-            fstatat(parentDescriptor, $0, &information, AT_SYMLINK_NOFOLLOW)
+            fstatat(rootDescriptor, $0, &information, AT_SYMLINK_NOFOLLOW)
         }
         if result == 0 {
             guard information.st_mode & S_IFMT == S_IFREG else {
@@ -187,7 +158,9 @@ struct EvidenceFileWriter {
             }
             return
         }
-        guard errno == ENOENT else { throw pathComponentError() }
+        guard errno == ENOENT else {
+            throw HelperError(code: "EVIDENCE_WRITE_FAILED", message: "Evidence could not be written.")
+        }
     }
 
     private func writeAll(_ data: Data, to descriptor: Int32) throws {
@@ -212,13 +185,6 @@ struct EvidenceFileWriter {
                 offset += written
             }
         }
-    }
-
-    private func pathComponentError() -> HelperError {
-        if errno == ELOOP || errno == ENOTDIR {
-            return EvidenceDestination.invalidDestination()
-        }
-        return HelperError(code: "EVIDENCE_WRITE_FAILED", message: "Evidence could not be written.")
     }
 
     private func rootUnavailable() -> HelperError {

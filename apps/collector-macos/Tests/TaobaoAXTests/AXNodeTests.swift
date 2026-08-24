@@ -144,7 +144,66 @@ final class AXNodeTests: XCTestCase {
         XCTAssertEqual(pasteboard.archive(), original)
     }
 
-    func testDescriptorWriterRejectsIntermediateAndFinalSymlinks() throws {
+    func testDescriptorWriterRejectsNestedDestinationBeforeOpeningRoot() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = base.appendingPathComponent("root", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("safe"),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        var rootWasOpened = false
+        let writer = EvidenceFileWriter(afterRootOpened: {
+            rootWasOpened = true
+            try FileManager.default.moveItem(
+                at: root.appendingPathComponent("safe"),
+                to: outside.appendingPathComponent("anchored")
+            )
+        })
+        XCTAssertThrowsError(
+            try writer.write(Data("blocked".utf8), root: root.path, destination: "safe/evidence.png")
+        ) { error in
+            XCTAssertEqual((error as? HelperError)?.code, "INVALID_DESTINATION")
+            XCTAssertEqual((error as? HelperError)?.message, "Invalid evidence destination.")
+        }
+        XCTAssertFalse(rootWasOpened)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("safe").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("anchored").path))
+    }
+
+    func testDescriptorWriterUsesOnlyRootCapabilityDuringChildDirectoryRace() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = base.appendingPathComponent("root", isDirectory: true)
+        let safe = root.appendingPathComponent("safe", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        let anchored = outside.appendingPathComponent("anchored", isDirectory: true)
+        try FileManager.default.createDirectory(at: safe, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let writer = EvidenceFileWriter(afterRootOpened: {
+            try FileManager.default.moveItem(at: safe, to: anchored)
+            try FileManager.default.createSymbolicLink(at: safe, withDestinationURL: outside)
+        })
+        let expected = Data("root-capability".utf8)
+
+        try writer.write(expected, root: root.path, destination: "evidence.png")
+
+        XCTAssertEqual(
+            try Data(contentsOf: root.appendingPathComponent("evidence.png")),
+            expected
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: anchored.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("evidence.png").path))
+    }
+
+    func testDescriptorWriterRejectsFinalSymlink() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let root = base.appendingPathComponent("root", isDirectory: true)
@@ -152,50 +211,20 @@ final class AXNodeTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(
-            at: root.appendingPathComponent("linked"),
-            withDestinationURL: outside
-        )
-        try FileManager.default.createSymbolicLink(
             at: root.appendingPathComponent("final.png"),
             withDestinationURL: outside.appendingPathComponent("escaped.png")
         )
         defer { try? FileManager.default.removeItem(at: base) }
 
-        let writer = EvidenceFileWriter()
         XCTAssertThrowsError(
-            try writer.write(Data("blocked".utf8), root: root.path, destination: "linked/evidence.png")
+            try EvidenceFileWriter().write(
+                Data("blocked".utf8),
+                root: root.path,
+                destination: "final.png"
+            )
         )
-        XCTAssertThrowsError(
-            try writer.write(Data("blocked".utf8), root: root.path, destination: "final.png")
-        )
-        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("evidence.png").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("escaped.png").path))
-    }
-
-    func testDescriptorWriterStaysInOpenedDirectoryAcrossSymlinkSwapRace() throws {
-        let base = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let root = base.appendingPathComponent("root", isDirectory: true)
-        let safe = root.appendingPathComponent("safe", isDirectory: true)
-        let anchored = root.appendingPathComponent("anchored", isDirectory: true)
-        let outside = base.appendingPathComponent("outside", isDirectory: true)
-        try FileManager.default.createDirectory(at: safe, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: base) }
-
-        let writer = EvidenceFileWriter(afterParentOpened: {
-            try FileManager.default.moveItem(at: safe, to: anchored)
-            try FileManager.default.createSymbolicLink(at: safe, withDestinationURL: outside)
-        })
-        let expected = Data("descriptor-rooted".utf8)
-
-        try writer.write(expected, root: root.path, destination: "safe/evidence.png")
-
-        XCTAssertEqual(
-            try Data(contentsOf: anchored.appendingPathComponent("evidence.png")),
-            expected
-        )
-        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("evidence.png").path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["final.png"])
     }
 
     func testDescriptorWriterRejectsUnsafeComponentsAndSafelyReplacesRegularFile() throws {
@@ -206,8 +235,9 @@ final class AXNodeTests: XCTestCase {
 
         let writer = EvidenceFileWriter()
         let unsafeDestinations = [
-            "", ".", "..", "/tmp/escape.png", "evidence.jpg",
-            "a//evidence.png", "a/./evidence.png", "a/../evidence.png",
+            "", ".", "..", "/tmp/escape.png", "evidence.jpg", "bad\0.png",
+            "a/evidence.png", "a\\evidence.png", "a//evidence.png",
+            "a/./evidence.png", "a/../evidence.png",
         ]
         for destination in unsafeDestinations {
             XCTAssertThrowsError(try writer.write(Data(), root: root.path, destination: destination))
