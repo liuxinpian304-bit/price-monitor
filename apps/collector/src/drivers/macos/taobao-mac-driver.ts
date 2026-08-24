@@ -146,11 +146,36 @@ function strictOverlapLength(existing: SelectedSearchCard[], next: SelectedSearc
   return 0;
 }
 
+function semanticCardCounts(cards: SelectedSearchCard[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const card of cards) {
+    const key = semanticCardKey(card);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function equalSemanticMultiset(left: SelectedSearchCard[], right: SelectedSearchCard[]): boolean {
+  if (left.length !== right.length) return false;
+  const leftCounts = semanticCardCounts(left);
+  const rightCounts = semanticCardCounts(right);
+  return leftCounts.size === rightCounts.size
+    && [...leftCounts].every(([key, count]) => rightCounts.get(key) === count);
+}
+
 export function mergeSearchCardViewports(
   existing: SelectedSearchCard[],
-  next: SelectedSearchCard[]
+  next: SelectedSearchCard[],
+  previousViewport: SelectedSearchCard[] = existing
 ): SelectedSearchCard[] {
-  const overlap = strictOverlapLength(existing, next);
+  const overlap = strictOverlapLength(previousViewport, next);
+  const equalMultiset = equalSemanticMultiset(previousViewport, next);
+  const semanticClassCount = semanticCardCounts(next).size;
+
+  // Rebased equal multisets are ambiguous. Multi-class permutations never advance;
+  // single-class duplicate windows advance only when strict path overlap proves continuity.
+  if (equalMultiset && (semanticClassCount > 1 || overlap === 0)) return existing;
+
   const known = new Set(existing.map(strictCardKey));
   const additions = next.slice(overlap).filter((card) => !known.has(strictCardKey(card)));
   return [...existing, ...additions];
@@ -242,7 +267,8 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     await this.client.command("keyPress", { keyCode: 36 });
 
     const firstResult = await this.waitForStableSearch(query, preSubmitSignature);
-    const cards = [...readSearchCards(firstResult)];
+    let viewportCards = readSearchCards(firstResult);
+    const cards = [...viewportCards];
     let root = firstResult;
     let scrollCount = 0;
     while (cards.length < limit && !hasSearchEndMarker(root) && scrollCount < 50) {
@@ -258,11 +284,12 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
       });
       root = await this.waitForStableSearch(query, beforeScroll);
       const next = readSearchCards(root);
-      const merged = mergeSearchCardViewports(cards, next);
+      const merged = mergeSearchCardViewports(cards, next, viewportCards);
       if (merged.length === cards.length && !hasSearchEndMarker(root)) {
         throw new UiContractChangedError("Taobao search result scrolling made no semantic progress.");
       }
       cards.splice(0, cards.length, ...merged);
+      viewportCards = next;
       scrollCount += 1;
     }
 
@@ -497,9 +524,11 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     await this.client.command("keyPress", { keyCode: 115 });
     let current = await this.waitForStableSearch(this.currentSearchQuery, beforeHome);
     let aggregate: SelectedSearchCard[] = [];
+    let previousViewport: SelectedSearchCard[] = [];
     for (let scrollCount = 0; scrollCount <= 50; scrollCount += 1) {
       const next = readSearchCards(current);
-      aggregate = mergeSearchCardViewports(aggregate, next);
+      aggregate = mergeSearchCardViewports(aggregate, next, previousViewport);
+      previousViewport = next;
       const target = aggregate[position.rank - 1];
       if (target) {
         const candidate = next.find((card) => strictCardKey(card) === strictCardKey(target));

@@ -122,6 +122,30 @@ function blankSearchPage(root: AxNode): AxNode {
   return clone;
 }
 
+function regeneratePaths(node: AxNode, path: number[] = []): void {
+  node.path = path;
+  node.children.forEach((child, index) => regeneratePaths(child, [...path, index]));
+}
+
+function resolvePath(root: AxNode, path: number[]): AxNode {
+  let current = root;
+  for (const index of path) {
+    current = current.children[index] ?? assert.fail(`Unresolvable action path ${JSON.stringify(path)}`);
+  }
+  return current;
+}
+
+function evidenceNodePath(position: DriverSearchPosition): number[] {
+  const metadata = position.rawEvidence.metadata;
+  assert.equal(typeof metadata, "object");
+  assert.ok(metadata);
+  assert.equal(Array.isArray(metadata), false);
+  const path = (metadata as Record<string, unknown>).nodePath;
+  assert.equal(Array.isArray(path), true);
+  assert.equal((path as unknown[]).every((entry) => typeof entry === "number"), true);
+  return path as number[];
+}
+
 test("rejects every version/build mismatch before any UI mutation", async () => {
   const client = new FakeClient();
   client.diagnostic.shortVersion = "2.4.6/private";
@@ -311,16 +335,32 @@ test("propagates a challenge stop immediately during a detail transition", async
   assert.deepEqual(sleeps, []);
 });
 
-test("assigns a new rank to an identical card with a distinct AX occurrence after scrolling", async () => {
+test("preserves A1,A2 then A2,A3 continuity across a duplicate scroll boundary", async () => {
   const client = new FakeClient();
   const search = await fixture("search-results.json");
   const before = structuredClone(search);
   const beforeContainer = searchContainer(before);
   const marker = resultQueryMarker(before);
-  const firstCard = beforeContainer.children.find((node) => node.identifier === "result-card");
-  assert.ok(firstCard);
-  beforeContainer.children = [marker, firstCard];
+  const beforeCards = beforeContainer.children.filter((node) => node.identifier === "result-card");
+  assert.equal(beforeCards.length, 3);
+  beforeContainer.children = [marker, beforeCards[0]!, beforeCards[1]!];
+  regeneratePaths(before);
+
   const boundary = await fixture("search-results-duplicate-boundary.json");
+  const boundaryContainer = searchContainer(boundary);
+  const boundaryCard = boundaryContainer.children.find((node) => node.identifier === "result-card");
+  const boundaryEnd = boundaryContainer.children.find((node) => node.identifier === "search-end-marker");
+  assert.ok(boundaryCard);
+  assert.ok(boundaryEnd);
+  boundaryContainer.children = [
+    resultQueryMarker(boundary),
+    boundaryContainer.children[1]!,
+    boundaryCard,
+    structuredClone(boundaryCard),
+    boundaryEnd
+  ];
+  regeneratePaths(boundary);
+
   client.snapshotQueue.push(
     withResultQuery(before, "旧查询"),
     before, before, before,
@@ -333,10 +373,16 @@ test("assigns a new rank to an identical card with a distinct AX occurrence afte
     sleep: async (milliseconds) => { now += milliseconds; }
   });
 
-  const results = await driver.search("索尼 7506", 2);
+  const results = await driver.search("索尼 7506", 3);
   assert.deepEqual(results.map((entry) => [entry.rank, entry.platformItemId]), [
-    [1, "example-7506"], [2, "example-7506"]
+    [1, "example-7506"], [2, "example-7506"], [3, "example-7506"]
   ]);
+  assert.deepEqual(results.map((entry) => evidenceNodePath(entry)[2]), [1, 2, 3]);
+  results.forEach((entry, index) => {
+    const path = evidenceNodePath(entry);
+    const source = index < 2 ? before : boundary;
+    assert.equal(resolvePath(source, path).identifier, "item-link");
+  });
   assert.equal(client.commands.filter((entry) => entry.command === "perform").length, 1);
 });
 

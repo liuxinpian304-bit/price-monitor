@@ -198,3 +198,46 @@ The required full `pnpm audit:public` command was run after staging Task 9. Task
 - Search and duplicate-boundary fixtures remain minimal sanitized synthetic data because Accessibility permission is unavailable. Task 14 must validate or replace them against a live sanitized Taobao Desktop 2.4.5 build 15 snapshot.
 - SwiftPM XCTest remains unavailable on this host for the documented compiler/SDK mismatch; all requested direct Swift checks pass.
 - The repository-wide public audit baseline still contains the three unrelated historical-plan paths documented above; the Fix Round 2 changed-file audit passes.
+
+## Fix Round 3
+
+### RED Evidence
+
+- A contract-valid real AX fixture was reordered from semantic sequence `A,A,B` to `B,A,A`, then every descendant path was recursively regenerated using the Swift helper's `parent.path + child index` rule. The existing path-only reconciliation returned five cards instead of preserving the original three ranks.
+- A duplicate-count permutation from `A,A,B,B` to `B,A,B,A` likewise appended two existing occurrences because regenerated sibling paths made them appear new.
+- The existing shifted duplicate boundary control remained `A1,A2 -> A2,A3`, establishing that a strict path overlap still had to append exactly the new `A3` occurrence.
+
+### GREEN Evidence
+
+- Search-card reconciliation now compares semantic multisets, including duplicate counts, before path-based append. Equal multi-class multisets are deterministic no-progress permutations even when every sibling path has been regenerated.
+- Exact unchanged viewports append nothing. Equal single-class duplicate windows with no strict overlap are also treated as ambiguous no progress; when strict suffix/prefix path continuity exists, only the non-overlapping tail is appended.
+- Mixed windows retain maximal strict suffix/prefix overlap, so `A,B,C -> B,C,D` appends only `D`, and shifted duplicate boundaries retain `A1,A2,A3` exactly.
+- Action paths remain execution locators, not product identities. The probes resolve retained card locators only against the snapshot that supplied each card and do not reuse stale paths after a viewport change.
+- This policy deliberately prefers stopping through the existing explicit no-progress/end handling when equal semantic evidence cannot distinguish a reorder from progress, instead of inventing ranks.
+
+### Verification
+
+- Focused AX-fixture/continuity/selector/driver run: PASS, 31 tests, 0 failures.
+- `pnpm test:collector`: PASS, 85 tests, 0 failures.
+- `pnpm typecheck`: PASS for API, web, and collector projects.
+- Fix Round 3 changed-file public audit: PASS for all four implementation, test, and report changes.
+- `git diff --check`: PASS.
+- Swift production and XCTest source parse: PASS.
+- Swift 5 production typecheck with warnings as errors: PASS.
+- Strict Swift 6 production typecheck with complete concurrency and warnings as errors: PASS.
+- Direct helper build for `arm64-apple-macosx12.0`: PASS.
+- Direct read-only helper protocol probe: one UUID-correlated `ACCESSIBILITY_PERMISSION_REQUIRED` response line and zero stderr bytes; no permission prompt or UI challenge was triggered.
+
+### Self-Review
+
+- Verified semantic multiset comparison preserves duplicate counts and is independent of sibling order and regenerated AX paths.
+- Verified strict overlap still uses semantic content plus stable action path, never viewport-local occurrence indexes, geometry, coordinates, OCR, or DOM assumptions.
+- Verified each merged action path resolves in its source AX snapshot and stale locators are not carried forward as current viewport actions.
+- Rechecked shifted duplicates, exact unchanged viewports, multi-class permutations, duplicate-count permutations, and mixed true-new-card windows.
+- Rechecked all Round 1 and Round 2 probes through the full collector suite; Task 6 checkpoint behavior remains covered and passing.
+
+### Fix Round 3 Concerns
+
+- Equal semantic multisets without conclusive strict continuity are intentionally treated as no progress. This may conservatively stop collection when indistinguishable products genuinely replace one another, but it cannot fabricate ranks.
+- Search fixtures remain minimal sanitized synthetic data because Accessibility permission is unavailable. Task 14 must validate or replace them against a live sanitized Taobao Desktop 2.4.5 build 15 snapshot.
+- SwiftPM XCTest remains unavailable on this host for the documented Apple Swift 6.3.3 compiler versus 6.3.2 SDK mismatch; all requested direct Swift checks pass.
