@@ -13,6 +13,8 @@ import { CatalogImportController } from "./catalog/import/catalog-import.control
 import { CatalogImportService } from "./catalog/import/catalog-import.service.ts";
 import { PrismaCatalogImportWriter } from "./catalog/import/prisma-catalog-import.writer.ts";
 import { PrismaCatalogRepository } from "./catalog/prisma-catalog.repository.ts";
+import { CollectorAgentService } from "./collector-agent/collector-agent.service.ts";
+import { PrismaCollectorAgentRepository } from "./collector-agent/prisma-collector-agent.repository.ts";
 import { createPrismaClient } from "./database/prisma.service.ts";
 import { HealthService } from "./health/health.service.ts";
 import {
@@ -71,6 +73,9 @@ export const operationsQuery = new OperationsQueryService(prisma);
 export const manualClassificationService = new ManualClassificationService(
   new PrismaManualClassificationRepository(prisma),
   audit
+);
+export const collectorAgentService = new CollectorAgentService(
+  new PrismaCollectorAgentRepository(prisma)
 );
 
 export async function closeRuntime(): Promise<void> {
