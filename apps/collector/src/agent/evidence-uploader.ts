@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export interface EvidenceUploadApi {
   uploadEvidence(
@@ -59,13 +59,42 @@ function hasPngSignature(bytes: Uint8Array): boolean {
     && PNG_SIGNATURE.every((value, index) => bytes[index] === value);
 }
 
-function validateManifest(manifest: Record<string, string>): Array<[string, string]> {
-  const entries = Object.entries(manifest);
-  if (entries.some(([key, path]) => !EVIDENCE_KEY_PATTERN.test(key)
-    || typeof path !== "string" || path.length === 0)) {
-    throw new EvidenceUploadError("INVALID_MANIFEST");
+function sameIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function directChildPath(runDirectory: string, manifestPath: string): string {
+  if (manifestPath.length === 0 || manifestPath.includes("\0")) {
+    throw new EvidenceUploadError("INVALID_PATH");
   }
-  return entries;
+  const absolute = isAbsolute(manifestPath);
+  if (!absolute && manifestPath.includes("/")) {
+    throw new EvidenceUploadError("INVALID_PATH");
+  }
+  const candidate = absolute
+    ? manifestPath
+    : join(runDirectory, manifestPath);
+  const filename = basename(candidate);
+  if (filename.length === 0 || filename === "." || filename === ".."
+    || filename.includes("/") || filename.includes("\\") || filename.includes("%")
+    || manifestPath.includes("\\") || !filename.toLowerCase().endsWith(".png")
+    || dirname(candidate) !== runDirectory
+    || candidate !== join(runDirectory, filename)) {
+    throw new EvidenceUploadError("INVALID_PATH");
+  }
+  return candidate;
+}
+
+function validateManifest(
+  manifest: Record<string, string>,
+  runDirectory: string
+): Array<[string, string]> {
+  return Object.entries(manifest).map(([key, path]) => {
+    if (!EVIDENCE_KEY_PATTERN.test(key) || typeof path !== "string") {
+      throw new EvidenceUploadError("INVALID_MANIFEST");
+    }
+    return [key, directChildPath(runDirectory, path)];
+  });
 }
 
 export class EvidenceUploader {
@@ -87,22 +116,30 @@ export class EvidenceUploader {
     if (!SAFE_RUN_ID_PATTERN.test(runId) || runId === "." || runId === "..") {
       throw new EvidenceUploadError("INVALID_RUN_ID");
     }
-    const entries = validateManifest(manifest);
     const runDirectory = resolve(this.workRoot, runId);
     if (!isStrictDescendant(this.workRoot, runDirectory)) {
       throw new EvidenceUploadError("INVALID_PATH");
     }
+    const entries = validateManifest(manifest, runDirectory);
 
     let realWorkRoot: string;
     let realRunDirectory: string;
+    let runIdentity: Stats;
     try {
       realWorkRoot = await this.fileSystem.realpath(this.workRoot);
+      const configuredRunMetadata = await this.fileSystem.lstat(runDirectory);
+      if (configuredRunMetadata.isSymbolicLink() || !configuredRunMetadata.isDirectory()) {
+        throw new EvidenceUploadError("INVALID_PATH");
+      }
       realRunDirectory = await this.fileSystem.realpath(runDirectory);
       const workMetadata = await this.fileSystem.lstat(realWorkRoot);
       const runMetadata = await this.fileSystem.lstat(realRunDirectory);
-      if (!workMetadata.isDirectory() || !runMetadata.isDirectory()) {
+      if (!workMetadata.isDirectory() || workMetadata.isSymbolicLink()
+        || !runMetadata.isDirectory() || runMetadata.isSymbolicLink()
+        || !sameIdentity(configuredRunMetadata, runMetadata)) {
         throw new EvidenceUploadError("INVALID_PATH");
       }
+      runIdentity = runMetadata;
     } catch (error) {
       if (error instanceof EvidenceUploadError) throw error;
       throw new EvidenceUploadError("READ_FAILED");
@@ -113,34 +150,27 @@ export class EvidenceUploader {
     const uploaded = this.uploadedByRun.get(runId) ?? new Set<string>();
     this.uploadedByRun.set(runId, uploaded);
 
-    for (const [evidenceKey, manifestPath] of entries) {
+    for (const [evidenceKey, candidate] of entries) {
       if (uploaded.has(evidenceKey)) continue;
-      const candidate = resolve(runDirectory, manifestPath);
-      if (!isStrictDescendant(runDirectory, candidate)) {
-        throw new EvidenceUploadError("INVALID_PATH");
-      }
-
-      let realCandidate: string;
       let expectedMetadata: Stats;
       try {
+        await this.requireRunIdentity(runDirectory, runIdentity);
         const candidateMetadata = await this.fileSystem.lstat(candidate);
         if (candidateMetadata.isSymbolicLink() || !candidateMetadata.isFile()) {
           throw new EvidenceUploadError("INVALID_PATH");
         }
-        realCandidate = await this.fileSystem.realpath(candidate);
-        expectedMetadata = await this.fileSystem.lstat(realCandidate);
+        expectedMetadata = candidateMetadata;
       } catch (error) {
         if (error instanceof EvidenceUploadError) throw error;
         throw new EvidenceUploadError("READ_FAILED");
       }
-      if (!isStrictDescendant(realRunDirectory, realCandidate)) {
-        throw new EvidenceUploadError("INVALID_PATH");
-      }
-      if (!expectedMetadata.isFile() || expectedMetadata.isSymbolicLink()) {
-        throw new EvidenceUploadError("INVALID_PATH");
-      }
 
-      const bytes = await this.readValidatedFile(realCandidate, expectedMetadata);
+      const bytes = await this.readValidatedFile(
+        candidate,
+        expectedMetadata,
+        runDirectory,
+        runIdentity
+      );
       if (!hasPngSignature(bytes)) throw new EvidenceUploadError("INVALID_PNG");
       const actualKey = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
       if (actualKey !== evidenceKey) throw new EvidenceUploadError("HASH_MISMATCH");
@@ -162,20 +192,48 @@ export class EvidenceUploader {
     this.uploadedByRun.delete(runId);
   }
 
-  private async readValidatedFile(path: string, expectedMetadata: Stats): Promise<Uint8Array> {
+  private async requireRunIdentity(path: string, expectedMetadata: Stats): Promise<void> {
+    const metadata = await this.fileSystem.lstat(path);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()
+      || !sameIdentity(metadata, expectedMetadata)) {
+      throw new EvidenceUploadError("INVALID_PATH");
+    }
+  }
+
+  private async requireFileIdentity(path: string, expectedMetadata: Stats): Promise<void> {
+    const metadata = await this.fileSystem.lstat(path);
+    if (metadata.isSymbolicLink() || !metadata.isFile()
+      || !sameIdentity(metadata, expectedMetadata)) {
+      throw new EvidenceUploadError("INVALID_PATH");
+    }
+  }
+
+  private async readValidatedFile(
+    path: string,
+    expectedMetadata: Stats,
+    runDirectory: string,
+    runIdentity: Stats
+  ): Promise<Uint8Array> {
     let handle: FileHandle | undefined;
     try {
       const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
       handle = await this.fileSystem.open(path, constants.O_RDONLY | noFollow);
       const metadata = await handle.stat();
       if (!metadata.isFile()) throw new EvidenceUploadError("INVALID_PATH");
-      if (metadata.dev !== expectedMetadata.dev || metadata.ino !== expectedMetadata.ino) {
+      if (!sameIdentity(metadata, expectedMetadata)) {
         throw new EvidenceUploadError("INVALID_PATH");
       }
+      await this.requireRunIdentity(runDirectory, runIdentity);
       if (metadata.size > MAX_EVIDENCE_BYTES) {
         throw new EvidenceUploadError("PAYLOAD_TOO_LARGE");
       }
-      return Uint8Array.from(await handle.readFile());
+      const bytes = Uint8Array.from(await handle.readFile());
+      await this.requireFileIdentity(path, expectedMetadata);
+      await this.requireRunIdentity(runDirectory, runIdentity);
+      if (bytes.byteLength > MAX_EVIDENCE_BYTES) {
+        throw new EvidenceUploadError("PAYLOAD_TOO_LARGE");
+      }
+      return bytes;
     } catch (error) {
       if (error instanceof EvidenceUploadError) throw error;
       throw new EvidenceUploadError("READ_FAILED");

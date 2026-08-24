@@ -129,3 +129,43 @@ This section supersedes the original report statements that terminal upload requ
 
 - Task 11 evidence/report endpoints remain isolated fake-fetch contracts until Task 11 implements the server routes.
 - Task 9 live Accessibility behavior remains the Task 14 acceptance gap and was not changed in this fix round.
+
+## Fix Round 2
+
+### Important Finding Resolved
+
+- Aligned collector-side evidence reads with Task 8's reviewed flat screenshot policy. A manifest value may identify only one direct child PNG filename beneath the configured per-run directory; the existing absolute flat paths emitted by the driver remain valid.
+- Nested paths, forward or backslash separators in relative names, empty names, `.`, `..`, NULs, encoded separators, and normalized traversal spellings are rejected before candidate filesystem access or upload.
+- Removed candidate `realpath` traversal. With no supported intermediate candidate directory, replacing `run-1/nested` with an outside symlink cannot reach `lstat`, `open`, or upload.
+- The canonical work root and run directory must be real directories, the configured run path itself must be a non-symlink directory, and its device/inode must match the canonical run directory physically beneath the canonical root.
+- Each direct child is checked with pre-open `lstat`, opened with `O_RDONLY | O_NOFOLLOW` where available, checked as a regular file with the same device/inode, read only from that handle, then checked again at both the path and run-directory identities before bytes are hashed or uploaded. The handle closes on every exit.
+
+### RED
+
+- The initial focused uploader run had five failures: nested paths reached candidate filesystem work, an inside-root run-directory symlink was accepted, run-directory replacement was not detected, and a final-file replacement after reading was accepted.
+- The deterministic reviewed vector replaced `run-1/nested` with an outside symlink after `realpath(candidate)` and before the second `lstat`. Against the old uploader, the expected outside hash was acknowledged and the test failed with `Missing expected rejection`.
+- The unaffected acknowledgement, hash, static symlink, and prior check/open replacement tests remained green during RED.
+
+### GREEN
+
+- Focused evidence uploader tests: 15 passed, 0 failed.
+- Focused API/worker/evidence tests: 46 passed, 0 failed.
+- `pnpm test:collector`: 144 passed, 0 failed.
+- `pnpm verify:portable`: local-env 4, config 16, contracts 13, portable API 89, collector 144, and web 10 passed; all typechecks and the production web build passed without Swift, Taobao, Accessibility, or helper launch.
+- `pnpm typecheck`: passed for API, web, and collector.
+- `node --test scripts/public-audit.test.mjs`: 3 passed, 0 failed.
+- Changed-file public audit: 3 files passed with no secret, webhook, or local-user-path finding.
+- `git diff --check`: passed.
+
+### Self-Review
+
+- Syntax gate: every manifest entry is converted to an exact configured-run direct child before work-root/run-root resolution; nested and normalization forms cannot trigger the injected nested swap hook.
+- Directory identity: the configured and canonical run directories must initially share device/inode identity. That identity is rechecked before each child, after open, and after read, rejecting symlink or directory replacement even when the replacement exposes a hard link to the same evidence inode.
+- File identity: pre-open path metadata must identify a non-symlink regular file; opened metadata must match it; post-read path metadata must still match. Both pre-open and post-read file replacement probes reject without upload.
+- Read boundary: size, PNG signature, and SHA-256 validation use only bytes read from the held file handle. All error exits close the handle and expose only fixed path-free error codes.
+- Round 1 worker behavior is unchanged: heartbeat, claim retry, terminal report, pause, acknowledgement, cancellation, and checkpoint deletion tests remain green.
+
+### Remaining Concerns
+
+- Task 11 evidence/report endpoints remain isolated fake-fetch contracts until Task 11 implements the server routes.
+- Task 9 live Accessibility behavior remains the Task 14 acceptance gap and was not changed in this fix round.

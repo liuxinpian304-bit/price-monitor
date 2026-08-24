@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, mkdir, open, realpath, rename, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdtemp, mkdir, open, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -127,6 +127,97 @@ test("rejects manifest paths outside the run directory without reading or upload
   assert.equal(api.calls.length, 0);
 });
 
+test("rejects nested and normalized manifest paths before candidate filesystem access", async () => {
+  const { workRoot, runDirectory, evidenceKey } = await fixture();
+  const unsafePaths = [
+    join(runDirectory, "nested", "file.png"),
+    "nested/file.png",
+    "nested\\file.png",
+    `${runDirectory}/nested/../capture.png`,
+    "run-1/nested/file.png",
+    "capture%2Foutside.png",
+    "capture%5Coutside.png",
+    "",
+    ".",
+    "..",
+    "capture\0.png"
+  ];
+
+  for (const manifestPath of unsafePaths) {
+    let candidateTouched = false;
+    let openCalls = 0;
+    const api = new FakeEvidenceApi();
+    const uploader = new EvidenceUploader(api, workRoot, {
+      fileSystem: {
+        realpath,
+        async lstat(path) {
+          if (path.includes("nested") || path.includes("capture%")) candidateTouched = true;
+          return lstat(path);
+        },
+        async open(path, flags) {
+          openCalls += 1;
+          return open(path, flags);
+        }
+      }
+    });
+
+    await assert.rejects(
+      () => uploader.upload("run-1", { [evidenceKey]: manifestPath }),
+      (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH",
+      manifestPath
+    );
+    assert.equal(candidateTouched, false, manifestPath);
+    assert.equal(openCalls, 0, manifestPath);
+    assert.equal(api.calls.length, 0, manifestPath);
+  }
+});
+
+test("rejects the reviewed nested-directory replacement vector before its swap hook", {
+  skip: process.platform === "win32"
+}, async () => {
+  const { workRoot, runDirectory } = await fixture();
+  const nestedDirectory = join(runDirectory, "nested");
+  const anchoredDirectory = join(runDirectory, "nested-original");
+  const nestedPath = join(nestedDirectory, "file.png");
+  const outsideDirectory = await mkdtemp(join(tmpdir(), "collector-nested-swap-"));
+  const outsideBytes = Uint8Array.from([...pngBytes, 9]);
+  await mkdir(nestedDirectory);
+  await writeFile(nestedPath, pngBytes);
+  await writeFile(join(outsideDirectory, "file.png"), outsideBytes);
+  let nestedLstatCalls = 0;
+  let swapTriggered = false;
+  let openCalls = 0;
+  const api = new FakeEvidenceApi();
+  const uploader = new EvidenceUploader(api, workRoot, {
+    fileSystem: {
+      realpath,
+      async lstat(path) {
+        if (path.endsWith("/run-1/nested/file.png")) {
+          nestedLstatCalls += 1;
+          if (nestedLstatCalls === 2) {
+            swapTriggered = true;
+            await rename(nestedDirectory, anchoredDirectory);
+            await symlink(outsideDirectory, nestedDirectory);
+          }
+        }
+        return lstat(path);
+      },
+      async open(path, flags) {
+        openCalls += 1;
+        return open(path, flags);
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => uploader.upload("run-1", { [keyFor(outsideBytes)]: nestedPath }),
+    (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH"
+  );
+  assert.equal(swapTriggered, false);
+  assert.equal(openCalls, 0);
+  assert.equal(api.calls.length, 0);
+});
+
 test("rejects a symlink escape from the run directory", { skip: process.platform === "win32" }, async () => {
   const { workRoot, runDirectory, evidenceKey } = await fixture();
   const outsidePath = join(workRoot, "outside.png");
@@ -157,6 +248,22 @@ test("rejects a symlinked run directory that physically escapes the work root", 
 
   await assert.rejects(
     () => uploader.upload("run-escaped", { [keyFor(pngBytes)]: escapedEvidence }),
+    (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH"
+  );
+  assert.equal(api.calls.length, 0);
+});
+
+test("rejects a configured run-directory symlink even when it targets inside the work root", {
+  skip: process.platform === "win32"
+}, async () => {
+  const { workRoot, runDirectory, evidenceKey } = await fixture();
+  const linkedRun = join(workRoot, "run-linked");
+  await symlink(runDirectory, linkedRun);
+  const api = new FakeEvidenceApi();
+  const uploader = new EvidenceUploader(api, workRoot);
+
+  await assert.rejects(
+    () => uploader.upload("run-linked", { [evidenceKey]: join(linkedRun, "capture.png") }),
     (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH"
   );
   assert.equal(api.calls.length, 0);
@@ -204,6 +311,91 @@ test("rejects a regular-file replacement between validation and open", async () 
     () => uploader.upload("run-1", { [evidenceKey]: evidencePath }),
     (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH"
   );
+  assert.equal(api.calls.length, 0);
+});
+
+test("rejects a run-directory replacement that preserves the evidence file inode", {
+  skip: process.platform === "win32"
+}, async () => {
+  const { workRoot, runDirectory, evidencePath, evidenceKey } = await fixture();
+  const replacementRun = join(workRoot, "run-replacement");
+  const displacedRun = join(workRoot, "run-displaced");
+  await mkdir(replacementRun);
+  await link(evidencePath, join(replacementRun, "capture.png"));
+  let swapped = false;
+  const api = new FakeEvidenceApi();
+  const uploader = new EvidenceUploader(api, workRoot, {
+    fileSystem: {
+      realpath,
+      lstat,
+      async open(path, flags) {
+        const handle = await open(path, flags);
+        return new Proxy(handle, {
+          get(target, property) {
+            if (property === "readFile") {
+              return async () => {
+                const bytes = await target.readFile();
+                swapped = true;
+                await rename(runDirectory, displacedRun);
+                await rename(replacementRun, runDirectory);
+                return bytes;
+              };
+            }
+            const value = Reflect.get(target, property, target) as unknown;
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+        });
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => uploader.upload("run-1", { [evidenceKey]: evidencePath }),
+    (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH"
+  );
+  assert.equal(swapped, true);
+  assert.equal(api.calls.length, 0);
+});
+
+test("rejects a direct-child replacement after reading but before byte acceptance", {
+  skip: process.platform === "win32"
+}, async () => {
+  const { workRoot, runDirectory, evidencePath, evidenceKey } = await fixture();
+  const replacementPath = join(runDirectory, "replacement-after-read.png");
+  const displacedPath = join(runDirectory, "capture-before-read.png");
+  await writeFile(replacementPath, pngBytes);
+  let swapped = false;
+  const api = new FakeEvidenceApi();
+  const uploader = new EvidenceUploader(api, workRoot, {
+    fileSystem: {
+      realpath,
+      lstat,
+      async open(path, flags) {
+        const handle = await open(path, flags);
+        return new Proxy(handle, {
+          get(target, property) {
+            if (property === "readFile") {
+              return async () => {
+                const bytes = await target.readFile();
+                swapped = true;
+                await rename(evidencePath, displacedPath);
+                await rename(replacementPath, evidencePath);
+                return bytes;
+              };
+            }
+            const value = Reflect.get(target, property, target) as unknown;
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+        });
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => uploader.upload("run-1", { [evidenceKey]: evidencePath }),
+    (error: unknown) => error instanceof EvidenceUploadError && error.code === "INVALID_PATH"
+  );
+  assert.equal(swapped, true);
   assert.equal(api.calls.length, 0);
 });
 
