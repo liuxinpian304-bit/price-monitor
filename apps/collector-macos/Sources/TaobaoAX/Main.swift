@@ -3,7 +3,7 @@ import Foundation
 @main
 struct TaobaoAXHelper {
     static func main() {
-        let server = JSONLineProtocol(handler: DefaultCommandHandler())
+        let server = JSONLineProtocol(handler: MacOSCommandHandler())
 
         while let input = readLine() {
             let line = server.responseLine(for: input)

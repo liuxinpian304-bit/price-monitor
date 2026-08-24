@@ -67,6 +67,29 @@ struct HelperCommand: Codable, Equatable {
     let value: String?
     let keyCode: Int?
     let destination: String?
+    let fingerprint: AXNodeFingerprint?
+
+    init(
+        id: String,
+        command: CommandName,
+        bundleId: String,
+        nodePath: [Int]? = nil,
+        action: String? = nil,
+        value: String? = nil,
+        keyCode: Int? = nil,
+        destination: String? = nil,
+        fingerprint: AXNodeFingerprint? = nil
+    ) {
+        self.id = id
+        self.command = command
+        self.bundleId = bundleId
+        self.nodePath = nodePath
+        self.action = action
+        self.value = value
+        self.keyCode = keyCode
+        self.destination = destination
+        self.fingerprint = fingerprint
+    }
 }
 
 struct HelperResponse: Codable, Equatable {
@@ -83,12 +106,6 @@ struct HelperError: Codable, Equatable, Error {
 
 protocol CommandHandling {
     func handle(_ command: HelperCommand) throws -> JSONValue?
-}
-
-struct DefaultCommandHandler: CommandHandling {
-    func handle(_ command: HelperCommand) throws -> JSONValue? {
-        throw HelperError(code: "NOT_IMPLEMENTED", message: "Command is not implemented.")
-    }
 }
 
 struct JSONLineProtocol {
@@ -138,7 +155,9 @@ struct JSONLineProtocol {
     func responseLine(for input: String) -> String {
         let response = response(for: input)
 
-        guard let encoded = try? JSONEncoder().encode(response) else {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let encoded = try? encoder.encode(response) else {
             return "{\"id\":\"invalid-request\",\"ok\":false,\"error\":{\"code\":\"INTERNAL_ERROR\",\"message\":\"Internal error.\"}}\n"
         }
 

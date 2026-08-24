@@ -7,7 +7,7 @@ final class ProtocolTests: XCTestCase {
 
     func testCommandRoundTripsAllFields() throws {
         let input = """
-        {"id":"command-1","command":"perform","bundleId":"com.taobao.pcdesktop","nodePath":[1,3],"action":"AXPress","value":"selected","keyCode":36,"destination":"evidence/window.png"}
+        {"id":"command-1","command":"perform","bundleId":"com.taobao.pcdesktop","nodePath":[1,3],"action":"AXPress","value":"selected","keyCode":36,"destination":"evidence/window.png","fingerprint":{"role":"AXButton","title":"Share","identifier":"share"}}
         """
 
         let command = try decoder.decode(HelperCommand.self, from: Data(input.utf8))
@@ -22,7 +22,8 @@ final class ProtocolTests: XCTestCase {
                 action: "AXPress",
                 value: "selected",
                 keyCode: 36,
-                destination: "evidence/window.png"
+                destination: "evidence/window.png",
+                fingerprint: AXNodeFingerprint(role: "AXButton", title: "Share", identifier: "share")
             )
         )
         XCTAssertEqual(try decoder.decode(HelperCommand.self, from: encoder.encode(command)), command)
@@ -108,8 +109,22 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(response.error?.message, "Internal error.")
     }
 
+    func testOnlyExactPromptValueCanRequestAccessibilityPrompt() {
+        XCTAssertTrue(MacOSCommandHandler.shouldPrompt(for: "prompt"))
+        XCTAssertFalse(MacOSCommandHandler.shouldPrompt(for: nil))
+        XCTAssertFalse(MacOSCommandHandler.shouldPrompt(for: "Prompt"))
+        XCTAssertFalse(MacOSCommandHandler.shouldPrompt(for: "true"))
+        XCTAssertFalse(MacOSCommandHandler.shouldPrompt(for: " prompt "))
+    }
+
     private func makeProtocol() -> JSONLineProtocol {
-        JSONLineProtocol(handler: DefaultCommandHandler())
+        JSONLineProtocol(handler: NotImplementedHandler())
+    }
+}
+
+private struct NotImplementedHandler: CommandHandling {
+    func handle(_ command: HelperCommand) throws -> JSONValue? {
+        throw HelperError(code: "NOT_IMPLEMENTED", message: "Command is not implemented.")
     }
 }
 
