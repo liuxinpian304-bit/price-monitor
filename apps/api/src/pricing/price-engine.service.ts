@@ -31,9 +31,11 @@ function assertMoney(value: number, label: string): void {
 
 function knownTotal(adjustments: PriceAdjustment[], label: string): number | null {
   let total = 0;
+  let hasUnknownAmount = false;
   for (const adjustment of adjustments) {
     if (adjustment.amountFen === null) {
-      return null;
+      hasUnknownAmount = true;
+      continue;
     }
     assertMoney(adjustment.amountFen, `${label}“${adjustment.label}”`);
     total += adjustment.amountFen;
@@ -41,7 +43,7 @@ function knownTotal(adjustments: PriceAdjustment[], label: string): number | nul
       throw new RangeError(`${label}金额超出安全范围`);
     }
   }
-  return total;
+  return hasUnknownAmount ? null : total;
 }
 
 export class PriceEngineService {

@@ -77,6 +77,34 @@ test("returns manual when page price or a public discount amount is uncertain", 
   }).confidence, "MANUAL");
 });
 
+test("validates a known public discount after an unknown public discount", () => {
+  assert.throws(() => new PriceEngineService().calculate({
+    pagePriceFen: 649_900,
+    publicDiscounts: [
+      { label: "金额待确认优惠", amountFen: null },
+      { label: "无效公开优惠", amountFen: -1 }
+    ],
+    mandatoryFees: [],
+    privatePriceRequired: false
+  }), /非负整数/);
+});
+
+test("validates known mandatory fees after an unknown mandatory fee", () => {
+  const engine = new PriceEngineService();
+
+  for (const amountFen of [-1, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => engine.calculate({
+      pagePriceFen: 649_900,
+      publicDiscounts: [],
+      mandatoryFees: [
+        { label: "金额待确认费用", amountFen: null },
+        { label: "无效必付费用", amountFen }
+      ],
+      privatePriceRequired: false
+    }), /非负整数/);
+  }
+});
+
 test("uses integer fen and rejects invalid negative money", () => {
   const engine = new PriceEngineService();
 
