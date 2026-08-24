@@ -12,6 +12,8 @@ import { AtomicCheckpointStore, type CollectorCheckpoint } from "./checkpoint-st
 import { CollectionRunner, hashCollectorJob } from "./collection-runner.ts";
 import { FixtureDriver } from "../drivers/fixture/fixture-driver.ts";
 import {
+  DriverIssueError,
+  DriverSkuIssueError,
   LoginRequiredError,
   PlatformChallengeError,
   type TaobaoDesktopDriver
@@ -1316,6 +1318,71 @@ test("resumes issue-backed terminal SKU checkpoints without retrying completed o
       assert.equal(resumedDriver.events.some((event) => event.type === "SELECT_SKU"
         && event.platformItemId === "own-7506"), false, variant.name);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reports typed startup and missing-identity driver outcomes without claiming completion", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-driver-issues-"));
+  try {
+    const startupBase = await FixtureDriver.fromFile(fixturePath);
+    const startupDriver = withDiagnose(startupBase, async () => {
+      throw new DriverIssueError(
+        "APP_VERSION_UNSUPPORTED",
+        "Unsupported Taobao Desktop version 2.4.6 build 16."
+      );
+    });
+    const startupReport = await new CollectionRunner(
+      startupDriver,
+      new AtomicCheckpointStore(join(root, "startup"))
+    ).run({ ...job, runId: "driver-startup-issue" }, job.collectorId);
+    assert.equal(startupReport.status, "FAILED");
+    assert.equal(startupReport.issues.some((entry) => entry.code === "APP_VERSION_UNSUPPORTED"), true);
+
+    const missingBase = await FixtureDriver.fromFile(fixturePath);
+    const missingDriver: TaobaoDesktopDriver = {
+      diagnose: () => missingBase.diagnose(),
+      openOwnListing: (url) => missingBase.openOwnListing(url),
+      search: async (query, limit) => {
+        const positions = await missingBase.search(query, limit);
+        return positions.map((position, index) => index === 0
+          ? { ...position, platformItemId: null, url: "https://item.example.test/unresolved" }
+          : position);
+      },
+      openSearchPosition: async () => {
+        throw new DriverIssueError("MISSING_ITEM_ID", "A stable Taobao item ID was not available.");
+      },
+      selectSku: (selection) => missingBase.selectSku(selection),
+      returnToSearch: () => missingBase.returnToSearch()
+    };
+    const missingReport = await new CollectionRunner(
+      missingDriver,
+      new AtomicCheckpointStore(join(root, "missing"))
+    ).run({ ...job, runId: "driver-missing-id" }, job.collectorId);
+    assert.equal(missingReport.status, "PARTIAL_FAILED");
+    assert.equal(missingReport.issues.some((entry) => entry.code === "MISSING_ITEM_ID"), true);
+    assert.equal(missingReport.competitorItems.length, 0);
+    assert.equal(missingReport.positions.some((entry) => entry.platformItemId === entry.url), false);
+
+    const unstableBase = await FixtureDriver.fromFile(fixturePath);
+    const unstableDriver: TaobaoDesktopDriver = {
+      diagnose: () => unstableBase.diagnose(),
+      openOwnListing: (url) => unstableBase.openOwnListing(url),
+      search: (query, limit) => unstableBase.search(query, limit),
+      openSearchPosition: (position) => unstableBase.openSearchPosition(position),
+      selectSku: async () => {
+        throw new DriverSkuIssueError("PRICE_UNSTABLE", "Selected-SKU price evidence did not stabilize.");
+      },
+      returnToSearch: () => unstableBase.returnToSearch()
+    };
+    const unstableReport = await new CollectionRunner(
+      unstableDriver,
+      new AtomicCheckpointStore(join(root, "unstable"))
+    ).run({ ...job, runId: "driver-price-unstable" }, job.collectorId);
+    assert.equal(unstableReport.status, "PARTIAL_FAILED");
+    assert.equal(unstableReport.issues.some((entry) => entry.code === "PRICE_UNSTABLE"
+      && entry.platformItemId === "own-7506"), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

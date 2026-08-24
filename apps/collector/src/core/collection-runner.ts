@@ -20,11 +20,14 @@ import {
   canonicalCheckpointSkuKey
 } from "./checkpoint-semantics.ts";
 import {
+  DriverIssueError,
+  DriverSkuIssueError,
   LoginRequiredError,
   PlatformChallengeError,
   UiContractChangedError,
   type DriverItemPage,
   type DriverSearchPosition,
+  type DriverSkuSelectionResult,
   type DriverSkuView,
   type SkuSelection,
   type TaobaoDesktopDriver
@@ -171,6 +174,7 @@ export class CollectionRunner {
     const checkpoint = existing ?? this.newCheckpoint(job, collectorId, jobHash);
     checkpoint.report.issues = checkpoint.report.issues.filter((entry) =>
       entry.code !== "LOGIN_REQUIRED" && entry.code !== "PLATFORM_CHALLENGE"
+      && entry.code !== "MISSING_ITEM_ID"
       && entry.message !== PAUSE_INCOMPLETE_MESSAGE);
 
     try {
@@ -214,6 +218,29 @@ export class CollectionRunner {
       }
       if (error instanceof PlatformChallengeError) {
         return this.pause(checkpoint, "PAUSED_CHALLENGE", "PLATFORM_CHALLENGE", error.message);
+      }
+      if (error instanceof DriverIssueError) {
+        const capturedAt = now();
+        if (error.code === "MISSING_ITEM_ID") {
+          const firstMissingRank = checkpoint.report.positions.find((position) =>
+            position.platformItemId === canonicalUrl(position.url))?.rank;
+          if (firstMissingRank !== undefined) {
+            checkpoint.report.positions = checkpoint.report.positions.filter((position) =>
+              position.rank < firstMissingRank);
+          }
+          if (checkpoint.phase === "ITEMS") checkpoint.phase = "SEARCH";
+        }
+        addIssueOnce(checkpoint.report, issue(error.code, error.message, capturedAt));
+        checkpoint.report.status = checkpoint.report.positions.length === 0
+          && checkpoint.report.ownItems.length === 0 ? "FAILED" : "PARTIAL_FAILED";
+        checkpoint.report.completedAt = capturedAt;
+        this.ensureBoundaryIssues(checkpoint.report);
+        const report = collectorReportSchema.parse(checkpoint.report);
+        if (error.code !== "APP_VERSION_UNSUPPORTED") {
+          checkpoint.report = report;
+          await this.checkpointStore.save(checkpoint.runId, checkpoint);
+        }
+        return report;
       }
       if (error instanceof UiContractChangedError) {
         addIssueOnce(checkpoint.report, issue("UI_CONTRACT_CHANGED", error.message, now()));
@@ -443,7 +470,29 @@ export class CollectionRunner {
       const completedSkuKey = canonicalCheckpointSkuKey(checkpoint, item.platformItemId, skuId);
       if (checkpoint.completedSkuKeys.includes(completedSkuKey)) continue;
 
-      const result = await this.driver.selectSku(selection);
+      let result: DriverSkuSelectionResult;
+      try {
+        result = await this.driver.selectSku(selection);
+      } catch (error) {
+        if (!(error instanceof DriverSkuIssueError)) throw error;
+        addIssueOnce(checkpoint.report, issue(
+          error.code,
+          error.message,
+          now(),
+          item.platformItemId,
+          skuId
+        ));
+        if (item.skus.length === 0) {
+          addIssueOnce(checkpoint.report, issue(
+            "SKU_ENUMERATION_INCOMPLETE",
+            "No SKU has produced a validated selected-SKU price yet",
+            now(),
+            item.platformItemId
+          ));
+        }
+        await this.completeSku(checkpoint, completedSkuKey);
+        continue;
+      }
       if (result.availability === "UNAVAILABLE") {
         addIssueOnce(checkpoint.report, issue(
           "SKU_ENUMERATION_INCOMPLETE",

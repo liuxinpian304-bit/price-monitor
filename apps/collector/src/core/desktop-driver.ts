@@ -91,3 +91,27 @@ export interface TaobaoDesktopDriver {
 export class LoginRequiredError extends Error {}
 export class PlatformChallengeError extends Error {}
 export class UiContractChangedError extends Error {}
+
+export type DriverIssueCode = "MISSING_ITEM_ID" | "APP_VERSION_UNSUPPORTED";
+
+export class DriverIssueError extends Error {
+  readonly code: DriverIssueCode;
+
+  constructor(code: DriverIssueCode, message: string) {
+    super(message);
+    this.name = "DriverIssueError";
+    this.code = code;
+  }
+}
+
+export type DriverSkuIssueCode = "SKU_SELECTION_MISMATCH" | "PRICE_UNSTABLE";
+
+export class DriverSkuIssueError extends Error {
+  readonly code: DriverSkuIssueCode;
+
+  constructor(code: DriverSkuIssueCode, message: string) {
+    super(message);
+    this.name = "DriverSkuIssueError";
+    this.code = code;
+  }
+}
