@@ -249,6 +249,20 @@ test("bounds job and report search limits to 50", () => {
   assert.throws(() => collectorReportSchema.parse({ ...report, searchLimit: 51 }));
 });
 
+test("keeps collector jobs compatible with catalog text stored before report bounds", () => {
+  const longUrl = `https://detail.tmall.com/item.htm?id=own-1&source=${"u".repeat(2_050)}`;
+  const longTerm = "t".repeat(301);
+  assert.doesNotThrow(() => collectorJobSchema.parse({
+    ...job,
+    ownListings: [{ ...job.ownListings[0], url: longUrl }],
+    rule: {
+      ...job.rule,
+      mustIncludeTerms: [longTerm],
+      excludedTerms: [longTerm]
+    }
+  }));
+});
+
 test("requires item search ranks to point to the same item in positions", () => {
   assert.throws(() => collectorReportSchema.parse({
     ...report,
@@ -266,4 +280,41 @@ test("requires each displayed price range to be ordered", () => {
       ? { ...entry, displayPriceMinFen: 70_000 }
       : entry)
   }));
+});
+
+test("bounds every persisted report scalar before the Prisma boundary", () => {
+  const validReport = () => collectorReportSchema.parse(report);
+  const rejectsAt = (
+    mutate: (candidate: ReturnType<typeof validReport>) => void,
+    expectedPath: Array<string | number>
+  ) => {
+    const candidate = validReport();
+    mutate(candidate);
+    const parsed = collectorReportSchema.safeParse(candidate);
+    assert.equal(parsed.success, false);
+    assert.ok(!parsed.success && parsed.error.issues.some((entry) =>
+      JSON.stringify(entry.path) === JSON.stringify(expectedPath)), JSON.stringify(expectedPath));
+  };
+
+  rejectsAt((candidate) => { candidate.runId = "r".repeat(161); }, ["runId"]);
+  rejectsAt((candidate) => { candidate.collectorId = "c".repeat(161); }, ["collectorId"]);
+  rejectsAt((candidate) => { candidate.appVersion = "v".repeat(121); }, ["appVersion"]);
+  rejectsAt((candidate) => {
+    candidate.positions[2]!.platformItemId = "i".repeat(161);
+  }, ["positions", 2, "platformItemId"]);
+  rejectsAt((candidate) => { candidate.positions[0]!.shopName = "s".repeat(201); }, ["positions", 0, "shopName"]);
+  rejectsAt((candidate) => { candidate.positions[0]!.title = "t".repeat(1001); }, ["positions", 0, "title"]);
+  rejectsAt((candidate) => { candidate.positions[0]!.url = `https://example.com/${"u".repeat(2050)}`; }, ["positions", 0, "url"]);
+  rejectsAt((candidate) => { candidate.ownItems[0]!.ownListingId = "o".repeat(161); }, ["ownItems", 0, "ownListingId"]);
+  rejectsAt((candidate) => { candidate.ownItems[0]!.skus[0]!.skuId = "k".repeat(161); }, ["ownItems", 0, "skus", 0, "skuId"]);
+  rejectsAt((candidate) => { candidate.ownItems[0]!.skus[0]!.label = "l".repeat(501); }, ["ownItems", 0, "skus", 0, "label"]);
+  rejectsAt((candidate) => {
+    candidate.ownItems[0]!.skus[0]!.listPriceFen = 2_147_483_648;
+  }, ["ownItems", 0, "skus", 0, "listPriceFen"]);
+  rejectsAt((candidate) => {
+    candidate.positions[0]!.displayPriceMinFen = 2_147_483_648;
+  }, ["positions", 0, "displayPriceMinFen"]);
+  rejectsAt((candidate) => {
+    candidate.ownItems[0]!.skus[0]!.promotions[0]!.amountFen = 2_147_483_648;
+  }, ["ownItems", 0, "skus", 0, "promotions", 0, "amountFen"]);
 });

@@ -189,6 +189,8 @@ model CollectionRun {
   collectorAgentId   String?
   claimedAt          DateTime?
   claimedOwnListingIds String[]                   @default([])
+  desktopReportDigest String?                     @db.VarChar(80)
+  desktopIngestionSummary Json?
   heartbeatAt        DateTime?
   searchLimit        Int                        @default(50)
   coalescedIntoRunId String?

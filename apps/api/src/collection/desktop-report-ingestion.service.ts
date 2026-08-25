@@ -2,6 +2,8 @@ import {
   collectorReportSchema,
   type CollectorReport
 } from "../../../../packages/contracts/src/index.ts";
+import { createHash } from "node:crypto";
+import { z } from "zod";
 
 import type { CollectorAgentService } from "../collector-agent/collector-agent.service.ts";
 import type { CollectionEvidenceStore } from "./collection-evidence-store.ts";
@@ -26,6 +28,17 @@ export interface IngestionSummary {
   competitorSnapshotIds: string[];
 }
 
+export const ingestionSummarySchema = z.object({
+  runId: z.string().min(1).max(160),
+  status: z.enum(["SUCCEEDED", "PARTIAL_FAILED", "FAILED"]),
+  positionCount: z.number().int().nonnegative().max(2_147_483_647),
+  uniqueItemCount: z.number().int().nonnegative().max(2_147_483_647),
+  skuCount: z.number().int().nonnegative().max(2_147_483_647),
+  issueCount: z.number().int().nonnegative().max(2_147_483_647),
+  ownSnapshotIds: z.array(z.string().min(1).max(160)),
+  competitorSnapshotIds: z.array(z.string().min(1).max(160))
+}).strict();
+
 export interface ClaimedDesktopRun {
   runId: string;
   agentId: string;
@@ -38,9 +51,15 @@ export interface ClaimedDesktopRun {
 
 export interface DesktopReportRepository {
   inspectRun(agentId: string, runId: string): Promise<ClaimedDesktopRun | null>;
+  withEvidenceRunLock<T>(
+    agentId: string,
+    runId: string,
+    operation: (mode: "CREATE_OR_REPLAY" | "REPLAY_ONLY") => Promise<T>
+  ): Promise<T>;
   ingest(
     agentId: string,
-    report: CollectorReport
+    report: CollectorReport,
+    verifyEvidence: () => Promise<void>
   ): Promise<{ summary: IngestionSummary; newlyAccepted: boolean }>;
   recordSystemError(agentId: string, runId: string, code: string, message: string): Promise<void>;
 }
@@ -76,15 +95,54 @@ export class DesktopReportIngestionError extends Error {
   }
 }
 
-const successfulReportConflicts = new Set([
+const partialFailureIssueCodes = new Set([
   "ITEM_UNAVAILABLE",
   "SKU_ENUMERATION_INCOMPLETE",
   "SKU_SELECTION_MISMATCH",
   "PRICE_UNSTABLE",
   "UI_CONTRACT_CHANGED",
-  "LOGIN_REQUIRED",
-  "PLATFORM_CHALLENGE"
+  "MISSING_ITEM_ID"
 ]);
+
+const fatalFailureIssueCodes = new Set([
+  "MISSING_ITEM_ID",
+  "APP_VERSION_UNSUPPORTED",
+  "UI_CONTRACT_CHANGED",
+  "SCREEN_RECORDING_PERMISSION_REQUIRED"
+]);
+
+const reportEndpointForbiddenIssueCodes = new Set([
+  "LOGIN_REQUIRED",
+  "PLATFORM_CHALLENGE",
+  "OWN_BASELINE_MISSING",
+  "OWN_BASELINE_AMBIGUOUS"
+]);
+
+function validateTerminalSemantics(report: CollectorReport): void {
+  if (report.status === "PAUSED_LOGIN" || report.status === "PAUSED_CHALLENGE") {
+    throw new DesktopReportValidationError();
+  }
+  if (report.issues.some((issue) => reportEndpointForbiddenIssueCodes.has(issue.code))) {
+    throw new DesktopReportValidationError();
+  }
+
+  if (report.status === "SUCCEEDED") {
+    if (report.issues.length !== 0) throw new DesktopReportValidationError();
+    return;
+  }
+
+  const hasProgress = report.positions.length > 0 || report.ownItems.length > 0;
+  if (report.status === "PARTIAL_FAILED") {
+    if (!hasProgress || !report.issues.some((issue) => partialFailureIssueCodes.has(issue.code))) {
+      throw new DesktopReportValidationError();
+    }
+    return;
+  }
+
+  if (hasProgress || !report.issues.some((issue) => fatalFailureIssueCodes.has(issue.code))) {
+    throw new DesktopReportValidationError();
+  }
+}
 
 function canonicalizeReportTimestamps(report: CollectorReport): CollectorReport {
   const canonical = structuredClone(report);
@@ -104,18 +162,34 @@ function canonicalizeReportTimestamps(report: CollectorReport): CollectorReport 
   return canonical;
 }
 
+function canonicalJson(value: unknown): string {
+  const normalize = (entry: unknown): unknown => {
+    if (Array.isArray(entry)) return entry.map(normalize);
+    if (entry && typeof entry === "object") {
+      return Object.fromEntries(
+        Object.entries(entry as Record<string, unknown>)
+          .filter(([, nested]) => nested !== undefined)
+          .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+          .map(([key, nested]) => [key, normalize(nested)])
+      );
+    }
+    return entry;
+  };
+  return JSON.stringify(normalize(value));
+}
+
+export function desktopReportDigest(report: CollectorReport): string {
+  const canonical = canonicalizeReportTimestamps(report);
+  return `sha256:${createHash("sha256").update(canonicalJson(canonical)).digest("hex")}`;
+}
+
 function validateReportContract(input: CollectorReport): CollectorReport {
   const parsed = collectorReportSchema.safeParse(input);
   if (!parsed.success) throw new DesktopReportValidationError();
-  if (parsed.data.status === "PAUSED_LOGIN" || parsed.data.status === "PAUSED_CHALLENGE") {
+  if (parsed.data.competitorItems.some((item) => item.searchRanks.length === 0)) {
     throw new DesktopReportValidationError();
   }
-  if (
-    parsed.data.status === "SUCCEEDED"
-    && parsed.data.issues.some((issue) => successfulReportConflicts.has(issue.code))
-  ) {
-    throw new DesktopReportValidationError();
-  }
+  validateTerminalSemantics(parsed.data);
   for (const entry of [...parsed.data.positions, ...parsed.data.ownItems, ...parsed.data.competitorItems]) {
     let itemId: string | null = null;
     try {
@@ -147,7 +221,11 @@ function validateClaimBinding(
     throw new DesktopReportConflictError();
   }
   const claimedOwnListings = new Set(run.ownListingIds);
-  if (report.ownItems.some((item) => !claimedOwnListings.has(item.ownListingId))) {
+  const reportedOwnListings = new Set(report.ownItems.map((item) => item.ownListingId));
+  if (report.ownItems.some((item) => !claimedOwnListings.has(item.ownListingId))
+    || (report.status === "SUCCEEDED"
+      && (reportedOwnListings.size !== claimedOwnListings.size
+        || [...claimedOwnListings].some((id) => !reportedOwnListings.has(id))))) {
     throw new DesktopReportConflictError();
   }
 }
@@ -187,13 +265,13 @@ export class DesktopReportIngestionService {
     if (!run) throw new DesktopReportConflictError();
     validateClaimBinding(report, run, ownership.agentId);
 
-    const evidenceChecks = await Promise.all(
-      reportEvidenceKeys(report).map((key) => this.evidenceStore.has(report.runId, key))
-    );
-    if (evidenceChecks.some((exists) => !exists)) throw new DesktopReportValidationError();
-
     try {
-      const result = await this.repository.ingest(ownership.agentId, report);
+      const result = await this.repository.ingest(ownership.agentId, report, async () => {
+        const evidenceChecks = await Promise.all(
+          reportEvidenceKeys(report).map((key) => this.evidenceStore.has(report.runId, key))
+        );
+        if (evidenceChecks.some((exists) => !exists)) throw new DesktopReportValidationError();
+      });
       Object.defineProperty(result.summary, INGESTION_DISPOSITION, {
         value: result.newlyAccepted ? "created" : "existing",
         enumerable: false
@@ -220,18 +298,11 @@ export class DesktopReportIngestionService {
     bytes: Uint8Array
   ): Promise<{ evidenceKey: string; created: boolean }> {
     const ownership = await this.collectorAgentService.assertRunOwnership(agentToken, runId);
-    const run = await this.repository.inspectRun(ownership.agentId, runId);
-    if (!run || run.agentId !== ownership.agentId) throw new DesktopReportConflictError();
-
-    if (run.status === "RUNNING") {
-      return this.evidenceStore.put(runId, sha256, bytes);
-    }
-    if (run.status === "SUCCEEDED" || run.status === "PARTIAL_FAILED" || run.status === "FAILED") {
-      if (!await this.evidenceStore.has(runId, `sha256:${sha256}`)) {
+    return this.repository.withEvidenceRunLock(ownership.agentId, runId, async (mode) => {
+      if (mode === "REPLAY_ONLY" && !await this.evidenceStore.has(runId, `sha256:${sha256}`)) {
         throw new DesktopReportConflictError();
       }
       return this.evidenceStore.put(runId, sha256, bytes);
-    }
-    throw new DesktopReportConflictError();
+    });
   }
 }

@@ -2,11 +2,12 @@ import "dotenv/config";
 
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 
+import { Prisma } from "../../../../generated/prisma/client.ts";
 import type { CollectorReport } from "../../../../packages/contracts/src/index.ts";
 import { CollectorAgentService } from "../collector-agent/collector-agent.service.ts";
 import { PrismaCollectorAgentRepository } from "../collector-agent/prisma-collector-agent.repository.ts";
@@ -17,7 +18,8 @@ import { DesktopReportIngestionService } from "./desktop-report-ingestion.servic
 import { PrismaDesktopReportRepository } from "./prisma-desktop-report.repository.ts";
 
 const prisma = createPrismaClient();
-const evidenceRoot = await mkdtemp(join(tmpdir(), "desktop-report-integration-"));
+const evidenceRootTemporary = await mkdtemp(join(tmpdir(), "desktop-report-integration-"));
+const evidenceRoot = await realpath(evidenceRootTemporary);
 const evidenceStore = new CollectionEvidenceStore(evidenceRoot);
 
 function evidence(bytes: Buffer): { bytes: Buffer; digest: string; key: string } {
@@ -39,10 +41,10 @@ before(async () => {
 
 after(async () => {
   await prisma.$disconnect();
-  await rm(evidenceRoot, { recursive: true, force: true });
+  await rm(evidenceRootTemporary, { recursive: true, force: true });
 });
 
-test("transactionally ingests one concurrent report history and returns its original summary", async () => {
+test("transactionally ingests one concurrent report history and returns its original summary", async (context) => {
   const suffix = randomUUID().replaceAll("-", "");
   const token = createCollectorToken();
   let modelId: string | undefined;
@@ -119,18 +121,22 @@ test("transactionally ingests one concurrent report history and returns its orig
 
     const ownItemId = `own-${suffix}`;
     const competitorItemId = `competitor-${suffix}`;
+    const unavailableItemId = `unavailable-${suffix}`;
     const positions = Array.from({ length: 50 }, (_, index) => {
       const rank = index + 1;
       const own = rank === 1;
-      const platformItemId = own ? ownItemId : competitorItemId;
+      const unavailable = rank >= 49;
+      const platformItemId = own ? ownItemId : unavailable ? unavailableItemId : competitorItemId;
       return {
         rank,
         platformItemId,
         url: `https://${own ? "item.taobao.com" : "detail.tmall.com"}/item.htm?id=${platformItemId}`,
-        shopName: own ? "Own Shop" : "Competitor Shop",
-        title: own ? "Sony MDR-7506 own" : "Sony MDR-7506 competitor",
-        displayPriceMinFen: own ? 69_800 : 65_800,
-        displayPriceMaxFen: own ? 69_800 : 65_800,
+        shopName: own ? "Own Shop" : unavailable ? "Unavailable Shop" : "Competitor Shop",
+        title: own ? "Sony MDR-7506 own" : unavailable
+          ? "Sony MDR-7506 unavailable"
+          : "Sony MDR-7506 competitor",
+        displayPriceMinFen: own ? 69_800 : unavailable ? 64_800 : 65_800,
+        displayPriceMaxFen: own ? 69_800 : unavailable ? 64_800 : 65_800,
         sponsored: rank === 2,
         capturedAt: shanghaiOffset(new Date(Date.UTC(2026, 7, 24, 1, 30, rank)).toISOString())
       };
@@ -203,7 +209,7 @@ test("transactionally ingests one concurrent report history and returns its orig
         url: `https://detail.tmall.com/item.htm?id=${competitorItemId}`,
         shopName: "Competitor Shop",
         title: "Sony MDR-7506 competitor",
-        searchRanks: Array.from({ length: 49 }, (_, index) => index + 2),
+        searchRanks: Array.from({ length: 47 }, (_, index) => index + 2),
         skus: [
           {
             skuId: "competitor-black",
@@ -274,15 +280,30 @@ test("transactionally ingests one concurrent report history and returns its orig
             evidenceKey: null
           }
         ]
+      }, {
+        platformItemId: unavailableItemId,
+        url: `https://detail.tmall.com/item.htm?id=${unavailableItemId}`,
+        shopName: "Unavailable Shop",
+        title: "Sony MDR-7506 unavailable",
+        searchRanks: [49, 50],
+        skus: []
       }],
-      issues: [{
-        code: "PRICE_UNSTABLE",
-        message: "Public price did not stabilize",
-        platformItemId: competitorItemId,
-        skuId: "competitor-cable",
-        evidenceKey: secondEvidence.key,
-        capturedAt: "2026-08-24T09:35:00.000+08:00"
-      }]
+      issues: [
+        {
+          code: "PRICE_UNSTABLE",
+          message: "Public price did not stabilize",
+          platformItemId: competitorItemId,
+          skuId: "competitor-cable",
+          evidenceKey: secondEvidence.key,
+          capturedAt: "2026-08-24T09:35:00.000+08:00"
+        },
+        {
+          code: "ITEM_UNAVAILABLE",
+          message: "Item became unavailable",
+          platformItemId: unavailableItemId,
+          capturedAt: "2026-08-24T09:35:30.000+08:00"
+        }
+      ]
     };
 
     const repository = new PrismaDesktopReportRepository(prisma);
@@ -311,9 +332,9 @@ test("transactionally ingests one concurrent report history and returns its orig
       runId: run.id,
       status: "PARTIAL_FAILED",
       positionCount: 50,
-      uniqueItemCount: 2,
+      uniqueItemCount: 3,
       skuCount: 6,
-      issueCount: 1
+      issueCount: 2
     });
 
     const storedRun = await prisma.collectionRun.findUniqueOrThrow({ where: { id: run.id } });
@@ -330,22 +351,24 @@ test("transactionally ingests one concurrent report history and returns its orig
     }, {
       status: "PARTIAL_FAILED",
       searchedCount: 50,
-      fetchedCount: 2,
+      fetchedCount: 3,
       matchedCount: 0,
-      failedCount: 1,
+      failedCount: 2,
       discoveredCount: 50,
       skuCount: 6,
-      incompleteCount: 1,
+      incompleteCount: 2,
       finishedAt: new Date(report.completedAt).toISOString()
     });
     assert.deepEqual(Reflect.get(storedRun, "claimedOwnListingIds"), [ownListing.id]);
+    assert.match(storedRun.desktopReportDigest ?? "", /^sha256:[0-9a-f]{64}$/);
+    assert.deepEqual(storedRun.desktopIngestionSummary, first);
 
     assert.equal(await prisma.collectionSearchPosition.count({ where: { collectionRunId: run.id } }), 50);
     assert.equal(await prisma.searchCandidate.count({
       where: { monitoredModelId: model.id, providerKey: "taobao-desktop", platformItemId: competitorItemId }
     }), 1);
     assert.equal(await prisma.offerSnapshot.count({ where: { collectionRunId: run.id } }), 6);
-    assert.equal(await prisma.collectionIssue.count({ where: { collectionRunId: run.id } }), 1);
+    assert.equal(await prisma.collectionIssue.count({ where: { collectionRunId: run.id } }), 2);
 
     const snapshots = await prisma.offerSnapshot.findMany({ where: { collectionRunId: run.id } });
     const ownSnapshots = snapshots.filter((snapshot) => snapshot.ownListingId === ownListing.id);
@@ -397,9 +420,191 @@ test("transactionally ingests one concurrent report history and returns its orig
       attributes: { color: "Black", package: "Bare" }
     });
 
-    const issue = await prisma.collectionIssue.findFirstOrThrow({ where: { collectionRunId: run.id } });
+    const issue = await prisma.collectionIssue.findFirstOrThrow({
+      where: { collectionRunId: run.id, code: "PRICE_UNSTABLE" }
+    });
     assert.equal(issue.evidenceKey, secondEvidence.key);
     assert.equal(issue.message, "Public price did not stabilize");
+
+    await context.test("upgrades an identical terminal replay accepted before receipt persistence", async () => {
+      await prisma.collectionRun.update({
+        where: { id: run.id },
+        data: { desktopReportDigest: null, desktopIngestionSummary: Prisma.JsonNull }
+      });
+
+      assert.deepEqual(await service.ingest(token.plaintext, structuredClone(report)), first);
+      const upgraded = await prisma.collectionRun.findUniqueOrThrow({ where: { id: run.id } });
+      assert.match(upgraded.desktopReportDigest ?? "", /^sha256:[0-9a-f]{64}$/);
+      assert.deepEqual(upgraded.desktopIngestionSummary, first);
+    });
+
+    await context.test("normalizes equivalent timestamps and object key order for replay", async () => {
+      const equivalent = structuredClone(report);
+      equivalent.startedAt = new Date(equivalent.startedAt).toISOString();
+      equivalent.completedAt = new Date(equivalent.completedAt).toISOString();
+      for (const position of equivalent.positions) {
+        position.capturedAt = new Date(position.capturedAt).toISOString();
+      }
+      for (const item of [...equivalent.ownItems, ...equivalent.competitorItems]) {
+        for (const sku of item.skus) {
+          sku.capturedAt = new Date(sku.capturedAt).toISOString();
+          sku.attributes = Object.fromEntries(Object.entries(sku.attributes).reverse());
+        }
+      }
+      for (const entry of equivalent.issues) {
+        entry.capturedAt = new Date(entry.capturedAt).toISOString();
+      }
+
+      assert.deepEqual(await service.ingest(token.plaintext, equivalent), first);
+    });
+
+    for (const entry of [
+      {
+        name: "rejects a changed appVersion on terminal replay",
+        mutate: (candidate: CollectorReport) => { candidate.appVersion = "2.4.6"; }
+      },
+      {
+        name: "rejects a changed URL on terminal replay",
+        mutate: (candidate: CollectorReport) => {
+          candidate.ownItems[0]!.url = `${candidate.ownItems[0]!.url}&source=replay`;
+        }
+      },
+      {
+        name: "rejects changed zero-SKU item metadata on terminal replay",
+        mutate: (candidate: CollectorReport) => {
+          candidate.competitorItems[1]!.title = "Changed unavailable title";
+          candidate.competitorItems[1]!.searchRanks.reverse();
+        }
+      },
+      {
+        name: "rejects a changed evidence key before checking its bytes",
+        mutate: (candidate: CollectorReport) => {
+          candidate.ownItems[0]!.skus[0]!.evidenceKey = `sha256:${"f".repeat(64)}`;
+        }
+      }
+    ]) {
+      await context.test(entry.name, async () => {
+        const changed = structuredClone(report);
+        entry.mutate(changed);
+        await assert.rejects(
+          () => service.ingest(token.plaintext, changed),
+          (error) => error instanceof Error && error.name === "DesktopReportConflictError"
+        );
+      });
+    }
+
+    await context.test("returns the durable original summary after later server-side history", async () => {
+      const serverIssueKey = `sha256:${createHash("sha256").update(`server:${suffix}`).digest("hex")}`;
+      await prisma.collectionIssue.create({
+        data: {
+          collectionRunId: run.id,
+          issueKey: serverIssueKey,
+          code: "OWN_BASELINE_MISSING",
+          message: "Server-side baseline evaluation",
+          capturedAt: new Date(report.completedAt)
+        }
+      });
+      try {
+        assert.deepEqual(await service.ingest(token.plaintext, structuredClone(report)), first);
+      } finally {
+        await prisma.collectionIssue.deleteMany({ where: { issueKey: serverIssueKey } });
+      }
+    });
+  } finally {
+    if (runId) await prisma.collectionRun.deleteMany({ where: { id: runId } });
+    if (modelId) await prisma.monitoredModel.deleteMany({ where: { id: modelId } });
+    if (agentId) await prisma.collectorAgent.deleteMany({ where: { id: agentId } });
+  }
+});
+
+test("serializes evidence publication with concurrent terminal run transitions", async () => {
+  const suffix = randomUUID().replaceAll("-", "");
+  const token = createCollectorToken();
+  let modelId: string | undefined;
+  let agentId: string | undefined;
+  let runId: string | undefined;
+
+  try {
+    const model = await prisma.monitoredModel.create({
+      data: {
+        monitorCode: `T11-E-${suffix.slice(0, 18)}`,
+        brand: "Sony",
+        standardModel: "MDR-7506",
+        category: "headphones",
+        searchQuery: "Sony MDR-7506",
+        comparisonType: "BARE",
+        owner: "task-11-evidence-lock"
+      }
+    });
+    modelId = model.id;
+    const agent = await prisma.collectorAgent.create({
+      data: {
+        name: `task-11-evidence-agent-${suffix}`,
+        platform: "MACOS",
+        tokenHash: token.hash,
+        enabled: true,
+        appVersion: "2.4.5"
+      }
+    });
+    agentId = agent.id;
+    const run = await prisma.collectionRun.create({
+      data: {
+        monitoredModelId: model.id,
+        providerKey: "taobao-desktop",
+        status: "RUNNING",
+        scheduledFor: new Date(Number.parseInt(suffix.slice(0, 10), 16)),
+        collectorAgentId: agent.id,
+        claimedAt: new Date(),
+        startedAt: new Date(),
+        searchLimit: 1
+      }
+    });
+    runId = run.id;
+
+    const store = new CollectionEvidenceStore(evidenceRoot);
+    const originalPut = store.put.bind(store);
+    let enteredPut!: () => void;
+    let releasePut!: () => void;
+    const putEntered = new Promise<void>((resolve) => { enteredPut = resolve; });
+    const putReleased = new Promise<void>((resolve) => { releasePut = resolve; });
+    store.put = async (...arguments_: Parameters<CollectionEvidenceStore["put"]>) => {
+      enteredPut();
+      await putReleased;
+      return originalPut(...arguments_);
+    };
+
+    const service = new DesktopReportIngestionService(
+      new CollectorAgentService(new PrismaCollectorAgentRepository(prisma)),
+      new PrismaDesktopReportRepository(prisma),
+      store
+    );
+    const bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 31, 32]);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const upload = service.uploadEvidence(token.plaintext, run.id, digest, bytes);
+    await putEntered;
+
+    let transitionSettled = false;
+    const transition = prisma.collectionRun.update({
+      where: { id: run.id },
+      data: { status: "FAILED", finishedAt: new Date() }
+    }).finally(() => { transitionSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(transitionSettled, false);
+
+    releasePut();
+    assert.equal((await upload).created, true);
+    await transition;
+    assert.equal((await prisma.collectionRun.findUniqueOrThrow({ where: { id: run.id } })).status, "FAILED");
+
+    assert.equal((await service.uploadEvidence(token.plaintext, run.id, digest, bytes)).created, false);
+
+    const otherBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 41, 42]);
+    const otherDigest = createHash("sha256").update(otherBytes).digest("hex");
+    await assert.rejects(
+      () => service.uploadEvidence(token.plaintext, run.id, otherDigest, otherBytes),
+      (error) => error instanceof Error && error.name === "DesktopReportConflictError"
+    );
+    assert.equal(await store.has(run.id, `sha256:${otherDigest}`), false);
   } finally {
     if (runId) await prisma.collectionRun.deleteMany({ where: { id: runId } });
     if (modelId) await prisma.monitoredModel.deleteMany({ where: { id: modelId } });

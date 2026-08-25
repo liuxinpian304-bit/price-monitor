@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rename, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -20,8 +20,9 @@ function digest(bytes: Uint8Array): string {
 
 async function withStore<T>(run: (store: CollectionEvidenceStore, root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), "collection-evidence-"));
+  const canonicalRoot = await realpath(root);
   try {
-    return await run(new CollectionEvidenceStore(root), root);
+    return await run(new CollectionEvidenceStore(canonicalRoot), canonicalRoot);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -57,6 +58,69 @@ test("serializes concurrent same-hash writes into one object", async () => {
     assert.deepEqual(results.map((result) => result.created).sort(), [false, true]);
     assert.deepEqual(await readdir(join(root, "run-1")), [`${sha256}.png`]);
   });
+});
+
+test("publishes once across two independent store instances", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collection-evidence-multi-store-"));
+  const canonicalRoot = await realpath(root);
+  try {
+    const bytes = Buffer.alloc(1024 * 1024, 7);
+    png.copy(bytes);
+    const sha256 = digest(bytes);
+    const firstStore = new CollectionEvidenceStore(canonicalRoot);
+    const secondStore = new CollectionEvidenceStore(canonicalRoot);
+    const results = await Promise.all([
+      firstStore.put("run-1", sha256, bytes),
+      secondStore.put("run-1", sha256, Buffer.from(bytes))
+    ]);
+
+    assert.deepEqual(results.map((result) => result.created).sort(), [false, true]);
+    assert.deepEqual(await readdir(join(canonicalRoot, "run-1")), [`${sha256}.png`]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a configured root reached through a symlinked ancestor", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "collection-evidence-symlink-root-"));
+  try {
+    const physical = join(parent, "physical");
+    const linked = join(parent, "linked");
+    await mkdir(physical);
+    await symlink(physical, linked, "dir");
+    const store = new CollectionEvidenceStore(join(linked, "evidence"));
+
+    await assert.rejects(
+      () => store.put("run-1", digest(png), png),
+      (error) => error instanceof EvidenceStoreValidationError
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("rejects run-directory replacement between validation and publication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collection-evidence-parent-change-"));
+  const canonicalRoot = await realpath(root);
+  try {
+    const store = new CollectionEvidenceStore(canonicalRoot);
+    const original = Reflect.get(store, "ensureRunDirectory").bind(store) as (runId: string) => Promise<unknown>;
+    Reflect.set(store, "ensureRunDirectory", async (runId: string) => {
+      const verified = await original(runId);
+      await rename(join(canonicalRoot, runId), join(canonicalRoot, `${runId}-moved`));
+      await mkdir(join(canonicalRoot, runId));
+      return verified;
+    });
+
+    await assert.rejects(
+      () => store.put("run-1", digest(png), png),
+      (error) => error instanceof EvidenceStoreValidationError
+    );
+    assert.deepEqual(await readdir(join(canonicalRoot, "run-1")), []);
+    assert.deepEqual(await readdir(join(canonicalRoot, "run-1-moved")), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("rejects oversized, non-PNG, and hash-mismatched bytes before writing", async () => {

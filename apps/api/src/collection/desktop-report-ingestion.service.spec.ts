@@ -9,6 +9,7 @@ import {
   DesktopReportIngestionError,
   DesktopReportIngestionService,
   DesktopReportValidationError,
+  desktopReportDigest,
   type ClaimedDesktopRun,
   type DesktopReportRepository,
   type IngestionSummary
@@ -148,8 +149,21 @@ class FakeRepository implements DesktopReportRepository {
     return this.run;
   }
 
-  async ingest(_agentId: string, report: CollectorReport) {
+  async withEvidenceRunLock<T>(
+    _agentId: string,
+    _runId: string,
+    operation: (mode: "CREATE_OR_REPLAY" | "REPLAY_ONLY") => Promise<T>
+  ): Promise<T> {
+    if (!this.run || this.run.status === "QUEUED" || this.run.status === "PAUSED_LOGIN"
+      || this.run.status === "PAUSED_CHALLENGE" || this.run.status === "COALESCED") {
+      throw new DesktopReportConflictError();
+    }
+    return operation(this.run.status === "RUNNING" ? "CREATE_OR_REPLAY" : "REPLAY_ONLY");
+  }
+
+  async ingest(_agentId: string, report: CollectorReport, verifyEvidence: () => Promise<void>) {
     if (this.failure) throw this.failure;
+    await verifyEvidence();
     this.persisted.push(report);
     return {
       summary: { ...summary, status: report.status as IngestionSummary["status"] },
@@ -182,13 +196,105 @@ function createService() {
   return { service, identity, repository, evidence };
 }
 
-test("accepts each non-paused terminal report status", async () => {
-  for (const status of ["SUCCEEDED", "PARTIAL_FAILED", "FAILED"] as const) {
+test("canonical report digests order distinct Unicode object keys deterministically", () => {
+  const first = reportFixture();
+  first.ownItems[0]!.skus[0]!.attributes = {
+    "é": "composed",
+    "e\u0301": "decomposed"
+  };
+  const reordered = structuredClone(first);
+  reordered.ownItems[0]!.skus[0]!.attributes = {
+    "e\u0301": "decomposed",
+    "é": "composed"
+  };
+
+  assert.equal(desktopReportDigest(first), desktopReportDigest(reordered));
+});
+
+test("accepts the exact terminal shapes emitted by the collector runner", async () => {
+  const succeeded = reportFixture();
+
+  const partial = reportFixture();
+  partial.status = "PARTIAL_FAILED";
+  partial.issues.push({
+    code: "PRICE_UNSTABLE",
+    message: "Selected-SKU price did not stabilize",
+    platformItemId: "2002",
+    skuId: "competitor-black",
+    capturedAt: partial.completedAt
+  });
+
+  const failed = reportFixture();
+  failed.status = "FAILED";
+  failed.positions = [];
+  failed.ownItems = [];
+  failed.competitorItems = [];
+  failed.issues.push({
+    code: "APP_VERSION_UNSUPPORTED",
+    message: "Unsupported desktop app version",
+    capturedAt: failed.completedAt
+  });
+
+  for (const report of [succeeded, partial, failed]) {
     const { service } = createService();
+    assert.equal((await service.ingest("pmc_token", report)).status, report.status);
+  }
+});
+
+test("accepts every runner fatal code only with failed no-progress data", async () => {
+  for (const code of [
+    "MISSING_ITEM_ID",
+    "APP_VERSION_UNSUPPORTED",
+    "UI_CONTRACT_CHANGED",
+    "SCREEN_RECORDING_PERMISSION_REQUIRED"
+  ] as const) {
+    const { service } = createService();
+    const report = reportFixture();
+    report.status = "FAILED";
+    report.positions = [];
+    report.ownItems = [];
+    report.competitorItems = [];
+    report.issues = [{ code, message: "Fatal collector failure", capturedAt: report.completedAt }];
+
+    assert.equal((await service.ingest("pmc_token", report)).status, "FAILED", code);
+  }
+});
+
+test("accepts every runner completion issue only with partial progress", async () => {
+  for (const code of [
+    "ITEM_UNAVAILABLE",
+    "SKU_ENUMERATION_INCOMPLETE",
+    "SKU_SELECTION_MISMATCH",
+    "PRICE_UNSTABLE",
+    "UI_CONTRACT_CHANGED",
+    "MISSING_ITEM_ID"
+  ] as const) {
+    const { service } = createService();
+    const report = reportFixture();
+    report.status = "PARTIAL_FAILED";
+    report.issues = [{
+      code,
+      message: "Collector stopped after durable progress",
+      platformItemId: "2002",
+      capturedAt: report.completedAt
+    }];
+
+    assert.equal((await service.ingest("pmc_token", report)).status, "PARTIAL_FAILED", code);
+  }
+});
+
+test("rejects success-shaped reports relabeled as a failure status", async () => {
+  for (const status of ["PARTIAL_FAILED", "FAILED"] as const) {
+    const { service, repository } = createService();
     const report = reportFixture();
     report.status = status;
 
-    assert.equal((await service.ingest("pmc_token", report)).status, status);
+    await assert.rejects(
+      () => service.ingest("pmc_token", report),
+      (error) => error instanceof DesktopReportValidationError,
+      status
+    );
+    assert.equal(repository.persisted.length, 0);
   }
 });
 
@@ -213,6 +319,48 @@ test("binds collector identity, claimed own listings, run state, and the claimed
     await assert.rejects(
       () => service.ingest("pmc_token", report),
       (error) => error instanceof DesktopReportConflictError,
+      entry.name
+    );
+    assert.equal(repository.persisted.length, 0);
+  }
+});
+
+test("requires successful reports to account for every claimed own listing exactly once", async () => {
+  const cases: Array<{ name: string; mutate: (report: CollectorReport) => void }> = [
+    {
+      name: "missing own listing",
+      mutate: (report) => { report.ownItems = []; }
+    },
+    {
+      name: "unknown own listing",
+      mutate: (report) => { report.ownItems[0]!.ownListingId = "own-unknown"; }
+    },
+    {
+      name: "duplicate own listing",
+      mutate: (report) => {
+        report.ownItems.push({
+          ...structuredClone(report.ownItems[0]!),
+          platformItemId: "1002",
+          url: "https://item.taobao.com/item.htm?id=1002",
+          searchRanks: [],
+          skus: [{
+            ...structuredClone(report.ownItems[0]!.skus[0]!),
+            skuId: "own-white"
+          }]
+        });
+      }
+    }
+  ];
+
+  for (const entry of cases) {
+    const { service, repository } = createService();
+    const report = reportFixture();
+    entry.mutate(report);
+
+    await assert.rejects(
+      () => service.ingest("pmc_token", report),
+      (error) => error instanceof DesktopReportConflictError
+        || error instanceof DesktopReportValidationError,
       entry.name
     );
     assert.equal(repository.persisted.length, 0);
@@ -256,13 +404,20 @@ test("rejects URL identity disagreement, reversed completion time, and incomplet
   }
 });
 
-test("rejects every collector partial-failure issue on a successful report", async () => {
+test("rejects every non-success collector issue on a successful report", async () => {
   for (const code of [
+    "MISSING_ITEM_ID",
     "ITEM_UNAVAILABLE",
     "SKU_ENUMERATION_INCOMPLETE",
     "SKU_SELECTION_MISMATCH",
     "PRICE_UNSTABLE",
-    "UI_CONTRACT_CHANGED"
+    "LOGIN_REQUIRED",
+    "PLATFORM_CHALLENGE",
+    "APP_VERSION_UNSUPPORTED",
+    "UI_CONTRACT_CHANGED",
+    "SCREEN_RECORDING_PERMISSION_REQUIRED",
+    "OWN_BASELINE_MISSING",
+    "OWN_BASELINE_AMBIGUOUS"
   ] as const) {
     const { service, repository } = createService();
     const report = reportFixture();
@@ -277,6 +432,101 @@ test("rejects every collector partial-failure issue on a successful report", asy
       () => service.ingest("pmc_token", report),
       (error) => error instanceof DesktopReportValidationError,
       code
+    );
+    assert.equal(repository.persisted.length, 0);
+  }
+});
+
+test("requires partial and failed reports to match runner progress semantics", async () => {
+  const cases: Array<{ name: string; mutate: (report: CollectorReport) => void }> = [
+    {
+      name: "partial without progress",
+      mutate: (report) => {
+        report.status = "PARTIAL_FAILED";
+        report.positions = [];
+        report.ownItems = [];
+        report.competitorItems = [];
+        report.issues = [{
+          code: "UI_CONTRACT_CHANGED",
+          message: "UI contract changed",
+          capturedAt: report.completedAt
+        }];
+      }
+    },
+    {
+      name: "failed after durable progress",
+      mutate: (report) => {
+        report.status = "FAILED";
+        report.issues = [{
+          code: "MISSING_ITEM_ID",
+          message: "Stable item identity was unavailable",
+          capturedAt: report.completedAt
+        }];
+      }
+    },
+    {
+      name: "failed with only a recoverable item issue",
+      mutate: (report) => {
+        report.status = "FAILED";
+        report.positions = [];
+        report.ownItems = [];
+        report.competitorItems = [];
+        report.issues = [{
+          code: "ITEM_UNAVAILABLE",
+          message: "Item unavailable",
+          capturedAt: report.completedAt
+        }];
+      }
+    },
+    {
+      name: "partial with startup-only app version failure",
+      mutate: (report) => {
+        report.status = "PARTIAL_FAILED";
+        report.issues = [{
+          code: "APP_VERSION_UNSUPPORTED",
+          message: "Unsupported desktop app version",
+          capturedAt: report.completedAt
+        }];
+      }
+    },
+    {
+      name: "partial with startup-only screen recording failure",
+      mutate: (report) => {
+        report.status = "PARTIAL_FAILED";
+        report.issues = [{
+          code: "SCREEN_RECORDING_PERMISSION_REQUIRED",
+          message: "Screen recording permission required",
+          capturedAt: report.completedAt
+        }];
+      }
+    },
+    {
+      name: "partial with a competitor item but no search progress",
+      mutate: (report) => {
+        report.status = "PARTIAL_FAILED";
+        report.positions = [];
+        report.ownItems = [];
+        report.competitorItems[0]!.searchRanks = [];
+        report.competitorItems = [report.competitorItems[0]!];
+        report.issues = [{
+          code: "PRICE_UNSTABLE",
+          message: "Price did not stabilize",
+          platformItemId: "2002",
+          capturedAt: report.completedAt
+        }];
+      }
+    }
+  ];
+
+  for (const entry of cases) {
+    const { service, repository } = createService();
+    const report = reportFixture();
+    entry.mutate(report);
+
+    await assert.rejects(
+      () => service.ingest("pmc_token", report),
+      (error) => error instanceof DesktopReportValidationError,
+      entry.name
     );
     assert.equal(repository.persisted.length, 0);
   }

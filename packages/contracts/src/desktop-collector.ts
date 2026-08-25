@@ -14,14 +14,17 @@ export const COLLECTOR_ISSUE_CODES = [
 
 const schemaVersionSchema = z.literal(1);
 const timestampSchema = z.iso.datetime({ offset: true });
-const moneyFenSchema = z.number().int().nonnegative().safe();
-const positiveCountSchema = z.number().int().positive().safe();
-const nonNegativeCountSchema = z.number().int().nonnegative().safe();
+const POSTGRES_INT_MAX = 2_147_483_647;
+const moneyFenSchema = z.number().int().nonnegative().max(POSTGRES_INT_MAX);
+const positiveCountSchema = z.number().int().positive().max(POSTGRES_INT_MAX);
+const nonNegativeCountSchema = z.number().int().nonnegative().max(POSTGRES_INT_MAX);
 const searchLimitSchema = positiveCountSchema.max(50);
 const identifierSchema = z.string().min(1);
+const reportIdentifierSchema = identifierSchema.max(160);
 const urlSchema = z.url();
+const reportUrlSchema = urlSchema.max(2_048);
 const evidenceKeySchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
-const attributesSchema = z.record(z.string(), z.string());
+const attributesSchema = z.record(z.string().min(1).max(200), z.string().max(1_000));
 
 const comparisonTypeSchema = z.enum(["BARE", "BUNDLE"]);
 const stockStateSchema = z.enum(["IN_STOCK", "OUT_OF_STOCK", "UNKNOWN"]);
@@ -59,18 +62,18 @@ export const collectorJobSchema = z.object({
 }).strict();
 
 const promotionEvidenceSchema = z.object({
-  kind: z.string().min(1),
-  label: z.string().min(1),
+  kind: z.string().min(1).max(120),
+  label: z.string().min(1).max(500),
   amountFen: moneyFenSchema.nullable(),
   thresholdFen: moneyFenSchema.nullable(),
-  audience: z.string().min(1),
-  stackGroup: z.string().min(1).nullable(),
+  audience: z.string().min(1).max(120),
+  stackGroup: z.string().min(1).max(120).nullable(),
   includedInActivityPrice: z.boolean()
 }).strict();
 
 const collectedSkuSchema = z.object({
-  skuId: identifierSchema,
-  label: z.string().min(1),
+  skuId: reportIdentifierSchema,
+  label: z.string().min(1).max(500),
   attributes: attributesSchema,
   stockState: stockStateSchema,
   listPriceFen: moneyFenSchema,
@@ -87,27 +90,27 @@ const collectedSkuSchema = z.object({
 }).strict();
 
 const collectedItemBaseSchema = {
-  platformItemId: identifierSchema,
-  url: urlSchema,
-  shopName: z.string().min(1),
-  title: z.string().min(1),
+  platformItemId: reportIdentifierSchema,
+  url: reportUrlSchema,
+  shopName: z.string().min(1).max(200),
+  title: z.string().min(1).max(1_000),
   searchRanks: z.array(positiveCountSchema),
   skus: z.array(collectedSkuSchema)
 };
 
 const ownItemSchema = z.object({
   ...collectedItemBaseSchema,
-  ownListingId: identifierSchema
+  ownListingId: reportIdentifierSchema
 }).strict();
 
 const competitorItemSchema = z.object(collectedItemBaseSchema).strict();
 
 const searchPositionSchema = z.object({
   rank: positiveCountSchema,
-  platformItemId: identifierSchema,
-  url: urlSchema,
-  shopName: z.string().min(1),
-  title: z.string().min(1),
+  platformItemId: reportIdentifierSchema,
+  url: reportUrlSchema,
+  shopName: z.string().min(1).max(200),
+  title: z.string().min(1).max(1_000),
   displayPriceMinFen: moneyFenSchema,
   displayPriceMaxFen: moneyFenSchema,
   sponsored: z.boolean(),
@@ -116,18 +119,18 @@ const searchPositionSchema = z.object({
 
 const collectorIssueSchema = z.object({
   code: issueCodeSchema,
-  message: z.string().min(1),
-  platformItemId: identifierSchema.nullable().optional(),
-  skuId: identifierSchema.nullable().optional(),
+  message: z.string().min(1).max(4_000),
+  platformItemId: reportIdentifierSchema.nullable().optional(),
+  skuId: reportIdentifierSchema.nullable().optional(),
   evidenceKey: evidenceKeySchema.nullable().optional(),
   capturedAt: timestampSchema
 }).strict();
 
 const reportBodySchema = z.object({
   schemaVersion: schemaVersionSchema,
-  runId: identifierSchema,
-  collectorId: identifierSchema,
-  appVersion: identifierSchema,
+  runId: reportIdentifierSchema,
+  collectorId: reportIdentifierSchema,
+  appVersion: z.string().min(1).max(120),
   startedAt: timestampSchema,
   completedAt: timestampSchema,
   status: reportStatusSchema,
@@ -280,6 +283,16 @@ export const collectorReportSchema = reportBodySchema.superRefine((report, conte
             message: "CONFIRMED payableFen must equal the non-negative component formula"
           });
         }
+      }
+
+      const publicDiscountFen = sku.couponDiscountFen
+        + sku.fullReductionFen + sku.directDiscountFen;
+      if (publicDiscountFen > POSTGRES_INT_MAX) {
+        context.addIssue({
+          code: "custom",
+          path: [itemCollection, itemIndex, "skus", skuIndex, "couponDiscountFen"],
+          message: "combined public discounts must fit a PostgreSQL Int"
+        });
       }
     }
   }

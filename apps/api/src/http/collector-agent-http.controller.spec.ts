@@ -5,6 +5,7 @@ import test from "node:test";
 import { Module } from "@nestjs/common";
 import { HTTP_CODE_METADATA, PATH_METADATA } from "@nestjs/common/constants.js";
 import { NestFactory } from "@nestjs/core";
+import type { NestExpressApplication } from "@nestjs/platform-express";
 import type { Request, Response } from "express";
 
 import type { CollectorReport } from "../../../../packages/contracts/src/index.ts";
@@ -33,6 +34,7 @@ import {
   CollectorEvidenceAuthenticationGuard,
   CollectorAgentHttpController
 } from "./collector-agent-http.controller.ts";
+import { configureApiBodyParsing } from "./api-body-parsing.ts";
 
 const claimedJob = {
   schemaVersion: 1,
@@ -379,6 +381,81 @@ test("evidence HTTP authentication runs before Multer parses or buffers the body
     });
     assert.equal(malformedResponse.status, 422);
     assert.equal(ingestion.evidenceCalls, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test("report HTTP authentication runs before JSON buffering and parsing", async () => {
+  const service = new FakeCollectorAgentService();
+  const ingestion = new FakeDesktopReportIngestionService();
+  class ReportHttpTestModule {}
+  Module({
+    controllers: [CollectorAgentHttpController],
+    providers: [
+      { provide: COLLECTOR_AGENT_SERVICE, useValue: service },
+      { provide: DESKTOP_REPORT_INGESTION_SERVICE, useValue: ingestion },
+      CollectorEvidenceAuthenticationGuard
+    ]
+  })(ReportHttpTestModule);
+
+  const app = await NestFactory.create<NestExpressApplication>(
+    ReportHttpTestModule,
+    { logger: false, bodyParser: false }
+  );
+  app.setGlobalPrefix("api");
+  configureApiBodyParsing(app, service as unknown as CollectorAgentService);
+  await app.listen(0, "127.0.0.1");
+  const address = app.getHttpServer().address();
+  assert.equal(typeof address, "object");
+  assert.ok(address && typeof address !== "string");
+  const route = `http://127.0.0.1:${address.port}/api/collector-agent/jobs/run-1/report`;
+  const uppercaseRoute = `http://127.0.0.1:${address.port}/API/COLLECTOR-AGENT/JOBS/run-1/REPORT`;
+  const oversized = JSON.stringify({ value: "x".repeat(8 * 1024 * 1024 + 1) });
+  const malformed = "{\"account-prefix-that-must-not-echo\":";
+
+  try {
+    for (const headers of [
+      { "content-type": "application/json" },
+      { "content-type": "application/json", authorization: "Bearer invalid" }
+    ]) {
+      service.invalidToken = headers.authorization !== undefined;
+      const response = await fetch(route, { method: "POST", headers, body: oversized });
+      assert.equal(response.status, 401);
+    }
+
+    service.invalidToken = false;
+    const uppercaseMissingToken = await fetch(uppercaseRoute, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: oversized
+    });
+    assert.equal(uppercaseMissingToken.status, 401);
+
+    service.invalidToken = true;
+    const invalidMalformed = await fetch(route, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer invalid" },
+      body: malformed
+    });
+    assert.equal(invalidMalformed.status, 401);
+
+    service.invalidToken = false;
+    const authenticatedOversized = await fetch(route, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer valid" },
+      body: oversized
+    });
+    assert.equal(authenticatedOversized.status, 413);
+
+    const authenticatedMalformed = await fetch(route, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer valid" },
+      body: malformed
+    });
+    assert.ok(authenticatedMalformed.status === 400 || authenticatedMalformed.status === 422);
+    assert.equal((await authenticatedMalformed.text()).includes("account-prefix-that-must-not-echo"), false);
+    assert.equal(ingestion.reportCalls, 0);
   } finally {
     await app.close();
   }

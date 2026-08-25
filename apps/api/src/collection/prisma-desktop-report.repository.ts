@@ -9,8 +9,10 @@ import type {
 import { Prisma, type PrismaClient } from "../../../../generated/prisma/client.ts";
 
 import {
+  desktopReportDigest,
   DesktopReportConflictError,
   DesktopReportValidationError,
+  ingestionSummarySchema,
   type ClaimedDesktopRun,
   type DesktopReportRepository,
   type IngestionSummary,
@@ -62,7 +64,7 @@ function jsonValue(value: unknown): string {
     if (entry && typeof entry === "object") {
       return Object.fromEntries(
         Object.entries(entry as Record<string, unknown>)
-          .sort(([left], [right]) => left.localeCompare(right))
+          .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
           .map(([key, nested]) => [key, normalize(nested)])
       );
     }
@@ -164,11 +166,38 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
     };
   }
 
+  async withEvidenceRunLock<T>(
+    agentId: string,
+    runId: string,
+    operation: (mode: "CREATE_OR_REPLAY" | "REPLAY_ONLY") => Promise<T>
+  ): Promise<T> {
+    return this.prisma.$transaction(async (transaction) => {
+      const locked = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id"
+        FROM "CollectionRun"
+        WHERE "id" = ${runId}
+        FOR UPDATE
+      `);
+      if (locked.length !== 1) throw new DesktopReportConflictError();
+
+      const run = await transaction.collectionRun.findUniqueOrThrow({
+        where: { id: runId },
+        select: { collectorAgentId: true, status: true }
+      });
+      if (run.collectorAgentId !== agentId) throw new DesktopReportConflictError();
+      if (run.status === "RUNNING") return operation("CREATE_OR_REPLAY");
+      if (isTerminalStatus(run.status)) return operation("REPLAY_ONLY");
+      throw new DesktopReportConflictError();
+    }, { isolationLevel: "ReadCommitted", maxWait: 10_000, timeout: 30_000 });
+  }
+
   async ingest(
     agentId: string,
-    report: CollectorReport
+    report: CollectorReport,
+    verifyEvidence: () => Promise<void>
   ): Promise<{ summary: IngestionSummary; newlyAccepted: boolean }> {
     if (!isTerminalStatus(report.status)) throw new DesktopReportValidationError();
+    const reportDigest = desktopReportDigest(report);
     return this.prisma.$transaction(async (transaction) => {
       const locked = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT "id"
@@ -196,21 +225,45 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
           discoveredCount: true,
           skuCount: true,
           incompleteCount: true,
-          claimedOwnListingIds: true
+          claimedOwnListingIds: true,
+          desktopReportDigest: true,
+          desktopIngestionSummary: true
         }
       });
       this.assertClaim(run, agentId, report);
 
       if (run.status !== "RUNNING") {
-        if (!isTerminalStatus(run.status) || !await this.matchesPersistedReport(transaction, run, report)) {
+        if (!isTerminalStatus(run.status)) throw new DesktopReportConflictError();
+        const storedSummary = ingestionSummarySchema.safeParse(run.desktopIngestionSummary);
+        if (run.desktopReportDigest === null && !storedSummary.success) {
+          if (!await this.matchesLegacyPersistedReport(transaction, run, report)) {
+            throw new DesktopReportConflictError();
+          }
+          await verifyEvidence();
+          const summary = await this.summary(transaction, report.runId);
+          await transaction.collectionRun.update({
+            where: { id: report.runId },
+            data: {
+              desktopReportDigest: reportDigest,
+              desktopIngestionSummary: toJson(summary)
+            }
+          });
+          return { summary, newlyAccepted: false };
+        }
+        if (run.desktopReportDigest !== reportDigest
+          || !storedSummary.success
+          || storedSummary.data.runId !== report.runId
+          || storedSummary.data.status !== report.status) {
           throw new DesktopReportConflictError();
         }
+        await verifyEvidence();
         return {
-          summary: await this.summary(transaction, report.runId),
+          summary: storedSummary.data,
           newlyAccepted: false
         };
       }
 
+      await verifyEvidence();
       await this.persistPositions(transaction, report);
       const candidates = await this.persistCandidates(transaction, run.monitoredModelId, run.providerKey, report);
       await this.persistSnapshots(transaction, report, candidates);
@@ -225,13 +278,20 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
           finishedAt: new Date(report.completedAt),
           heartbeatAt: new Date(report.completedAt),
           ...counters,
+          desktopReportDigest: reportDigest,
           errorCode: null,
           errorMessage: null
         }
       });
 
+      const summary = await this.summary(transaction, report.runId);
+      await transaction.collectionRun.update({
+        where: { id: report.runId },
+        data: { desktopIngestionSummary: toJson(summary) }
+      });
+
       return {
-        summary: await this.summary(transaction, report.runId),
+        summary,
         newlyAccepted: true
       };
     }, { isolationLevel: "ReadCommitted", maxWait: 10_000, timeout: 30_000 });
@@ -267,7 +327,11 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
       throw new DesktopReportConflictError();
     }
     const ownListingIds = new Set(run.claimedOwnListingIds);
-    if (report.ownItems.some((item) => !ownListingIds.has(item.ownListingId))) {
+    const reportedOwnListingIds = new Set(report.ownItems.map((item) => item.ownListingId));
+    if (report.ownItems.some((item) => !ownListingIds.has(item.ownListingId))
+      || (report.status === "SUCCEEDED"
+        && (reportedOwnListingIds.size !== ownListingIds.size
+          || [...ownListingIds].some((id) => !reportedOwnListingIds.has(id))))) {
       throw new DesktopReportConflictError();
     }
   }
@@ -426,7 +490,7 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
   private async summary(transaction: Transaction, runId: string): Promise<IngestionSummary> {
     const run = await transaction.collectionRun.findUniqueOrThrow({
       where: { id: runId },
-      select: { status: true }
+      select: { status: true, searchedCount: true, skuCount: true, failedCount: true }
     });
     if (!isTerminalStatus(run.status)) throw new DesktopReportConflictError();
     const positions = await transaction.collectionSearchPosition.findMany({
@@ -438,20 +502,19 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
       select: { id: true, ownListingId: true },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }]
     });
-    const issueCount = await transaction.collectionIssue.count({ where: { collectionRunId: runId } });
     return {
       runId,
       status: run.status,
-      positionCount: positions.length,
+      positionCount: run.searchedCount,
       uniqueItemCount: new Set(positions.map((position) => position.platformItemId)).size,
-      skuCount: snapshots.length,
-      issueCount,
+      skuCount: run.skuCount,
+      issueCount: run.failedCount,
       ownSnapshotIds: snapshots.filter((snapshot) => snapshot.ownListingId !== null).map((snapshot) => snapshot.id),
       competitorSnapshotIds: snapshots.filter((snapshot) => snapshot.ownListingId === null).map((snapshot) => snapshot.id)
     };
   }
 
-  private async matchesPersistedReport(
+  private async matchesLegacyPersistedReport(
     transaction: Transaction,
     run: {
       id: string;
@@ -471,12 +534,10 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
     },
     report: CollectorReport
   ): Promise<boolean> {
-    if (
-      run.status !== report.status
+    if (run.status !== report.status
       || run.searchLimit !== report.searchLimit
       || run.startedAt?.toISOString() !== report.startedAt
-      || run.finishedAt?.toISOString() !== report.completedAt
-    ) {
+      || run.finishedAt?.toISOString() !== report.completedAt) {
       return false;
     }
     const counters = expectedCounters(report);
@@ -564,7 +625,12 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
       if (!expected || !this.snapshotMatches(snapshot, expected)) return false;
     }
 
-    const issues = await transaction.collectionIssue.findMany({ where: { collectionRunId: report.runId } });
+    const issues = await transaction.collectionIssue.findMany({
+      where: {
+        collectionRunId: report.runId,
+        code: { notIn: ["OWN_BASELINE_MISSING", "OWN_BASELINE_AMBIGUOUS"] }
+      }
+    });
     if (issues.length !== report.issues.length) return false;
     const storedIssues = new Map(issues.map((issue) => [issue.issueKey, issue]));
     for (const [index, expected] of report.issues.entries()) {
@@ -666,4 +732,5 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
       capturedAt: expected.capturedAt.toISOString()
     });
   }
+
 }
