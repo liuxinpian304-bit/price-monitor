@@ -3,6 +3,7 @@ import type { MatchCategory, MatchDecision, MonitoredProductRule } from "./match
 
 const BUNDLE_SIGNALS = ["套装", "组合装", "搭配", "套餐", "录音套装"];
 const BARE_SIGNALS = ["单机", "裸机", "官方标配", "标准版", "单品"];
+const BUNDLE_ACCESSORY_SIGNALS = ["转换线", "转接线", "连接线", "线材", "耳机架", "耳机包", "耳罩"];
 
 export function normalizeText(value: string): string {
   return value
@@ -35,6 +36,11 @@ function classifyOffer(offer: RawOffer): { category: MatchCategory; reason: stri
   const skuBundleSignal = BUNDLE_SIGNALS.find((signal) => containsPhrase(skuText, signal));
   if (skuBundleSignal) {
     return { category: "BUNDLE", reason: `具体SKU包含套装信号“${skuBundleSignal}”` };
+  }
+
+  const skuAccessorySignal = BUNDLE_ACCESSORY_SIGNALS.find((signal) => containsPhrase(skuText, signal));
+  if (skuAccessorySignal) {
+    return { category: "BUNDLE", reason: `具体SKU包含配件“${skuAccessorySignal}”，不能按裸机比较` };
   }
 
   const skuBareSignal = BARE_SIGNALS.find((signal) => containsPhrase(skuText, signal));
@@ -83,6 +89,10 @@ export class MatcherService {
     const missingRequired = rule.mustIncludeTerms.filter((term) => !containsPhrase(searchable, term));
     if (missingRequired.length > 0) {
       return rejected(`缺少必须包含词：${missingRequired.join("、")}`);
+    }
+
+    if (rule.version && !containsPhrase(searchable, rule.version)) {
+      return rejected(`缺少明确版本“${rule.version}”`);
     }
 
     const exactModel = containsPhrase(searchable, rule.standardModel);

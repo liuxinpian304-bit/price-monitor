@@ -11,6 +11,8 @@ export interface AlertOffer {
   shopName: string;
   skuText: string;
   payableFen: number | null;
+  priceConfidence: "CONFIRMED" | "ESTIMATED" | "MANUAL_REVIEW";
+  stockState: "IN_STOCK" | "OUT_OF_STOCK" | "UNKNOWN";
   url: string;
   capturedAt: Date;
   owner: string;
@@ -52,14 +54,11 @@ export interface PriceAlertRecord {
 }
 
 export interface AlertRepository {
-  findByDedupKey(key: string): Promise<PriceAlertRecord | null>;
-  create(input: Omit<PriceAlertRecord, "id" | "notifiedAt">): Promise<PriceAlertRecord>;
-  markNotified(id: string, notifiedAt: Date): Promise<void>;
-  recordNotificationFailure(alertId: string, message: string): Promise<void>;
-}
-
-export interface PriceAlertNotifier {
-  sendPriceAlert(alert: PriceAlertRecord): Promise<void>;
+  createIfAbsent(
+    input: Omit<PriceAlertRecord, "id" | "notifiedAt">
+  ): Promise<PriceAlertRecord | null>;
+  markBatchNotified(ids: string[], notifiedAt: Date): Promise<void>;
+  recordBatchNotificationFailure(ids: string[], message: string): Promise<void>;
 }
 
 function validMoney(value: number | null): value is number {
@@ -68,11 +67,9 @@ function validMoney(value: number | null): value is number {
 
 export class AlertService {
   private readonly repository: AlertRepository;
-  private readonly notifier: PriceAlertNotifier;
 
-  constructor(repository: AlertRepository, notifier: PriceAlertNotifier) {
+  constructor(repository: AlertRepository) {
     this.repository = repository;
-    this.notifier = notifier;
   }
 
   async evaluate(
@@ -80,6 +77,15 @@ export class AlertService {
     competitorOffer: AlertOffer,
     decision: AlertEvaluationDecision
   ): Promise<PriceAlertRecord | null> {
+    if (
+      ownOffer.monitoredModelId !== competitorOffer.monitoredModelId
+      || ownOffer.priceConfidence !== "CONFIRMED"
+      || competitorOffer.priceConfidence !== "CONFIRMED"
+      || ownOffer.stockState !== "IN_STOCK"
+      || competitorOffer.stockState !== "IN_STOCK"
+    ) {
+      return null;
+    }
     if (!validMoney(ownOffer.payableFen) || !validMoney(competitorOffer.payableFen)) {
       return null;
     }
@@ -97,15 +103,13 @@ export class AlertService {
     }
 
     const key = dedupKey(
+      ownOffer.monitoredModelId,
+      ownOffer.skuId,
       competitorOffer.platformItemId,
       competitorOffer.skuId,
       competitorOffer.payableFen
     );
-    if (await this.repository.findByDedupKey(key)) {
-      return null;
-    }
-
-    const alert = await this.repository.create({
+    return this.repository.createIfAbsent({
       monitoredModelId: ownOffer.monitoredModelId,
       severity,
       status: "PENDING",
@@ -130,19 +134,5 @@ export class AlertService {
       firstSeenAt: competitorOffer.capturedAt,
       lastSeenAt: competitorOffer.capturedAt
     });
-
-    try {
-      await this.notifier.sendPriceAlert(alert);
-      const notifiedAt = new Date();
-      await this.repository.markNotified(alert.id, notifiedAt);
-      alert.notifiedAt = notifiedAt;
-    } catch (error) {
-      await this.repository.recordNotificationFailure(
-        alert.id,
-        error instanceof Error ? error.message : String(error)
-      );
-    }
-
-    return alert;
   }
 }

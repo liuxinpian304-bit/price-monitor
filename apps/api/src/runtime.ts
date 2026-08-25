@@ -6,6 +6,9 @@ import { dirname, resolve } from "node:path";
 import { AlertActionService } from "./alerts/alert-action.service.ts";
 import { AlertController } from "./alerts/alert.controller.ts";
 import { PrismaAlertActionRepository } from "./alerts/prisma-alert-action.repository.ts";
+import { PrismaRunAlertNotificationRepository } from "./alerts/prisma-run-alert-notification.repository.ts";
+import { RunAlertNotifier } from "./alerts/run-alert-notifier.ts";
+import { WecomClient } from "./alerts/wecom/wecom.client.ts";
 import { AuditService } from "./audit/audit.service.ts";
 import { PrismaAuditRepository } from "./audit/prisma-audit.repository.ts";
 import { CatalogController } from "./catalog/catalog.controller.ts";
@@ -20,6 +23,8 @@ import { PrismaCollectorAgentRepository } from "./collector-agent/prisma-collect
 import { CollectionEvidenceStore } from "./collection/collection-evidence-store.ts";
 import { DesktopReportIngestionService } from "./collection/desktop-report-ingestion.service.ts";
 import { PrismaDesktopReportRepository } from "./collection/prisma-desktop-report.repository.ts";
+import { PrismaRunAlertRepository } from "./collection/prisma-run-alert.repository.ts";
+import { RunAlertService } from "./collection/run-alert.service.ts";
 import { createPrismaClient } from "./database/prisma.service.ts";
 import { HealthService } from "./health/health.service.ts";
 import {
@@ -86,10 +91,39 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../.
 export const collectionEvidenceStore = new CollectionEvidenceStore(
   resolve(repositoryRoot, "work/collector-evidence")
 );
+function reportUrlForRun(runId: string): string {
+  const configured = process.env.PUBLIC_BASE_URL?.trim();
+  const base = configured || `http://127.0.0.1:${process.env.API_PORT ?? "4100"}`;
+  const url = new URL(base);
+  if (
+    (url.protocol !== "https:" && url.protocol !== "http:")
+    || url.username !== ""
+    || url.password !== ""
+    || url.search !== ""
+    || url.hash !== ""
+  ) {
+    throw new Error("PUBLIC_BASE_URL is invalid");
+  }
+  return new URL(`/collection-runs/${encodeURIComponent(runId)}`, url).toString();
+}
+
+export const runAlertService = new RunAlertService(
+  new PrismaRunAlertRepository(prisma),
+  reportUrlForRun
+);
+export const runAlertNotifier = new RunAlertNotifier(
+  new PrismaRunAlertNotificationRepository(prisma),
+  async () => {
+    const webhookUrl = await settingsService.readSecretForInternalUse("WECOM_WEBHOOK");
+    return webhookUrl ? new WecomClient({ webhookUrl }) : null;
+  }
+);
 export const desktopReportIngestionService = new DesktopReportIngestionService(
   collectorAgentService,
   new PrismaDesktopReportRepository(prisma),
-  collectionEvidenceStore
+  collectionEvidenceStore,
+  runAlertService,
+  runAlertNotifier
 );
 
 export async function closeRuntime(): Promise<void> {

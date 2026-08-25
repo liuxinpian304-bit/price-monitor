@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { CollectorReport } from "../../../../packages/contracts/src/index.ts";
 import type { CollectorAgentService } from "../collector-agent/collector-agent.service.ts";
+import type { RunAlertSummary } from "./run-alert.service.ts";
 import type { CollectionEvidenceStore } from "./collection-evidence-store.ts";
 import {
   DesktopReportConflictError,
@@ -650,4 +651,53 @@ test("records only a sanitized retryable system error when transactional persist
     code: "DESKTOP_REPORT_INGESTION_FAILED",
     message: "Desktop report ingestion failed"
   }]);
+});
+
+test("commits ingestion before evaluation and preserves its terminal receipt when notification fails", async () => {
+  const identity = new FakeIdentityService();
+  const repository = new FakeRepository();
+  const evidence = new FakeEvidenceStore();
+  const events: string[] = [];
+  const originalIngest = repository.ingest.bind(repository);
+  repository.ingest = async (...arguments_) => {
+    events.push("ingestion-started");
+    const result = await originalIngest(...arguments_);
+    events.push("ingestion-committed");
+    return result;
+  };
+  const alertSummary = { runId: "run-1" } as RunAlertSummary;
+  const evaluator = {
+    async evaluateRun(runId: string) {
+      assert.equal(runId, "run-1");
+      assert.deepEqual(events, ["ingestion-started", "ingestion-committed"]);
+      events.push("evaluated");
+      return alertSummary;
+    }
+  };
+  const notifier = {
+    async send(received: RunAlertSummary) {
+      assert.equal(received, alertSummary);
+      events.push("notification-attempted");
+      throw new Error("webhook key and request body must stay private");
+    }
+  };
+  const service = new DesktopReportIngestionService(
+    identity as unknown as CollectorAgentService,
+    repository,
+    evidence as unknown as CollectionEvidenceStore,
+    evaluator,
+    notifier
+  );
+
+  const result = await service.ingest("pmc_token", reportFixture());
+
+  assert.equal(result.status, "SUCCEEDED");
+  assert.deepEqual(events, [
+    "ingestion-started",
+    "ingestion-committed",
+    "evaluated",
+    "notification-attempted"
+  ]);
+  assert.equal(repository.persisted.length, 1);
+  assert.deepEqual(repository.systemErrors, []);
 });

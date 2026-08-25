@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import type { CollectorAgentService } from "../collector-agent/collector-agent.service.ts";
 import type { CollectionEvidenceStore } from "./collection-evidence-store.ts";
+import type { RunAlertSummary } from "./run-alert.service.ts";
 
 export type TerminalCollectionStatus = "SUCCEEDED" | "PARTIAL_FAILED" | "FAILED";
 export type ClaimedCollectionStatus =
@@ -62,6 +63,14 @@ export interface DesktopReportRepository {
     verifyEvidence: () => Promise<void>
   ): Promise<{ summary: IngestionSummary; newlyAccepted: boolean }>;
   recordSystemError(agentId: string, runId: string, code: string, message: string): Promise<void>;
+}
+
+export interface RunAlertEvaluator {
+  evaluateRun(runId: string): Promise<RunAlertSummary>;
+}
+
+export interface RunAlertSummaryNotifier {
+  send(summary: RunAlertSummary): Promise<void>;
 }
 
 export const INGESTION_DISPOSITION = Symbol("desktop-report-ingestion-disposition");
@@ -251,15 +260,21 @@ export class DesktopReportIngestionService {
   private readonly collectorAgentService: CollectorAgentService;
   private readonly repository: DesktopReportRepository;
   private readonly evidenceStore: CollectionEvidenceStore;
+  private readonly runAlertEvaluator: RunAlertEvaluator | null;
+  private readonly runAlertNotifier: RunAlertSummaryNotifier | null;
 
   constructor(
     collectorAgentService: CollectorAgentService,
     repository: DesktopReportRepository,
-    evidenceStore: CollectionEvidenceStore
+    evidenceStore: CollectionEvidenceStore,
+    runAlertEvaluator: RunAlertEvaluator | null = null,
+    runAlertNotifier: RunAlertSummaryNotifier | null = null
   ) {
     this.collectorAgentService = collectorAgentService;
     this.repository = repository;
     this.evidenceStore = evidenceStore;
+    this.runAlertEvaluator = runAlertEvaluator;
+    this.runAlertNotifier = runAlertNotifier;
   }
 
   async ingest(agentToken: string, input: CollectorReport): Promise<IngestionSummary> {
@@ -269,18 +284,14 @@ export class DesktopReportIngestionService {
     if (!run) throw new DesktopReportConflictError();
     validateClaimBinding(report, run, ownership.agentId);
 
+    let result: { summary: IngestionSummary; newlyAccepted: boolean };
     try {
-      const result = await this.repository.ingest(ownership.agentId, report, async () => {
+      result = await this.repository.ingest(ownership.agentId, report, async () => {
         const evidenceChecks = await Promise.all(
           reportEvidenceKeys(report).map((key) => this.evidenceStore.has(report.runId, key))
         );
         if (evidenceChecks.some((exists) => !exists)) throw new DesktopReportValidationError();
       });
-      Object.defineProperty(result.summary, INGESTION_DISPOSITION, {
-        value: result.newlyAccepted ? "created" : "existing",
-        enumerable: false
-      });
-      return result.summary;
     } catch (error) {
       if (error instanceof DesktopReportConflictError || error instanceof DesktopReportValidationError) {
         throw error;
@@ -293,6 +304,20 @@ export class DesktopReportIngestionService {
       ).catch(() => undefined);
       throw new DesktopReportIngestionError();
     }
+
+    Object.defineProperty(result.summary, INGESTION_DISPOSITION, {
+      value: result.newlyAccepted ? "created" : "existing",
+      enumerable: false
+    });
+    if (this.runAlertEvaluator && this.runAlertNotifier) {
+      try {
+        const alertSummary = await this.runAlertEvaluator.evaluateRun(report.runId);
+        await this.runAlertNotifier.send(alertSummary);
+      } catch {
+        // Ingestion is already committed; downstream alert delivery must not alter its receipt.
+      }
+    }
+    return result.summary;
   }
 
   async uploadEvidence(

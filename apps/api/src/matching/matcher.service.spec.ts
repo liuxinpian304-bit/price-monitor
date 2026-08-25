@@ -119,3 +119,64 @@ test("every decision includes a readable reason", () => {
 
   assert.ok(decisions.every((decision) => decision.reasons.length > 0));
 });
+
+const sonyRule: MonitoredProductRule = {
+  brand: "Sony",
+  standardModel: "MDR-7506",
+  version: null,
+  comparisonType: "BARE",
+  effectiveAliases: ["索尼 7506", "7506"],
+  excludedAliases: [],
+  mustIncludeTerms: [],
+  excludedTerms: ["M1", "MV1", "展示样机", "单独转换线"]
+};
+
+function sonyOffer(skuLabel: string, attributes: Record<string, string> = {}): RawOffer {
+  const result = offer("索尼 7506 专业监听耳机", skuLabel);
+  result.skuOptions[0]!.attributes = attributes;
+  return result;
+}
+
+for (const selectedSku of ["M1", "MV1", "展示样机", "单独转换线"]) {
+  test(`rejects selected SKU ${selectedSku} even when the title contains 7506`, () => {
+    const decision = new MatcherService().match(sonyRule, sonyOffer(selectedSku));
+
+    assert.equal(decision.category, "REJECTED");
+    assert.equal(decision.comparable, false);
+    assert.ok(decision.reasons.some((reason) => reason.includes(selectedSku)));
+  });
+}
+
+test("compares an exact 7506 bare SKU", () => {
+  const decision = new MatcherService().match(sonyRule, sonyOffer("MDR-7506 单机"));
+
+  assert.equal(decision.category, "BARE");
+  assert.equal(decision.comparable, true);
+});
+
+test("does not conflate a 7506 plus conversion cable SKU with the bare SKU", () => {
+  const decision = new MatcherService().match(
+    sonyRule,
+    sonyOffer("MDR-7506 + C口转换线", { 配置: "7506耳机+C口转换线" })
+  );
+
+  assert.equal(decision.category, "BUNDLE");
+  assert.equal(decision.comparable, false);
+  assert.ok(decision.reasons.some((reason) => reason.includes("转换线")));
+});
+
+test("requires an explicitly configured version in the title or selected SKU", () => {
+  const versionedRule = { ...sonyRule, version: "新版" };
+
+  const missing = new MatcherService().match(versionedRule, sonyOffer("MDR-7506 单机"));
+  const inSku = new MatcherService().match(versionedRule, sonyOffer("MDR-7506 新版 单机"));
+  const inAttributes = new MatcherService().match(
+    versionedRule,
+    sonyOffer("MDR-7506 单机", { 版本: "新版" })
+  );
+
+  assert.equal(missing.category, "REJECTED");
+  assert.ok(missing.reasons.some((reason) => reason.includes("新版")));
+  assert.equal(inSku.comparable, true);
+  assert.equal(inAttributes.comparable, true);
+});

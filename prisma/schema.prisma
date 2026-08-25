@@ -67,6 +67,12 @@ enum AlertSeverity {
   SYSTEM_ERROR
 }
 
+enum RunAlertNotificationState {
+  PENDING
+  SENDING
+  NOTIFIED
+}
+
 model MonitoredModel {
   id                String         @id @default(cuid())
   monitorCode       String         @unique @db.VarChar(50)
@@ -211,6 +217,7 @@ model CollectionRun {
   coalescedInto      CollectionRun?             @relation("RunCoalescing", fields: [coalescedIntoRunId], references: [id], onDelete: SetNull)
   coalescedRuns      CollectionRun[]            @relation("RunCoalescing")
   snapshots          OfferSnapshot[]
+  alertNotificationBatch RunAlertNotificationBatch?
 
   @@unique([monitoredModelId, providerKey, scheduledFor])
   @@index([status, scheduledFor])
@@ -336,6 +343,25 @@ model PriceAlert {
 
   @@index([status, createdAt])
   @@index([monitoredModelId, lastSeenAt])
+}
+
+model RunAlertNotificationBatch {
+  id                        String                    @id @default(cuid())
+  collectionRunId           String                    @unique
+  summary                   Json
+  alertIds                  String[]                  @default([])
+  state                     RunAlertNotificationState @default(PENDING)
+  attemptToken              String?                   @db.VarChar(80)
+  attemptStartedAt          DateTime?
+  notificationAttempts      Int                       @default(0)
+  lastNotificationError     String?                   @db.VarChar(120)
+  lastNotificationAttemptAt DateTime?
+  notifiedAt                DateTime?
+  createdAt                 DateTime                  @default(now())
+  updatedAt                 DateTime                  @updatedAt
+  collectionRun             CollectionRun             @relation(fields: [collectionRunId], references: [id], onDelete: Cascade)
+
+  @@index([state, attemptStartedAt])
 }
 
 model AlertAction {
