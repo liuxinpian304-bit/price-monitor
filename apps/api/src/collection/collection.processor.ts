@@ -36,6 +36,10 @@ export class BullMqCollectionScheduleQueue implements CollectionScheduleQueue {
       }
     );
   }
+
+  async removeSchedule(id: string): Promise<void> {
+    await this.queue.removeJobScheduler(id);
+  }
 }
 
 export interface ScheduledClockJob {
@@ -44,12 +48,20 @@ export interface ScheduledClockJob {
 
 export class CollectionScheduleProcessor {
   private readonly collectionRuns: Pick<CollectionRunQueueService, "enqueueEnabledModels">;
+  private readonly settings: () => Promise<{ enabled: boolean; provider: "manual" | "external" | "desktop" }>;
 
-  constructor(collectionRuns: Pick<CollectionRunQueueService, "enqueueEnabledModels">) {
+  constructor(
+    collectionRuns: Pick<CollectionRunQueueService, "enqueueEnabledModels">,
+    settings: () => Promise<{ enabled: boolean; provider: "manual" | "external" | "desktop" }>
+      = async () => ({ enabled: true, provider: "desktop" })
+  ) {
     this.collectionRuns = collectionRuns;
+    this.settings = settings;
   }
 
   async process(job: ScheduledClockJob): Promise<void> {
+    const settings = await this.settings();
+    if (!settings.enabled || settings.provider !== "desktop") return;
     await this.collectionRuns.enqueueEnabledModels(new Date(job.timestamp));
   }
 }

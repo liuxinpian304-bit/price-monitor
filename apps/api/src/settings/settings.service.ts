@@ -61,11 +61,18 @@ export class SettingsService {
   private readonly repository: SettingsRepository;
   private readonly secretStore: SecretStore;
   private readonly audit: AuditService;
+  private readonly onScheduleSettingsChanged: () => Promise<void>;
 
-  constructor(repository: SettingsRepository, secretStore: SecretStore, audit: AuditService) {
+  constructor(
+    repository: SettingsRepository,
+    secretStore: SecretStore,
+    audit: AuditService,
+    onScheduleSettingsChanged: () => Promise<void> = async () => undefined
+  ) {
     this.repository = repository;
     this.secretStore = secretStore;
     this.audit = audit;
+    this.onScheduleSettingsChanged = onScheduleSettingsChanged;
   }
 
   async getPublicSettings(_role: UserRole): Promise<PublicSettings> {
@@ -115,6 +122,7 @@ export class SettingsService {
       before: before?.valueJson ?? null,
       after: valueJson
     });
+    await this.onScheduleSettingsChanged();
   }
 
   async updateProvider(provider: "manual" | "external" | "desktop", actorId: string, role: UserRole): Promise<void> {
@@ -135,6 +143,7 @@ export class SettingsService {
       before: before?.valueJson ?? null,
       after: provider
     });
+    await this.onScheduleSettingsChanged();
   }
 
   async updateSecret(key: SecretSettingKey, plaintext: string, actorId: string, role: UserRole): Promise<void> {

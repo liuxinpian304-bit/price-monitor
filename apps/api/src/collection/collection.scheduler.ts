@@ -9,6 +9,7 @@ export interface CollectionSchedule {
 
 export interface CollectionScheduleQueue {
   upsertSchedule(schedule: CollectionSchedule): Promise<void>;
+  removeSchedule(id: string): Promise<void>;
 }
 
 export interface CollectionScheduleSettings {
@@ -35,14 +36,19 @@ export class CollectionScheduler {
 
   async registerSchedules(): Promise<void> {
     const settings = await this.settings();
-    if (!settings.enabled || settings.provider !== "desktop") return;
+    const active = settings.enabled && settings.provider === "desktop";
     for (const localTime of CHECK_TIMES) {
-      await this.queue.upsertSchedule({
+      const schedule = {
         id: `tmall-collection-${localTime.replace(":", "")}`,
         localTime,
         pattern: cronPattern(localTime),
         timeZone: TIME_ZONE
-      });
+      };
+      if (active) {
+        await this.queue.upsertSchedule(schedule);
+      } else {
+        await this.queue.removeSchedule(schedule.id);
+      }
     }
   }
 }

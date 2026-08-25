@@ -37,6 +37,27 @@ test("registers twelve BullMQ job schedulers with Shanghai timezone", async () =
   assert.ok(schedulers.some((scheduler) => scheduler.pattern === "0 30 22 * * *"));
 });
 
+test("reconcile removes all persisted desktop schedulers after disable or provider change", async () => {
+  const adapter = new BullMqCollectionScheduleQueue(queue);
+  let settings: { enabled: boolean; provider: "desktop" | "manual" } = {
+    enabled: true,
+    provider: "desktop"
+  };
+  const scheduler = new CollectionScheduler(adapter, async () => settings);
+  await scheduler.registerSchedules();
+  assert.equal((await queue.getJobSchedulers(0, -1, true)).length, 12);
+
+  settings = { enabled: false, provider: "desktop" };
+  await scheduler.registerSchedules();
+  assert.equal((await queue.getJobSchedulers(0, -1, true)).length, 0);
+
+  settings = { enabled: true, provider: "desktop" };
+  await scheduler.registerSchedules();
+  settings = { enabled: true, provider: "manual" };
+  await scheduler.registerSchedules();
+  assert.equal((await queue.getJobSchedulers(0, -1, true)).length, 0);
+});
+
 test("only releases a Redis lock when the owner token matches", async () => {
   const lock = new RedisCollectionLock(redis);
   const key = "test:collection:model:model-1";

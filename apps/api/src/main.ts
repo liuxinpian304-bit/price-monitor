@@ -3,6 +3,10 @@ import { NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 
 import { AppModule } from "./app.module.ts";
+import {
+  adminPrincipalConfigFromEnvironment,
+  createVerifiedPrincipalMiddleware
+} from "./auth/verified-principal.ts";
 import { configureApiBodyParsing } from "./http/api-body-parsing.ts";
 import { closeRuntime, collectionEvidenceStore, collectorAgentService, startRuntime } from "./runtime.ts";
 
@@ -13,6 +17,7 @@ async function bootstrap() {
     { cors: false, bodyParser: false }
   );
   app.setGlobalPrefix("api");
+  app.use(createVerifiedPrincipalMiddleware(adminPrincipalConfigFromEnvironment()));
   configureApiBodyParsing(app, collectorAgentService);
   app.enableCors({ origin: [/^http:\/\/127\.0\.0\.1(?::\d+)?$/, /^http:\/\/localhost(?::\d+)?$/] });
   app.enableShutdownHooks();

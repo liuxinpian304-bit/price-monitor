@@ -1,7 +1,7 @@
 import "dotenv/config";
 
 import assert from "node:assert/strict";
-import { after, before, test } from "node:test";
+import { after, afterEach, before, test } from "node:test";
 
 import { createPrismaClient } from "../database/prisma.service.ts";
 import {
@@ -14,19 +14,25 @@ const testPrefix = `TASK13-${process.pid}-${Date.now()}`;
 
 const createdModelIds: string[] = [];
 const createdAgentIds: string[] = [];
+const createdRunIds: string[] = [];
 
 before(async () => { await prisma.$connect(); });
-after(async () => {
+afterEach(async () => {
+  if (createdRunIds.length > 0) {
+    await prisma.collectionRun.deleteMany({ where: { id: { in: createdRunIds.splice(0) } } });
+  }
   if (createdModelIds.length > 0) {
-    await prisma.monitoredModel.deleteMany({ where: { id: { in: createdModelIds } } });
+    await prisma.monitoredModel.deleteMany({ where: { id: { in: createdModelIds.splice(0) } } });
   }
   if (createdAgentIds.length > 0) {
-    await prisma.collectorAgent.deleteMany({ where: { id: { in: createdAgentIds } } });
+    await prisma.collectorAgent.deleteMany({ where: { id: { in: createdAgentIds.splice(0) } } });
   }
+});
+after(async () => {
   await prisma.$disconnect();
 });
 
-test("database scheduling is slot-idempotent and coalesces later unfinished work", async () => {
+test("concurrent same-slot creation returns one idempotent run to both callers", async () => {
   const model = await prisma.monitoredModel.create({
     data: {
       monitorCode: `${testPrefix}-1`,
@@ -41,22 +47,34 @@ test("database scheduling is slot-idempotent and coalesces later unfinished work
     }
   });
   createdModelIds.push(model.id);
-  const service = new CollectionRunQueueService(new PrismaCollectionRunQueueRepository(prisma));
+  const repository = new PrismaCollectionRunQueueRepository(prisma);
   const scheduledFor = new Date("2026-08-25T01:30:00.000Z");
+  const input = {
+    monitoredModelId: model.id,
+    providerKey: "taobao-desktop" as const,
+    scheduledFor,
+    searchLimit: 50,
+    actorId: null
+  };
 
-  const first = await service.enqueueEnabledModels(scheduledFor);
-  const duplicate = await service.enqueueEnabledModels(scheduledFor);
-  const manual = await service.enqueueModelNow(model.id, "admin-1", 7, new Date("2026-08-25T02:30:00.000Z"));
+  const [first, duplicate] = await Promise.all([
+    repository.createOrCoalesce(input),
+    repository.createOrCoalesce(input)
+  ]);
+  createdRunIds.push(first.run.id);
 
-  assert.equal(first.length, 1);
-  assert.equal(duplicate[0]?.run.id, first[0]?.run.id);
-  assert.deepEqual(manual, { runId: manual.runId, coalesced: true });
-  const rows = await prisma.collectionRun.findMany({ orderBy: { scheduledFor: "asc" } });
-  assert.equal(rows.length, 2);
+  assert.equal(duplicate.run.id, first.run.id);
+  const rows = await prisma.collectionRun.findMany({
+    where: { monitoredModelId: model.id, providerKey: "taobao-desktop", scheduledFor }
+  });
+  assert.equal(rows.length, 1);
   assert.equal(rows[0]?.status, "QUEUED");
-  assert.equal(rows[1]?.status, "COALESCED");
-  assert.equal(rows[1]?.coalescedIntoRunId, rows[0]?.id);
-  assert.equal(rows[1]?.searchLimit, 7);
+  assert.equal(await prisma.collectionRun.count({
+    where: {
+      id: first.run.id,
+      monitoredModel: { ownListings: { some: { active: true } } }
+    }
+  }), 0);
 });
 
 test("requeue preserves desktop ownership checkpoint while clearing a pause", async () => {
@@ -90,6 +108,7 @@ test("requeue preserves desktop ownership checkpoint while clearing a pause", as
       errorMessage: "login"
     }
   });
+  createdRunIds.push(run.id);
   const service = new CollectionRunQueueService(new PrismaCollectionRunQueueRepository(prisma));
 
   assert.deepEqual(await service.requeuePausedRun(run.id), { runId: run.id });
@@ -108,5 +127,6 @@ test("requeue preserves desktop ownership checkpoint while clearing a pause", as
       status: "PAUSED_LOGIN"
     }
   });
+  createdRunIds.push(nonDesktop.id);
   await assert.rejects(() => service.requeuePausedRun(nonDesktop.id));
 });

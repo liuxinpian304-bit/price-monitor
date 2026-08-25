@@ -68,6 +68,16 @@ export const redis = new Redis({
 });
 let runtimeLifecycle: ReturnType<typeof createRuntimeLifecycle> | null = null;
 let runtimeStarted = false;
+let collectionScheduler: CollectionScheduler | null = null;
+
+async function currentScheduleSettings() {
+  const settings = await settingsService.getPublicSettings("ADMIN");
+  return { enabled: settings.schedulerEnabled, provider: settings.provider };
+}
+
+async function reconcileCollectionSchedules(): Promise<void> {
+  if (collectionScheduler) await collectionScheduler.registerSchedules();
+}
 
 
 const audit = new AuditService(new PrismaAuditRepository(prisma));
@@ -84,7 +94,8 @@ export const alertController = new AlertController(
 export const settingsService = new SettingsService(
   new PrismaSettingsRepository(prisma),
   new SecretStore(settingsMasterKey()),
-  audit
+  audit,
+  reconcileCollectionSchedules
 );
 export const healthService = new HealthService(
   new PrismaDatabaseProbe(prisma),
@@ -147,18 +158,15 @@ export const desktopReportIngestionService = new DesktopReportIngestionService(
 
 function createDesktopScheduleRuntime() {
   const scheduleQueue = new Queue("desktop-collection-schedule", { connection: redis });
-  const scheduleProcessor = new CollectionScheduleProcessor(collectionRunQueueService);
+  const scheduleProcessor = new CollectionScheduleProcessor(collectionRunQueueService, currentScheduleSettings);
   const scheduleWorker = new Worker(
     "desktop-collection-schedule",
     async (job) => scheduleProcessor.process({ timestamp: job.timestamp }),
     { connection: redis, concurrency: 1 }
   );
-  const collectionScheduler = new CollectionScheduler(
+  collectionScheduler = new CollectionScheduler(
     new BullMqCollectionScheduleQueue(scheduleQueue),
-    async () => {
-      const settings = await settingsService.getPublicSettings("ADMIN");
-      return { enabled: settings.schedulerEnabled, provider: settings.provider };
-    }
+    currentScheduleSettings
   );
   return createRuntimeLifecycle({
     scheduler: collectionScheduler,

@@ -116,6 +116,11 @@ function toQueuedRun(run: {
 }
 
 const unfinishedStatuses = ["QUEUED", "RUNNING", "PAUSED_LOGIN", "PAUSED_CHALLENGE"] as const;
+const maximumCreateAttempts = 5;
+
+function hasPrismaErrorCode(error: unknown, code: "P2002" | "P2034"): boolean {
+  return typeof error === "object" && error !== null && Reflect.get(error, "code") === code;
+}
 
 export class PrismaCollectionRunQueueRepository implements CollectionRunQueueRepository {
   private readonly prisma: PrismaClient;
@@ -147,6 +152,51 @@ export class PrismaCollectionRunQueueRepository implements CollectionRunQueueRep
     actorId: string | null;
   }): Promise<{ run: QueuedCollectionRun; coalesced: boolean }> {
     void input.actorId;
+    for (let attempt = 0; attempt < maximumCreateAttempts; attempt += 1) {
+      try {
+        return await this.createOrCoalesceInSerializableTransaction(input);
+      } catch (error) {
+        if (!hasPrismaErrorCode(error, "P2002") && !hasPrismaErrorCode(error, "P2034")) {
+          throw error;
+        }
+
+        const sameSlot = await this.findSameSlot(input);
+        if (sameSlot) {
+          return { run: toQueuedRun(sameSlot), coalesced: sameSlot.status === "COALESCED" };
+        }
+        if (attempt === maximumCreateAttempts - 1) throw error;
+      }
+    }
+    throw new Error("unreachable collection run retry state");
+  }
+
+  private async findSameSlot(input: {
+    monitoredModelId: string;
+    providerKey: "taobao-desktop";
+    scheduledFor: Date;
+  }) {
+    return this.prisma.collectionRun.findUnique({
+      where: {
+        monitoredModelId_providerKey_scheduledFor: {
+          monitoredModelId: input.monitoredModelId,
+          providerKey: input.providerKey,
+          scheduledFor: input.scheduledFor
+        }
+      },
+      select: {
+        id: true, monitoredModelId: true, providerKey: true, scheduledFor: true,
+        searchLimit: true, status: true, coalescedIntoRunId: true
+      }
+    });
+  }
+
+  private async createOrCoalesceInSerializableTransaction(input: {
+    monitoredModelId: string;
+    providerKey: "taobao-desktop";
+    scheduledFor: Date;
+    searchLimit: number;
+    actorId: string | null;
+  }): Promise<{ run: QueuedCollectionRun; coalesced: boolean }> {
     return this.prisma.$transaction(async (transaction) => {
       const locked = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT "id" FROM "MonitoredModel"

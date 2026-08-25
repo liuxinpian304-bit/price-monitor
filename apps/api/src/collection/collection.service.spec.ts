@@ -154,7 +154,8 @@ function service(provider: CommerceProvider, repository = new FakeRepository(), 
 test("registers exactly the twelve approved Asia/Shanghai schedules", async () => {
   const schedules: CollectionSchedule[] = [];
   const queue: CollectionScheduleQueue = {
-    upsertSchedule: async (schedule) => { schedules.push(schedule); }
+    upsertSchedule: async (schedule) => { schedules.push(schedule); },
+    removeSchedule: async () => undefined
   };
 
   await new CollectionScheduler(queue).registerSchedules();
