@@ -274,3 +274,38 @@ No known Task 11 functional concerns remain. Task 13 still owns the configurable
 - Confirmed physical root/run confinement, unique-temp cleanup, inode-safe directory-swap rollback, PostgreSQL run-row serialization, HTTP authentication ordering, exact report receipts, bounds, and database locks are unchanged.
 - Confirmed no report, token, item/account text, evidence bytes, local path, PID, hostname, process-instance ID, or lease token is logged, returned, or stored outside the opaque root lock file.
 - `pnpm audit:public` still exits nonzero only for the same three absolute local paths in the already committed, unrelated `docs/superpowers/plans/2026-08-21-local-demo-runtime-fixes.md`; this Round 4 diff does not modify that file or add an audit finding.
+
+## Fix Round 5
+
+### Publication claim fence
+
+- Immediately before the final ownership check, each publisher now creates and fsyncs a fixed hard-link publication claim under the canonical root. The claim must resolve to the current lease inode, and every ownership check verifies the lease inode, lease token, and claim inode together.
+- The claim remains present across the post-ownership test hook, `link()`, all post-link root/run/temp checks, inode-scoped rollback, the created/duplicate decision, and acknowledgement. The resumed owner rechecks the claim after the hook and immediately before every namespace mutation.
+- Reclaimers distinguish the long-held publication claim from the short reclaim link. A provably live same-host claimant is protected without a lease deadline; dead claimants are immediately reclaimable; remote or inconclusive liveness falls back to conservative lease expiry.
+- One reclaimer acquires the short hard-link claim against the observed lease inode, rechecks the observed token and publication-claim state, removes the stale publication claim before the stale lease, and fsyncs the canonical root. A valid final is then fully verified under the successor's own claim and acknowledged with `created: false`; an absent final is published once.
+- A superseded owner cannot link, acknowledge, roll back, or remove successor state. Rollback requires the same current publication claim and only unlinks a final whose inode matches the operation's temp.
+- Normal release verifies the publication claim, lease token/inode, and reclaim link before removing the publication claim and lease by inode. New lease creation also waits out a prior release/reclaim auxiliary link, closing the lock-removal cleanup window without leaving a successor lease behind.
+
+### RED evidence
+
+- Before implementation, the focused evidence suite had five failures. The live-owner regression paused after the ownership check with heartbeats stopped, advanced beyond lease expiry, and lost ownership instead of fencing the contender. The four crash/reclaimer probes each observed link count `1`, proving no publication claim covered their paused window.
+- The original superseded-owner test paused before the final ownership check. Moving the existing hook after the checked claim exposed the reviewed check-to-`link()` interval directly.
+
+### GREEN verification
+
+- Focused Task 11 evidence/ingestion/real HTTP tests: 45 passed, 0 failed, including the release/reclaim cleanup probe.
+- Focused real PostgreSQL Task 11 integration: 10 passed, 0 failed, including publication serialized with a concurrent terminal transition.
+- `pnpm test:api:portable`: 127 passed, 0 failed.
+- `pnpm test:api`: 148 passed, 0 failed against PostgreSQL and Redis.
+- `pnpm test:collector`: 144 passed, 0 failed.
+- Final `pnpm test`: local-env 4 passed, config 16 passed, contracts 16 passed, API 148 passed, collector 144 passed, and web 10 passed.
+- `pnpm typecheck`: passed for API, web, and collector.
+- `prisma validate`: passed. `prisma migrate status`: five migrations found and the database schema is up to date.
+
+### Fix Round 5 self-review
+
+- Re-read all seven publication-claim requirements against the final state machine. Confirmed the claim spans the exact checked-owner window, live same-host claimants have no fixed waiter deadline, dead and conservatively expired claimants recover by token/inode, and two reclaimers remain serialized.
+- Confirmed every created/duplicate acknowledgement occurs only after a current claim check, and every rollback decision plus final unlink requires the same claim and temp inode. A superseded owner can remove only its own unique temp by inode.
+- Confirmed normal release and the successor-during-release path leave no temp, lease, publication-claim, or reclaim-link artifact. Existing long-publisher, cross-store, directory-change, rollback-preservation, HTTP, PostgreSQL, and physical-confinement probes remain active.
+- Confirmed no report, token, item/account text, evidence bytes, local path, PID, hostname, process-instance ID, or ownership token was added to logs, responses, database persistence, or non-opaque filenames.
+- `pnpm audit:public` still exits nonzero only for the same three absolute local paths in the already committed, unrelated `docs/superpowers/plans/2026-08-21-local-demo-runtime-fixes.md`; this Round 5 diff does not modify that file or add an audit finding.

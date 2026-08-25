@@ -63,7 +63,9 @@ interface PublicationLock {
   handle: Awaited<ReturnType<typeof open>>;
   identity: Stats;
   path: string;
-  claimPath: string;
+  publicationClaimPath: string;
+  reclaimClaimPath: string;
+  publicationClaimHeld: boolean;
   root: VerifiedRoot;
   token: string;
   refreshTail: Promise<void>;
@@ -326,12 +328,20 @@ export class CollectionEvidenceStore {
           operationError = error;
           throw error;
         } finally {
-          await stopHeartbeat();
+          let heartbeatError: unknown;
+          try {
+            await stopHeartbeat();
+          } catch (error) {
+            heartbeatError = error;
+          }
+          let releaseError: unknown;
           try {
             await this.releasePublicationLock(publicationLock);
           } catch (error) {
-            if (!operationError) throw error;
+            releaseError = error;
           }
+          if (!operationError && heartbeatError) throw heartbeatError;
+          if (!operationError && releaseError) throw releaseError;
         }
       } catch (error) {
         if (
@@ -372,9 +382,16 @@ export class CollectionEvidenceStore {
     await this.requirePublicationLockOwnership(publicationLock);
     await this.requireDirectoryIdentities(directory);
     if (await this.isVerifiedFile(directory, target, sha256)) {
+      await this.acquirePublicationClaim(publicationLock);
+      await this.requirePublicationLockOwnership(publicationLock);
+      await this.requireDirectoryIdentities(directory);
+      if (!await this.isVerifiedFile(directory, target, sha256)) {
+        throw new EvidenceStoreIdentityChangedError();
+      }
       await this.syncDirectory(directory.runPath);
       await this.requireDirectoryIdentities(directory);
       await this.refreshPublicationLock(publicationLock);
+      await this.requirePublicationLockOwnership(publicationLock);
       return false;
     }
 
@@ -403,6 +420,8 @@ export class CollectionEvidenceStore {
 
       await this.requireDirectoryIdentities(directory);
       await this.requireFileIdentity(temporary, temporaryIdentity);
+      await this.acquirePublicationClaim(publicationLock);
+      await this.requirePublicationLockOwnership(publicationLock);
       await this.afterFinalPreLinkIdentityCheck();
       await this.requirePublicationLockOwnership(publicationLock);
 
@@ -410,27 +429,37 @@ export class CollectionEvidenceStore {
         await link(temporary, target);
       } catch (error) {
         if (!isAlreadyPresent(error)) throw error;
+        await this.requirePublicationLockOwnership(publicationLock);
         if (!await this.isVerifiedFile(directory, target, sha256)) {
           throw new EvidenceStoreValidationError();
         }
         await this.syncDirectory(directory.runPath);
         await this.requireDirectoryIdentities(directory);
         await this.refreshPublicationLock(publicationLock);
+        await this.requirePublicationLockOwnership(publicationLock);
         return false;
       }
       published = true;
 
+      await this.requirePublicationLockOwnership(publicationLock);
       await this.requireDirectoryIdentities(directory);
       await this.requireFileIdentity(target, temporaryIdentity);
       await this.syncDirectory(directory.runPath);
       await this.requireDirectoryIdentities(directory);
       await this.requireFileIdentity(target, temporaryIdentity);
       await this.requireFileIdentity(temporary, temporaryIdentity);
-      await unlink(temporary);
+      if (!await this.unlinkMatchingFileWhileClaimed(
+        temporary,
+        temporaryIdentity,
+        publicationLock
+      )) {
+        throw new EvidenceStoreIdentityChangedError();
+      }
       await this.syncDirectory(directory.rootPath);
       await this.requireDirectoryIdentities(directory);
       await this.requireFileIdentity(target, temporaryIdentity);
       await this.refreshPublicationLock(publicationLock);
+      await this.requirePublicationLockOwnership(publicationLock);
       return true;
     } catch (error) {
       let failure = error;
@@ -441,7 +470,7 @@ export class CollectionEvidenceStore {
         && !(error instanceof PublicationLockOwnershipLostError)
       ) {
         try {
-          await this.rollbackPublishedLink(target, temporaryIdentity);
+          await this.rollbackPublishedLink(target, temporaryIdentity, publicationLock);
         } catch (rollbackError) {
           failure = rollbackError;
         }
@@ -453,14 +482,60 @@ export class CollectionEvidenceStore {
     }
   }
 
+  private async acquirePublicationClaim(lock: PublicationLock): Promise<void> {
+    if (lock.publicationClaimHeld) {
+      await this.requirePublicationLockOwnership(lock);
+      return;
+    }
+
+    const acquisition = lock.refreshTail.then(async () => {
+      if (lock.heartbeatError) throw lock.heartbeatError;
+      await this.requirePublicationLockOwnershipNow(lock);
+      let linked = false;
+      try {
+        await link(lock.path, lock.publicationClaimPath);
+        linked = true;
+        const claimIdentity = await lstat(lock.publicationClaimPath);
+        if (
+          !claimIdentity.isFile()
+          || claimIdentity.isSymbolicLink()
+          || !sameIdentity(claimIdentity, lock.identity)
+        ) {
+          throw new PublicationLockOwnershipLostError();
+        }
+        lock.publicationClaimHeld = true;
+        await this.syncDirectory(lock.root.path);
+        await this.requirePublicationLockOwnershipNow(lock);
+      } catch (error) {
+        lock.publicationClaimHeld = false;
+        if (linked) {
+          await this.unlinkMatchingFile(lock.publicationClaimPath, lock.identity)
+            .catch(() => undefined);
+          await this.syncDirectory(lock.root.path).catch(() => undefined);
+        }
+        if (isAlreadyPresent(error) || isMissing(error)) {
+          throw new PublicationLockOwnershipLostError();
+        }
+        throw error;
+      }
+    });
+    lock.refreshTail = acquisition.then(
+      () => undefined,
+      () => undefined
+    );
+    return acquisition;
+  }
+
   private async acquirePublicationLock(
     root: VerifiedRoot,
     objectId: string
   ): Promise<PublicationLock> {
     const path = join(root.path, `.evidence.${objectId}.lock`);
-    const claimPath = join(root.path, `.evidence.${objectId}.lock.claim`);
+    const publicationClaimPath = join(root.path, `.evidence.${objectId}.lock.publish`);
+    const reclaimClaimPath = join(root.path, `.evidence.${objectId}.lock.reclaim`);
     assertContained(root.path, path);
-    assertContained(root.path, claimPath);
+    assertContained(root.path, publicationClaimPath);
+    assertContained(root.path, reclaimClaimPath);
 
     while (true) {
       await this.requireDirectoryIdentity(root.path, root.identity);
@@ -483,23 +558,42 @@ export class CollectionEvidenceStore {
           continue;
         }
         if (!snapshot) continue;
-        if (
-          this.isPublicationLockStale(snapshot)
-          && await this.reclaimPublicationLock(root, path, claimPath, snapshot)
-        ) {
+        const publicationClaim = await this.readPublicationClaim(publicationClaimPath);
+        if (publicationClaim && !sameIdentity(publicationClaim, snapshot.identity)) {
+          await this.clearAbandonedPublicationClaim(root, publicationClaimPath, publicationClaim);
+          await this.wait(this.waitIntervalMs);
           continue;
         }
-        await this.wait(this.publicationLockWait(snapshot));
+        const stale = publicationClaim
+          ? this.isPublicationClaimStale(snapshot)
+          : this.isPublicationLockStale(snapshot);
+        if (stale && await this.reclaimPublicationLock(
+          root,
+          path,
+          publicationClaimPath,
+          reclaimClaimPath,
+          snapshot,
+          publicationClaim
+        )) {
+          continue;
+        }
+        await this.wait(publicationClaim
+          ? this.publicationClaimWait(snapshot)
+          : this.publicationLockWait(snapshot));
         continue;
       }
 
       let identity: Stats | undefined;
+      let blockingPublicationClaim: Stats | null = null;
+      let blockingReclaimClaim: Stats | null = null;
       const token = randomUUID();
       const lock: PublicationLock = {
         handle,
         identity: undefined as unknown as Stats,
         path,
-        claimPath,
+        publicationClaimPath,
+        reclaimClaimPath,
+        publicationClaimHeld: false,
         root,
         token,
         refreshTail: Promise.resolve()
@@ -510,6 +604,11 @@ export class CollectionEvidenceStore {
           throw new EvidenceStoreIdentityChangedError();
         }
         lock.identity = identity;
+        blockingPublicationClaim = await this.readPublicationClaim(publicationClaimPath);
+        blockingReclaimClaim = await this.readPublicationClaim(reclaimClaimPath);
+        if (blockingPublicationClaim || blockingReclaimClaim) {
+          throw new EvidenceStoreIdentityChangedError();
+        }
         await this.appendPublicationLeaseRecord(lock);
         await handle.sync();
         await this.syncDirectory(root.path);
@@ -519,12 +618,36 @@ export class CollectionEvidenceStore {
       } catch (error) {
         await handle.close().catch(() => undefined);
         if (identity) {
-          await this.removePublicationLockByIdentity(
-            root,
-            path,
-            claimPath,
-            identity
-          ).catch(() => undefined);
+          if (blockingPublicationClaim || blockingReclaimClaim) {
+            await this.unlinkMatchingFile(path, identity).catch(() => undefined);
+            await this.syncDirectory(root.path).catch(() => undefined);
+          } else {
+            await this.removePublicationLockByIdentity(
+              root,
+              path,
+              publicationClaimPath,
+              reclaimClaimPath,
+              identity
+            ).catch(() => undefined);
+          }
+        }
+        if (blockingPublicationClaim || blockingReclaimClaim) {
+          if (blockingPublicationClaim) {
+            await this.clearAbandonedPublicationClaim(
+              root,
+              publicationClaimPath,
+              blockingPublicationClaim
+            );
+          }
+          if (blockingReclaimClaim) {
+            await this.clearAbandonedPublicationClaim(
+              root,
+              reclaimClaimPath,
+              blockingReclaimClaim
+            );
+          }
+          await this.wait(this.waitIntervalMs);
+          continue;
         }
         throw error;
       }
@@ -637,16 +760,33 @@ export class CollectionEvidenceStore {
     ) {
       throw new PublicationLockOwnershipLostError();
     }
-    let claimIdentity: Stats;
-    try {
-      claimIdentity = await lstat(lock.claimPath);
-    } catch (error) {
-      if (isMissing(error)) return;
-      throw error;
-    }
-    if (sameIdentity(claimIdentity, lock.identity)) {
+    const publicationClaim = await this.readPublicationClaim(lock.publicationClaimPath);
+    if (lock.publicationClaimHeld) {
+      if (!publicationClaim || !sameIdentity(publicationClaim, lock.identity)) {
+        throw new PublicationLockOwnershipLostError();
+      }
+    } else if (publicationClaim) {
       throw new PublicationLockOwnershipLostError();
     }
+
+    const reclaimClaim = await this.readPublicationClaim(lock.reclaimClaimPath);
+    if (reclaimClaim && sameIdentity(reclaimClaim, lock.identity)) {
+      throw new PublicationLockOwnershipLostError();
+    }
+  }
+
+  private async readPublicationClaim(path: string): Promise<Stats | null> {
+    let identity: Stats;
+    try {
+      identity = await lstat(path);
+    } catch (error) {
+      if (isMissing(error)) return null;
+      throw error;
+    }
+    if (!identity.isFile() || identity.isSymbolicLink()) {
+      throw new EvidenceStoreIdentityChangedError();
+    }
+    return identity;
   }
 
   private async readPublicationLock(path: string): Promise<PublicationLockSnapshot | null> {
@@ -720,20 +860,33 @@ export class CollectionEvidenceStore {
   }
 
   private isPublicationLockStale(snapshot: PublicationLockSnapshot): boolean {
+    if (this.publicationOwnerLiveness(snapshot) === false) return true;
+    return this.isPublicationLockExpired(snapshot);
+  }
+
+  private isPublicationClaimStale(snapshot: PublicationLockSnapshot): boolean {
+    const liveness = this.publicationOwnerLiveness(snapshot);
+    if (liveness === true) return false;
+    if (liveness === false) return true;
+    return this.isPublicationLockExpired(snapshot);
+  }
+
+  private publicationOwnerLiveness(snapshot: PublicationLockSnapshot): boolean | undefined {
     const record = snapshot.record;
-    if (record && record.hostname === this.hostname) {
-      if (record.pid === this.pid && record.processInstanceId !== this.processInstanceId) {
-        return true;
-      }
-      if (record.pid !== this.pid) {
-        try {
-          if (this.isProcessAlive(record.pid) === false) return true;
-        } catch {
-          // Liveness probes are advisory; lease expiry remains the conservative fallback.
-        }
-      }
+    if (!record || record.hostname !== this.hostname) return undefined;
+    if (record.pid === this.pid) {
+      return record.processInstanceId === this.processInstanceId;
     }
-    const expiresAtMs = record?.expiresAtMs ?? snapshot.mtimeMs + this.leaseDurationMs;
+    try {
+      return this.isProcessAlive(record.pid);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private isPublicationLockExpired(snapshot: PublicationLockSnapshot): boolean {
+    const expiresAtMs = snapshot.record?.expiresAtMs
+      ?? snapshot.mtimeMs + this.leaseDurationMs;
     return this.now() >= expiresAtMs;
   }
 
@@ -744,62 +897,116 @@ export class CollectionEvidenceStore {
     return Math.min(this.waitIntervalMs, untilExpiry);
   }
 
+  private publicationClaimWait(snapshot: PublicationLockSnapshot): number {
+    return this.publicationOwnerLiveness(snapshot) === true
+      ? this.waitIntervalMs
+      : this.publicationLockWait(snapshot);
+  }
+
   private async reclaimPublicationLock(
     root: VerifiedRoot,
     path: string,
-    claimPath: string,
-    observed: PublicationLockSnapshot
+    publicationClaimPath: string,
+    reclaimClaimPath: string,
+    observed: PublicationLockSnapshot,
+    observedPublicationClaim: Stats | null
   ): Promise<boolean> {
     try {
-      await link(path, claimPath);
+      await link(path, reclaimClaimPath);
     } catch (error) {
       if (isMissing(error)) return true;
       if (!isAlreadyPresent(error)) throw error;
-      await this.clearAbandonedPublicationClaim(root, claimPath);
+      await this.clearAbandonedPublicationClaim(root, reclaimClaimPath);
       return false;
     }
 
-    let claimIdentity: Stats | undefined;
+    let reclaimClaimIdentity: Stats | undefined;
     try {
-      claimIdentity = await lstat(claimPath);
-      if (!sameIdentity(claimIdentity, observed.identity)) return false;
+      reclaimClaimIdentity = await lstat(reclaimClaimPath);
+      if (!sameIdentity(reclaimClaimIdentity, observed.identity)) return false;
       const latest = await this.readPublicationLock(path);
+      const latestPublicationClaim = await this.readPublicationClaim(publicationClaimPath);
       if (
         !latest
         || !sameIdentity(latest.identity, observed.identity)
         || (observed.record !== null && latest.record?.token !== observed.record.token)
         || (observed.record === null && latest.record !== null)
-        || !this.isPublicationLockStale(latest)
+        || !this.samePublicationClaim(
+          observedPublicationClaim,
+          latestPublicationClaim,
+          latest.identity
+        )
+        || !(latestPublicationClaim
+          ? this.isPublicationClaimStale(latest)
+          : this.isPublicationLockStale(latest))
       ) {
         return false;
       }
 
       await this.requireDirectoryIdentity(root.path, root.identity);
-      await this.requireFileIdentity(claimPath, claimIdentity);
+      await this.requireFileIdentity(reclaimClaimPath, reclaimClaimIdentity);
       const confirmed = await this.readPublicationLock(path);
+      const confirmedPublicationClaim = await this.readPublicationClaim(publicationClaimPath);
       if (
         !confirmed
-        || !sameIdentity(confirmed.identity, claimIdentity)
+        || !sameIdentity(confirmed.identity, reclaimClaimIdentity)
         || confirmed.record?.token !== latest.record?.token
-        || !this.isPublicationLockStale(confirmed)
+        || !this.samePublicationClaim(
+          latestPublicationClaim,
+          confirmedPublicationClaim,
+          confirmed.identity
+        )
+        || !(confirmedPublicationClaim
+          ? this.isPublicationClaimStale(confirmed)
+          : this.isPublicationLockStale(confirmed))
       ) {
         return false;
       }
-      await this.requireFileIdentity(claimPath, claimIdentity);
-      if (!await this.unlinkMatchingFile(path, claimIdentity)) return false;
+
+      if (confirmedPublicationClaim) {
+        await this.requireFileIdentity(publicationClaimPath, confirmedPublicationClaim);
+        await this.requireFileIdentity(reclaimClaimPath, reclaimClaimIdentity);
+        if (!await this.unlinkMatchingFile(publicationClaimPath, confirmedPublicationClaim)) {
+          return false;
+        }
+        await this.syncDirectory(root.path);
+      }
+
+      await this.requireFileIdentity(reclaimClaimPath, reclaimClaimIdentity);
+      const current = await this.readPublicationLock(path);
+      if (
+        !current
+        || !sameIdentity(current.identity, reclaimClaimIdentity)
+        || current.record?.token !== confirmed.record?.token
+        || await this.readPublicationClaim(publicationClaimPath)
+      ) {
+        return false;
+      }
+      if (!await this.unlinkMatchingFile(path, reclaimClaimIdentity)) return false;
       await this.syncDirectory(root.path);
       return true;
     } finally {
-      if (claimIdentity) {
-        await this.unlinkMatchingFile(claimPath, claimIdentity).catch(() => undefined);
+      if (reclaimClaimIdentity) {
+        await this.unlinkMatchingFile(reclaimClaimPath, reclaimClaimIdentity)
+          .catch(() => undefined);
         await this.syncDirectory(root.path).catch(() => undefined);
       }
     }
   }
 
+  private samePublicationClaim(
+    observed: Stats | null,
+    current: Stats | null,
+    lockIdentity: Stats
+  ): boolean {
+    if (!observed || !current) return observed === current;
+    return sameIdentity(observed, current) && sameIdentity(current, lockIdentity);
+  }
+
   private async clearAbandonedPublicationClaim(
     root: VerifiedRoot,
-    claimPath: string
+    claimPath: string,
+    observed?: Stats
   ): Promise<void> {
     let claimIdentity: Stats;
     try {
@@ -811,6 +1018,7 @@ export class CollectionEvidenceStore {
     if (!claimIdentity.isFile() || claimIdentity.isSymbolicLink()) {
       throw new EvidenceStoreIdentityChangedError();
     }
+    if (observed && !sameIdentity(claimIdentity, observed)) return;
     const staleAtMs = claimIdentity.ctimeMs + this.reclaimClaimGraceMs;
     if (this.now() < staleAtMs) {
       await this.wait(Math.min(this.waitIntervalMs, Math.max(1, staleAtMs - this.now())));
@@ -826,7 +1034,7 @@ export class CollectionEvidenceStore {
     await lock.refreshTail;
     await this.requirePublicationLockOwnershipNow(lock);
     try {
-      await link(lock.path, lock.claimPath);
+      await link(lock.path, lock.reclaimClaimPath);
     } catch (error) {
       if (isAlreadyPresent(error) || isMissing(error)) {
         throw new PublicationLockOwnershipLostError();
@@ -834,10 +1042,10 @@ export class CollectionEvidenceStore {
       throw error;
     }
 
-    let claimIdentity: Stats | undefined;
+    let reclaimClaimIdentity: Stats | undefined;
     try {
-      claimIdentity = await lstat(lock.claimPath);
-      if (!sameIdentity(claimIdentity, lock.identity)) {
+      reclaimClaimIdentity = await lstat(lock.reclaimClaimPath);
+      if (!sameIdentity(reclaimClaimIdentity, lock.identity)) {
         throw new PublicationLockOwnershipLostError();
       }
       const current = await this.readPublicationLock(lock.path);
@@ -848,14 +1056,40 @@ export class CollectionEvidenceStore {
       ) {
         throw new PublicationLockOwnershipLostError();
       }
-      await this.requireFileIdentity(lock.claimPath, claimIdentity);
+
+      const publicationClaim = await this.readPublicationClaim(lock.publicationClaimPath);
+      if (lock.publicationClaimHeld) {
+        if (!publicationClaim || !sameIdentity(publicationClaim, lock.identity)) {
+          throw new PublicationLockOwnershipLostError();
+        }
+        await this.requireFileIdentity(lock.publicationClaimPath, publicationClaim);
+        await this.requireFileIdentity(lock.reclaimClaimPath, reclaimClaimIdentity);
+        if (!await this.unlinkMatchingFile(lock.publicationClaimPath, publicationClaim)) {
+          throw new PublicationLockOwnershipLostError();
+        }
+        lock.publicationClaimHeld = false;
+        await this.syncDirectory(lock.root.path);
+      } else if (publicationClaim) {
+        throw new PublicationLockOwnershipLostError();
+      }
+
+      await this.requireFileIdentity(lock.reclaimClaimPath, reclaimClaimIdentity);
+      const confirmed = await this.readPublicationLock(lock.path);
+      if (
+        !confirmed
+        || !sameIdentity(confirmed.identity, lock.identity)
+        || confirmed.record?.token !== lock.token
+      ) {
+        throw new PublicationLockOwnershipLostError();
+      }
       if (!await this.unlinkMatchingFile(lock.path, lock.identity)) {
         throw new PublicationLockOwnershipLostError();
       }
       await this.syncDirectory(lock.root.path);
     } finally {
-      if (claimIdentity) {
-        await this.unlinkMatchingFile(lock.claimPath, claimIdentity).catch(() => undefined);
+      if (reclaimClaimIdentity) {
+        await this.unlinkMatchingFile(lock.reclaimClaimPath, reclaimClaimIdentity)
+          .catch(() => undefined);
         await this.syncDirectory(lock.root.path).catch(() => undefined);
       }
     }
@@ -864,28 +1098,34 @@ export class CollectionEvidenceStore {
   private async removePublicationLockByIdentity(
     root: VerifiedRoot,
     path: string,
-    claimPath: string,
+    publicationClaimPath: string,
+    reclaimClaimPath: string,
     expected: Stats
   ): Promise<void> {
     try {
-      await link(path, claimPath);
+      await link(path, reclaimClaimPath);
     } catch (error) {
       if (isAlreadyPresent(error) || isMissing(error)) return;
       throw error;
     }
 
-    let claimIdentity: Stats | undefined;
+    let reclaimClaimIdentity: Stats | undefined;
     try {
-      claimIdentity = await lstat(claimPath);
-      if (!sameIdentity(claimIdentity, expected)) return;
+      reclaimClaimIdentity = await lstat(reclaimClaimPath);
+      if (!sameIdentity(reclaimClaimIdentity, expected)) return;
       await this.requireDirectoryIdentity(root.path, root.identity);
-      await this.requireFileIdentity(claimPath, expected);
+      await this.requireFileIdentity(reclaimClaimPath, expected);
+      const publicationClaim = await this.readPublicationClaim(publicationClaimPath);
+      if (publicationClaim && sameIdentity(publicationClaim, expected)) {
+        await this.unlinkMatchingFile(publicationClaimPath, expected);
+      }
       if (await this.unlinkMatchingFile(path, expected)) {
         await this.syncDirectory(root.path);
       }
     } finally {
-      if (claimIdentity) {
-        await this.unlinkMatchingFile(claimPath, claimIdentity).catch(() => undefined);
+      if (reclaimClaimIdentity) {
+        await this.unlinkMatchingFile(reclaimClaimPath, reclaimClaimIdentity)
+          .catch(() => undefined);
         await this.syncDirectory(root.path).catch(() => undefined);
       }
     }
@@ -1043,10 +1283,47 @@ export class CollectionEvidenceStore {
     }
   }
 
-  private async rollbackPublishedLink(path: string, expected: Stats): Promise<boolean> {
+  private async rollbackPublishedLink(
+    path: string,
+    expected: Stats,
+    lock?: PublicationLock
+  ): Promise<boolean> {
+    if (!lock?.publicationClaimHeld) return false;
+    await this.requirePublicationLockOwnership(lock);
     const resolvedParent = await realpath(dirname(path));
     const resolvedPath = join(resolvedParent, basename(path));
-    return this.unlinkMatchingFile(resolvedPath, expected);
+    return this.unlinkMatchingFileWhileClaimed(resolvedPath, expected, lock);
+  }
+
+  private async unlinkMatchingFileWhileClaimed(
+    path: string,
+    expected: Stats,
+    lock: PublicationLock
+  ): Promise<boolean> {
+    let metadata: Stats;
+    try {
+      metadata = await lstat(path);
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
+    if (!metadata.isFile() || metadata.isSymbolicLink() || !sameIdentity(metadata, expected)) {
+      return false;
+    }
+
+    await this.requirePublicationLockOwnership(lock);
+    await unlink(path);
+    try {
+      const afterUnlink = await lstat(path);
+      if (afterUnlink.isFile() && !afterUnlink.isSymbolicLink()
+        && sameIdentity(afterUnlink, expected)) {
+        throw new EvidenceStoreIdentityChangedError();
+      }
+    } catch (error) {
+      if (isMissing(error)) return true;
+      throw error;
+    }
+    return true;
   }
 
   private async unlinkMatchingFile(path: string, expected: Stats): Promise<boolean> {

@@ -91,6 +91,12 @@ function publicationArtifacts(entries: string[]): string[] {
   return entries.filter((entry) => entry.startsWith(".evidence."));
 }
 
+async function publicationLeaseLinkCount(root: string): Promise<number> {
+  const lock = (await readdir(root)).find((entry) => entry.endsWith(".lock"));
+  assert.ok(lock, "expected an active publication lease");
+  return (await stat(join(root, lock))).nlink;
+}
+
 async function withStore<T>(run: (store: CollectionEvidenceStore, root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), "collection-evidence-"));
   const canonicalRoot = await realpath(root);
@@ -209,6 +215,61 @@ test("keeps waiting past ten seconds while a live publisher renews its lease", a
   }
 });
 
+test("a live publication claim fences the checked owner past lease expiry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collection-evidence-publication-claim-"));
+  const canonicalRoot = await realpath(root);
+  const clock = new ManualClock(Date.now());
+  const publicationGate = deferred();
+  const publicationEntered = deferred();
+  const neverDelay = (): Promise<void> => new Promise(() => undefined);
+  let first: Promise<{ evidenceKey: string; created: boolean }> | undefined;
+  let second: Promise<{ evidenceKey: string; created: boolean }> | undefined;
+  try {
+    const firstStore = new CollectionEvidenceStore(
+      canonicalRoot,
+      leaseOptions(clock, 101, "checked-publisher", () => true, neverDelay)
+    );
+    const secondStore = new CollectionEvidenceStore(
+      canonicalRoot,
+      leaseOptions(clock, 202, "waiting-publisher", () => true)
+    );
+    Reflect.set(firstStore, "afterFinalPreLinkIdentityCheck", async () => {
+      publicationEntered.resolve();
+      await publicationGate.promise;
+    });
+
+    const sha256 = digest(png);
+    first = firstStore.put("run-1", sha256, png);
+    void first.catch(() => undefined);
+    await publicationEntered.promise;
+
+    await clock.advanceBy(2_100);
+    let secondSettled = false;
+    second = secondStore.put("run-1", sha256, Buffer.from(png))
+      .finally(() => { secondSettled = true; });
+    void second.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(secondSettled, false);
+
+    publicationGate.resolve();
+    assert.deepEqual(await first, {
+      evidenceKey: `sha256:${sha256}`,
+      created: true
+    });
+    await clock.advanceBy(250);
+    assert.deepEqual(await second, {
+      evidenceKey: `sha256:${sha256}`,
+      created: false
+    });
+    assert.equal(await firstStore.has("run-1", `sha256:${sha256}`), true);
+    assert.deepEqual(publicationArtifacts(await readdir(canonicalRoot)), []);
+  } finally {
+    publicationGate.resolve();
+    await Promise.allSettled([first, second].filter((value) => value !== undefined));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("reclaims a dead publisher lease with no final and publishes once", async () => {
   const root = await mkdtemp(join(tmpdir(), "collection-evidence-dead-publisher-"));
   const canonicalRoot = await realpath(root);
@@ -235,6 +296,8 @@ test("reclaims a dead publisher lease with no final and publishes once", async (
     oldPublication = oldStore.put("run-1", sha256, png);
     void oldPublication.catch(() => undefined);
     await oldPublisherEntered.promise;
+
+    assert.equal(await publicationLeaseLinkCount(canonicalRoot), 2);
 
     assert.deepEqual(await recoveryStore.put("run-1", sha256, Buffer.from(png)), {
       evidenceKey: `sha256:${sha256}`,
@@ -283,6 +346,8 @@ test("acknowledges a valid final after its crashed publisher leaves the lock", a
     void first.catch(() => undefined);
     await releaseEntered.promise;
 
+    assert.equal(await publicationLeaseLinkCount(canonicalRoot), 2);
+
     assert.deepEqual(await secondStore.put("run-1", sha256, Buffer.from(png)), {
       evidenceKey: `sha256:${sha256}`,
       created: false
@@ -301,7 +366,7 @@ test("acknowledges a valid final after its crashed publisher leaves the lock", a
   }
 });
 
-test("a superseded publisher cannot publish or remove the recovery owner's lock", async () => {
+test("an inconclusive expired claimant rechecks before publishing under its successor", async () => {
   const root = await mkdtemp(join(tmpdir(), "collection-evidence-superseded-owner-"));
   const canonicalRoot = await realpath(root);
   const clock = new ManualClock(Date.now());
@@ -319,7 +384,7 @@ test("a superseded publisher cannot publish or remove the recovery owner's lock"
     );
     const recoveryStore = new CollectionEvidenceStore(
       canonicalRoot,
-      leaseOptions(clock, 202, "new-owner", (pid) => pid === 101 ? false : true)
+      leaseOptions(clock, 202, "new-owner", (pid) => pid === 101 ? undefined : true)
     );
     Reflect.set(oldStore, "afterFinalPreLinkIdentityCheck", async () => {
       oldPublisherEntered.resolve();
@@ -334,7 +399,9 @@ test("a superseded publisher cannot publish or remove the recovery owner's lock"
     oldPublication = oldStore.put("run-1", sha256, png);
     void oldPublication.catch(() => undefined);
     await oldPublisherEntered.promise;
+    assert.equal(await publicationLeaseLinkCount(canonicalRoot), 2);
     recovery = recoveryStore.put("run-1", sha256, Buffer.from(png));
+    await clock.advanceBy(2_100);
     await recoveryEntered.promise;
 
     oldPublisherGate.resolve();
@@ -422,6 +489,7 @@ test("two stale-lock reclaimers hold at most one publication lease", async () =>
     oldPublication = oldStore.put("run-1", sha256, png);
     void oldPublication.catch(() => undefined);
     await oldPublisherEntered.promise;
+    assert.equal(await publicationLeaseLinkCount(canonicalRoot), 2);
     first = firstStore.put("run-1", sha256, Buffer.from(png));
     second = secondStore.put("run-1", sha256, Buffer.from(png));
     await contenderEntered.promise;
@@ -517,6 +585,65 @@ test("does not expose a final object to another store until publication cleanup 
     assert.deepEqual(await readdir(join(canonicalRoot, "run-1")), [`${sha256}.png`]);
     assert.deepEqual(publicationArtifacts(await readdir(canonicalRoot)), []);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a successor waits for the prior reclaim link to leave the canonical root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collection-evidence-release-reclaim-"));
+  const canonicalRoot = await realpath(root);
+  const releaseGate = deferred();
+  const releaseEntered = deferred();
+  let first: Promise<{ evidenceKey: string; created: boolean }> | undefined;
+  let second: Promise<{ evidenceKey: string; created: boolean }> | undefined;
+  try {
+    const firstStore = new CollectionEvidenceStore(canonicalRoot);
+    const secondStore = new CollectionEvidenceStore(canonicalRoot);
+    const originalUnlink = Reflect.get(firstStore, "unlinkMatchingFile").bind(firstStore) as
+      (path: string, expected: Awaited<ReturnType<typeof stat>>) => Promise<boolean>;
+    let paused = false;
+    Reflect.set(firstStore, "unlinkMatchingFile", async (
+      path: string,
+      expected: Awaited<ReturnType<typeof stat>>
+    ) => {
+      if (!paused && path.endsWith(".lock.reclaim")) {
+        const lockExists = await stat(path.slice(0, -".reclaim".length)).then(
+          () => true,
+          () => false
+        );
+        if (!lockExists) {
+          paused = true;
+          releaseEntered.resolve();
+          await releaseGate.promise;
+        }
+      }
+      return originalUnlink(path, expected);
+    });
+
+    const sha256 = digest(png);
+    first = firstStore.put("run-1", sha256, png);
+    await releaseEntered.promise;
+
+    let secondSettled = false;
+    second = secondStore.put("run-1", sha256, Buffer.from(png))
+      .finally(() => { secondSettled = true; });
+    void second.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(secondSettled, false);
+
+    releaseGate.resolve();
+    assert.deepEqual(await first, {
+      evidenceKey: `sha256:${sha256}`,
+      created: true
+    });
+    assert.deepEqual(await second, {
+      evidenceKey: `sha256:${sha256}`,
+      created: false
+    });
+    assert.deepEqual(publicationArtifacts(await readdir(canonicalRoot)), []);
+  } finally {
+    releaseGate.resolve();
+    await Promise.allSettled([first, second].filter((value) => value !== undefined));
     await rm(root, { recursive: true, force: true });
   }
 });
