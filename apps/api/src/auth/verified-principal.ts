@@ -16,6 +16,8 @@ export interface AdminPrincipalConfig {
 const VERIFIED_PRINCIPAL = Symbol("verified-api-principal");
 const minimumAdminCredentialLength = 32;
 const weakAdminCredentialMarkers = ["change-me", "changeme", "password", "replace-with", "example-token"];
+const productionAdminCredentialPattern = /^[0-9a-f]{64}$/i;
+const maximumRejectedPatternLength = 16;
 
 function digest(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
@@ -25,22 +27,44 @@ function tokenMatches(candidate: string, expected: string): boolean {
   return timingSafeEqual(digest(candidate), digest(expected));
 }
 
-function tokenMeetsMinimumSecurity(token: string): boolean {
+function tokenMeetsDevelopmentMinimum(token: string): boolean {
   const normalized = token.toLowerCase();
   return token.length >= minimumAdminCredentialLength
     && new Set(token).size >= 10
     && weakAdminCredentialMarkers.every((marker) => !normalized.includes(marker));
 }
 
+function hasShortRepeatedPattern(token: string): boolean {
+  for (let period = 1; period <= maximumRejectedPatternLength; period += 1) {
+    if (token.length <= period) break;
+    if ([...token].every((character, index) => character === token[index % period])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function tokenMeetsProductionFormat(token: string): boolean {
+  return productionAdminCredentialPattern.test(token) && !hasShortRepeatedPattern(token.toLowerCase());
+}
+
+export function normalizeNodeEnvironment(value: string | undefined): string {
+  return value?.trim().toLowerCase() || "development";
+}
+
 export function adminPrincipalConfigFromEnvironment(
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  nodeEnvironment = normalizeNodeEnvironment(environment.NODE_ENV)
 ): AdminPrincipalConfig {
   const configured = environment.ADMIN_API_TOKEN?.trim() || null;
-  if (!configured && environment.NODE_ENV === "production") {
+  if (!configured && nodeEnvironment === "production") {
     throw new Error("ADMIN_API_TOKEN is required in production");
   }
-  if (configured && !tokenMeetsMinimumSecurity(configured)) {
-    throw new Error("ADMIN_API_TOKEN must contain at least 32 characters and use a high-entropy random value");
+  if (configured && nodeEnvironment === "production" && !tokenMeetsProductionFormat(configured)) {
+    throw new Error("ADMIN_API_TOKEN must be exactly 64 hexadecimal characters without predictable patterns in production");
+  }
+  if (configured && nodeEnvironment !== "production" && !tokenMeetsDevelopmentMinimum(configured)) {
+    throw new Error("ADMIN_API_TOKEN must contain at least 32 characters, 10 distinct characters, and no placeholder markers outside production");
   }
   return {
     adminToken: configured,

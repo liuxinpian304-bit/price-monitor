@@ -1,5 +1,8 @@
 import type { AdminPrincipalConfig } from "../auth/verified-principal.ts";
-import { adminPrincipalConfigFromEnvironment } from "../auth/verified-principal.ts";
+import {
+  adminPrincipalConfigFromEnvironment,
+  normalizeNodeEnvironment
+} from "../auth/verified-principal.ts";
 import { parseCollectorReportJsonLimit } from "../http/api-body-parsing.ts";
 
 export interface ApiStartupConfig {
@@ -19,10 +22,13 @@ function parsePort(name: string, value: string | undefined, fallback: number): n
   return port;
 }
 
-export function settingsMasterKeyFromEnvironment(environment: NodeJS.ProcessEnv = process.env): string {
+export function settingsMasterKeyFromEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+  nodeEnvironment = normalizeNodeEnvironment(environment.NODE_ENV)
+): string {
   const configured = environment.SETTINGS_MASTER_KEY?.trim();
   if (configured) return configured;
-  if (environment.NODE_ENV === "production") {
+  if (nodeEnvironment === "production") {
     throw new Error("SETTINGS_MASTER_KEY is required in production");
   }
   return "local-development-key-change-before-production";
@@ -83,7 +89,7 @@ export function reportUrlForRun(publicBaseUrl: string, runId: string): string {
 export function apiStartupConfigFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env
 ): ApiStartupConfig {
-  const nodeEnvironment = environment.NODE_ENV?.trim() || "development";
+  const nodeEnvironment = normalizeNodeEnvironment(environment.NODE_ENV);
   const host = environment.API_HOST?.trim() || "127.0.0.1";
   const port = parsePort("API_PORT", environment.API_PORT, 4100);
   if (
@@ -95,13 +101,13 @@ export function apiStartupConfigFromEnvironment(
   }
 
   databaseUrlFromEnvironment(environment);
-  settingsMasterKeyFromEnvironment(environment);
+  settingsMasterKeyFromEnvironment(environment, nodeEnvironment);
   redisConnectionFromEnvironment(environment);
 
   return {
     host,
     port,
-    adminPrincipal: adminPrincipalConfigFromEnvironment(environment),
+    adminPrincipal: adminPrincipalConfigFromEnvironment(environment, nodeEnvironment),
     collectorReportJsonLimit: parseCollectorReportJsonLimit(environment.COLLECTOR_REPORT_JSON_LIMIT),
     publicBaseUrl: publicBaseUrlFromEnvironment(environment, port)
   };

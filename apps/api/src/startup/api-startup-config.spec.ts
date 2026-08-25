@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import test from "node:test";
 
 import { apiStartupConfigFromEnvironment } from "./api-startup-config.ts";
 
-const strongToken = "q4X9vN2kP7sR5mT8yW3cF6hJ1uB0dL9zE2aG7iK4";
+const strongToken = randomBytes(32).toString("hex");
 
 function withAdminCredential(
   environment: NodeJS.ProcessEnv,
@@ -12,7 +13,7 @@ function withAdminCredential(
   return { ...environment, ["ADMIN_API_TOKEN"]: value };
 }
 
-test("production startup requires a configured high-entropy administrator token", () => {
+test("production startup requires a random 256-bit hexadecimal administrator token", () => {
   const base = {
     NODE_ENV: "production",
     DATABASE_URL: "postgresql://service:secret@127.0.0.1:5432/app",
@@ -20,7 +21,19 @@ test("production startup requires a configured high-entropy administrator token"
     PUBLIC_BASE_URL: "https://price-monitor.example.test"
   };
 
-  for (const ADMIN_API_TOKEN of [undefined, "   ", "weak-token", "a".repeat(48)]) {
+  const rejectedTokens = [
+    undefined,
+    "   ",
+    "weak-token",
+    "a".repeat(64),
+    "0123456789".repeat(7).slice(0, 64),
+    "0123456789abcdef".repeat(4),
+    "abcdefghij".repeat(7).slice(0, 64),
+    "deadbeef".repeat(8),
+    "abcdef0123".repeat(7).slice(0, 64)
+  ];
+
+  for (const ADMIN_API_TOKEN of rejectedTokens) {
     let caught: unknown;
     try {
       apiStartupConfigFromEnvironment(withAdminCredential(base, ADMIN_API_TOKEN));
@@ -34,6 +47,39 @@ test("production startup requires a configured high-entropy administrator token"
 
   const config = apiStartupConfigFromEnvironment(withAdminCredential(base, strongToken));
   assert.equal(config.adminPrincipal.adminToken, strongToken);
+});
+
+test("production-only checks use one trimmed case-insensitive NODE_ENV value", () => {
+  const base = {
+    DATABASE_URL: "postgresql://service:secret@127.0.0.1:5432/app",
+    SETTINGS_MASTER_KEY: "test-production-settings-key",
+    PUBLIC_BASE_URL: "https://price-monitor.example.test"
+  };
+
+  for (const NODE_ENV of [" production ", "PRODUCTION", "PrOdUcTiOn"]) {
+    assert.throws(
+      () => apiStartupConfigFromEnvironment({ ...base, NODE_ENV }),
+      /ADMIN_API_TOKEN is required/
+    );
+    assert.throws(
+      () => apiStartupConfigFromEnvironment({
+        ...base,
+        NODE_ENV,
+        ADMIN_API_TOKEN: strongToken,
+        API_HOST: "0.0.0.0"
+      }),
+      /ALLOW_PRIVATE_NETWORK_API/
+    );
+    assert.throws(
+      () => apiStartupConfigFromEnvironment({
+        ...base,
+        NODE_ENV,
+        ADMIN_API_TOKEN: strongToken,
+        SETTINGS_MASTER_KEY: " "
+      }),
+      /SETTINGS_MASTER_KEY/
+    );
+  }
 });
 
 test("development may start without an administrator token but keeps admin access disabled", () => {
