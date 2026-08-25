@@ -153,3 +153,51 @@ No known Task 11 functional concerns remain. Task 13 still owns the configurable
 - Verified receipt comparison precedes terminal evidence lookup, and report evidence checks remain inside the locked ingestion transaction.
 - Verified Task 3 claimed-own-listing persistence and both Task 11 migrations remain included.
 - No known Task 11 functional concern remains. The one-time legacy receipt upgrade necessarily compares the durable projection available from the pre-receipt implementation; after that locked upgrade, all replay decisions use the canonical full-report digest.
+
+## Fix Round 2
+
+### Empty-own terminal invariant
+
+- Desktop claim selection now requires at least one active own listing, and the compare-and-claim update repeats that predicate inside the serializable transaction. An older eligible run is skipped without changing its `QUEUED` state when its model has no active own listing.
+- `collectorJobSchema` requires at least one claimed own listing. `collectorReportSchema`, the ingestion service, and the transactional repository independently reject `SUCCEEDED` when the claimed set or reported own-item set is empty.
+- `PARTIAL_FAILED` and `FAILED` remain valid with empty own data only under their existing explicit issue/progress semantics. Task 10 client, worker, checkpoint, and runner fixtures were updated to use a real own listing for successful paths.
+
+### Receipt-less terminal runs
+
+- Removed the legacy durable-projection comparison and one-time receipt upgrade. A terminal run missing either the canonical report digest or the original ingestion summary now returns the existing sanitized `409` conflict without evidence lookup or database writes.
+- PostgreSQL probes clear both receipt fields and vary exact content, app version, URL, search ranks, and zero-SKU metadata. Every replay conflicts, history counts remain unchanged, and no receipt is written. Additional probes cover each one-sided missing-receipt state.
+- Receipt-bearing terminal runs retain exact digest replay, equivalent timestamp and object-key normalization, and durable original-summary return behavior.
+
+### Evidence publication
+
+- The configured evidence root is physically validated and its device/inode identity is captured once. API startup initializes it before listening; each operation rechecks the same identity. Symlinked ancestors remain invalid.
+- A unique PNG temp is created directly under the canonical root, written, fsynced, and identity-checked. Publication is a hard-link create-if-absent into the strict run/hash target; process-local serialization is only an optimization.
+- Winners fsync the run directory before removing and fsyncing the root temp. Existing-object and hard-link losers verify the final PNG/hash and fsync the run directory before returning `created: false`.
+- Cleanup checks and removes only the operation's unique temp. Once a final object is visible, no failure path removes it. A second store can acknowledge the final object while the first reports a simulated fsync failure, and the final remains verified afterward.
+- The timed run-directory swap probe pauses after the temp is durable but before publication, moves the original run directory outside, and installs a replacement. Publication returns a sanitized storage error, while the replacement, outside directory, and canonical root contain no PNG or temp residue.
+- Node does not expose the needed directory-handle-relative `linkat`/`openat` primitive. The documented trust boundary is the parent of the startup-validated canonical evidence root; strict child names plus immediate pre/post device/inode checks detect reviewed child-directory swaps.
+
+### RED evidence
+
+- Before the fixes, the focused portable run had four failures: the shared claim/report contracts accepted zero-own success, service ingestion accepted the empty-claim/empty-report equality case, a failed winner deleted a final object already acknowledged by another store, and a timed directory swap returned the wrong class of error with unsafe temp placement.
+- Tightening the shared claimed-job contract then exposed 19 stale Task 10 test fixtures that constructed impossible zero-own jobs or successful reports. Updating only those fixtures and the two explicit custom runner drivers restored the full collector suite without weakening failed/partial behavior.
+
+### GREEN verification
+
+- Focused contract, ingestion, and evidence tests: 38 passed, 0 failed.
+- Focused collector HTTP tests: 13 passed, 0 failed, including real loopback authentication/parser ordering probes.
+- Focused real PostgreSQL Task 11 integration: 10 passed, 0 failed. The same integration passed again inside the full API suite.
+- `pnpm test:contracts`: 16 passed, 0 failed.
+- `pnpm test:api:portable`: 119 passed, 0 failed.
+- `pnpm test:api`: 140 passed, 0 failed against the requested PostgreSQL and running Redis.
+- `pnpm test:collector`: 144 passed, 0 failed.
+- `pnpm typecheck`: passed for API, web, and collector.
+- `prisma validate`: passed. `prisma migrate status`: five migrations found and the database schema is up to date.
+
+### Fix Round 2 self-review
+
+- Re-read all three findings against the final diff. Confirmed empty jobs cannot be claimed, zero-own success is rejected at every relevant boundary, and explicit non-success reports remain accepted by their runner invariants.
+- Confirmed no terminal branch reconstructs or writes a missing receipt. Digest comparison still precedes terminal evidence lookup.
+- Confirmed the evidence store has no final-target unlink or overwrite path; every unlink is limited to a unique temp. Cross-store create-if-absent and blocked run-state serialization remain covered.
+- Confirmed no new logging or response path includes report data, tokens, item/account text, evidence bytes, or local paths.
+- This section supersedes the Round 1 statements that zero-own claims were valid, legacy receipts could be upgraded, or a newly linked final inode could be removed after publication failure.

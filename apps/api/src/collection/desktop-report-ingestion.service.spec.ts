@@ -367,6 +367,80 @@ test("requires successful reports to account for every claimed own listing exact
   }
 });
 
+test("rejects successful ingestion when either side of the own-listing binding is empty", async () => {
+  {
+    const { service, repository } = createService();
+    repository.run = runFixture({ ownListingIds: [] });
+
+    await assert.rejects(
+      () => service.ingest("pmc_token", reportFixture()),
+      (error) => error instanceof DesktopReportConflictError
+    );
+    assert.equal(repository.persisted.length, 0);
+  }
+
+  {
+    const { service, repository } = createService();
+    const report = reportFixture();
+    report.ownItems = [];
+
+    await assert.rejects(
+      () => service.ingest("pmc_token", report),
+      (error) => error instanceof DesktopReportConflictError
+        || error instanceof DesktopReportValidationError
+    );
+    assert.equal(repository.persisted.length, 0);
+  }
+
+  {
+    const { service, repository } = createService();
+    repository.run = runFixture({ ownListingIds: [] });
+    const report = reportFixture();
+    report.ownItems = [];
+
+    await assert.rejects(
+      () => service.ingest("pmc_token", report),
+      (error) => error instanceof DesktopReportConflictError
+        || error instanceof DesktopReportValidationError
+    );
+    assert.equal(repository.persisted.length, 0);
+  }
+});
+
+test("preserves explicit non-success reports when no own listing was collectable", async () => {
+  {
+    const { service, repository } = createService();
+    repository.run = runFixture({ ownListingIds: [] });
+    const report = reportFixture();
+    report.status = "PARTIAL_FAILED";
+    report.ownItems = [];
+    report.issues = [{
+      code: "UI_CONTRACT_CHANGED",
+      message: "Own listing collection stopped after search progress",
+      capturedAt: report.completedAt
+    }];
+
+    assert.equal((await service.ingest("pmc_token", report)).status, "PARTIAL_FAILED");
+  }
+
+  {
+    const { service, repository } = createService();
+    repository.run = runFixture({ ownListingIds: [] });
+    const report = reportFixture();
+    report.status = "FAILED";
+    report.positions = [];
+    report.ownItems = [];
+    report.competitorItems = [];
+    report.issues = [{
+      code: "APP_VERSION_UNSUPPORTED",
+      message: "Collector could not start",
+      capturedAt: report.completedAt
+    }];
+
+    assert.equal((await service.ingest("pmc_token", report)).status, "FAILED");
+  }
+});
+
 test("rejects URL identity disagreement, reversed completion time, and incomplete success", async () => {
   const cases: Array<{ name: string; mutate: (report: CollectorReport) => void }> = [
     {

@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, realpath, rename, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 
 import {
   CollectionEvidenceStore,
   EvidenceStorePayloadTooLargeError,
+  EvidenceStoreUnavailableError,
   EvidenceStoreValidationError,
   MAX_EVIDENCE_BYTES
 } from "./collection-evidence-store.ts";
@@ -76,6 +77,8 @@ test("publishes once across two independent store instances", async () => {
 
     assert.deepEqual(results.map((result) => result.created).sort(), [false, true]);
     assert.deepEqual(await readdir(join(canonicalRoot, "run-1")), [`${sha256}.png`]);
+    assert.equal(await firstStore.has("run-1", `sha256:${sha256}`), true);
+    assert.equal(await secondStore.has("run-1", `sha256:${sha256}`), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -99,27 +102,82 @@ test("rejects a configured root reached through a symlinked ancestor", async () 
   }
 });
 
-test("rejects run-directory replacement between validation and publication", async () => {
-  const root = await mkdtemp(join(tmpdir(), "collection-evidence-parent-change-"));
+test("never removes a final object after another store acknowledged it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collection-evidence-published-cleanup-"));
   const canonicalRoot = await realpath(root);
   try {
-    const store = new CollectionEvidenceStore(canonicalRoot);
-    const original = Reflect.get(store, "ensureRunDirectory").bind(store) as (runId: string) => Promise<unknown>;
-    Reflect.set(store, "ensureRunDirectory", async (runId: string) => {
-      const verified = await original(runId);
-      await rename(join(canonicalRoot, runId), join(canonicalRoot, `${runId}-moved`));
-      await mkdir(join(canonicalRoot, runId));
-      return verified;
+    const sha256 = digest(png);
+    const firstStore = new CollectionEvidenceStore(canonicalRoot);
+    const secondStore = new CollectionEvidenceStore(canonicalRoot);
+    const originalSync = Reflect.get(firstStore, "syncDirectory").bind(firstStore) as
+      (path: string) => Promise<void>;
+    let enteredSync!: () => void;
+    let releaseSync!: () => void;
+    const syncEntered = new Promise<void>((resolve) => { enteredSync = resolve; });
+    const syncReleased = new Promise<void>((resolve) => { releaseSync = resolve; });
+    Reflect.set(firstStore, "syncDirectory", async (path: string) => {
+      if (path === join(canonicalRoot, "run-1")) {
+        enteredSync();
+        await syncReleased;
+        throw new Error("simulated directory fsync failure");
+      }
+      return originalSync(path);
     });
 
+    const first = firstStore.put("run-1", sha256, png);
+    await syncEntered;
+    assert.deepEqual(await secondStore.put("run-1", sha256, Buffer.from(png)), {
+      evidenceKey: `sha256:${sha256}`,
+      created: false
+    });
+    releaseSync();
     await assert.rejects(
-      () => store.put("run-1", digest(png), png),
-      (error) => error instanceof EvidenceStoreValidationError
+      () => first,
+      (error) => error instanceof EvidenceStoreUnavailableError
     );
-    assert.deepEqual(await readdir(join(canonicalRoot, "run-1")), []);
-    assert.deepEqual(await readdir(join(canonicalRoot, "run-1-moved")), []);
+
+    assert.equal(await secondStore.has("run-1", `sha256:${sha256}`), true);
+    assert.deepEqual(await readdir(join(canonicalRoot, "run-1")), [`${sha256}.png`]);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a timed run-directory swap without writing outside the evidence root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collection-evidence-parent-change-"));
+  const canonicalRoot = await realpath(root);
+  const outside = join(dirname(canonicalRoot), `${basename(canonicalRoot)}-outside`);
+  try {
+    const store = new CollectionEvidenceStore(canonicalRoot);
+    const original = Reflect.get(store, "requireDirectoryIdentities").bind(store) as
+      (directory: unknown) => Promise<void>;
+    let checks = 0;
+    let enteredCheck!: () => void;
+    let releaseCheck!: () => void;
+    const checkEntered = new Promise<void>((resolve) => { enteredCheck = resolve; });
+    const checkReleased = new Promise<void>((resolve) => { releaseCheck = resolve; });
+    Reflect.set(store, "requireDirectoryIdentities", async (directory: unknown) => {
+      checks += 1;
+      if (checks === 3) {
+        enteredCheck();
+        await checkReleased;
+      }
+      return original(directory);
+    });
+
+    const publication = store.put("run-1", digest(png), png);
+    await checkEntered;
+    await rename(join(canonicalRoot, "run-1"), outside);
+    await mkdir(join(canonicalRoot, "run-1"));
+    releaseCheck();
+    await assert.rejects(() => publication, (error) => error instanceof EvidenceStoreUnavailableError);
+
+    assert.deepEqual(await readdir(join(canonicalRoot, "run-1")), []);
+    assert.deepEqual(await readdir(outside), []);
+    assert.deepEqual((await readdir(canonicalRoot)).filter((entry) => entry.endsWith(".tmp")), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 

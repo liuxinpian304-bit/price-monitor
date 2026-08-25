@@ -19,7 +19,11 @@ const job = {
   searchQuery: "Sony MDR-7506",
   searchLimit: 3,
   ownShopName: "Own Shop",
-  ownListings: [],
+  ownListings: [{
+    id: "own-1",
+    url: "https://item.example.test/item.htm?id=1001",
+    skuText: "Black"
+  }],
   rule: {
     brand: "Sony",
     standardModel: "MDR-7506",
@@ -41,7 +45,31 @@ const report: CollectorReport = {
   status: "SUCCEEDED",
   searchLimit: 3,
   positions: [],
-  ownItems: [],
+  ownItems: [{
+    ownListingId: "own-1",
+    platformItemId: "1001",
+    url: "https://item.example.test/item.htm?id=1001",
+    shopName: "Own Shop",
+    title: "Sony MDR-7506",
+    searchRanks: [],
+    skus: [{
+      skuId: `sku_${"a".repeat(64)}`,
+      label: "Black",
+      attributes: { color: "Black" },
+      stockState: "IN_STOCK",
+      listPriceFen: 1_000,
+      activityPriceFen: 1_000,
+      couponDiscountFen: 0,
+      fullReductionFen: 0,
+      directDiscountFen: 0,
+      promotions: [],
+      mandatoryFeeFen: 0,
+      priceConfidence: "CONFIRMED",
+      payableFen: 1_000,
+      capturedAt: "2026-08-24T01:00:30.000Z",
+      evidenceKey: null
+    }]
+  }],
   competitorItems: [],
   issues: []
 };
@@ -157,9 +185,9 @@ test("validates the complete-report acknowledgement contract", async () => {
     status: "SUCCEEDED",
     positionCount: 0,
     uniqueItemCount: 0,
-    skuCount: 0,
+    skuCount: 1,
     issueCount: 0,
-    ownSnapshotIds: [],
+    ownSnapshotIds: ["own-snapshot-1"],
     competitorSnapshotIds: []
   };
   const { client, requests } = clientWith(() => jsonResponse(acknowledgement, 202));

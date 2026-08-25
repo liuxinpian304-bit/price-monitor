@@ -58,21 +58,6 @@ function toJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
-function jsonValue(value: unknown): string {
-  const normalize = (entry: unknown): unknown => {
-    if (Array.isArray(entry)) return entry.map(normalize);
-    if (entry && typeof entry === "object") {
-      return Object.fromEntries(
-        Object.entries(entry as Record<string, unknown>)
-          .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-          .map(([key, nested]) => [key, normalize(nested)])
-      );
-    }
-    return entry;
-  };
-  return JSON.stringify(normalize(value));
-}
-
 function snapshotValues(input: {
   runId: string;
   item: CollectedItem;
@@ -210,21 +195,11 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
       const run = await transaction.collectionRun.findUniqueOrThrow({
         where: { id: report.runId },
         select: {
-          id: true,
           collectorAgentId: true,
           monitoredModelId: true,
           providerKey: true,
           searchLimit: true,
           status: true,
-          startedAt: true,
-          finishedAt: true,
-          searchedCount: true,
-          fetchedCount: true,
-          matchedCount: true,
-          failedCount: true,
-          discoveredCount: true,
-          skuCount: true,
-          incompleteCount: true,
           claimedOwnListingIds: true,
           desktopReportDigest: true,
           desktopIngestionSummary: true
@@ -235,21 +210,6 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
       if (run.status !== "RUNNING") {
         if (!isTerminalStatus(run.status)) throw new DesktopReportConflictError();
         const storedSummary = ingestionSummarySchema.safeParse(run.desktopIngestionSummary);
-        if (run.desktopReportDigest === null && !storedSummary.success) {
-          if (!await this.matchesLegacyPersistedReport(transaction, run, report)) {
-            throw new DesktopReportConflictError();
-          }
-          await verifyEvidence();
-          const summary = await this.summary(transaction, report.runId);
-          await transaction.collectionRun.update({
-            where: { id: report.runId },
-            data: {
-              desktopReportDigest: reportDigest,
-              desktopIngestionSummary: toJson(summary)
-            }
-          });
-          return { summary, newlyAccepted: false };
-        }
         if (run.desktopReportDigest !== reportDigest
           || !storedSummary.success
           || storedSummary.data.runId !== report.runId
@@ -330,7 +290,9 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
     const reportedOwnListingIds = new Set(report.ownItems.map((item) => item.ownListingId));
     if (report.ownItems.some((item) => !ownListingIds.has(item.ownListingId))
       || (report.status === "SUCCEEDED"
-        && (reportedOwnListingIds.size !== ownListingIds.size
+        && (ownListingIds.size === 0
+          || reportedOwnListingIds.size === 0
+          || reportedOwnListingIds.size !== ownListingIds.size
           || [...ownListingIds].some((id) => !reportedOwnListingIds.has(id))))) {
       throw new DesktopReportConflictError();
     }
@@ -512,225 +474,6 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
       ownSnapshotIds: snapshots.filter((snapshot) => snapshot.ownListingId !== null).map((snapshot) => snapshot.id),
       competitorSnapshotIds: snapshots.filter((snapshot) => snapshot.ownListingId === null).map((snapshot) => snapshot.id)
     };
-  }
-
-  private async matchesLegacyPersistedReport(
-    transaction: Transaction,
-    run: {
-      id: string;
-      status: string;
-      searchLimit: number;
-      startedAt: Date | null;
-      finishedAt: Date | null;
-      searchedCount: number;
-      fetchedCount: number;
-      matchedCount: number;
-      failedCount: number;
-      discoveredCount: number;
-      skuCount: number;
-      incompleteCount: number;
-      monitoredModelId: string;
-      providerKey: string;
-    },
-    report: CollectorReport
-  ): Promise<boolean> {
-    if (run.status !== report.status
-      || run.searchLimit !== report.searchLimit
-      || run.startedAt?.toISOString() !== report.startedAt
-      || run.finishedAt?.toISOString() !== report.completedAt) {
-      return false;
-    }
-    const counters = expectedCounters(report);
-    if (Object.entries(counters).some(([key, value]) => Reflect.get(run, key) !== value)) return false;
-
-    const positions = await transaction.collectionSearchPosition.findMany({
-      where: { collectionRunId: report.runId },
-      orderBy: { rank: "asc" }
-    });
-    if (positions.length !== report.positions.length) return false;
-    for (const [index, expected] of report.positions.entries()) {
-      const stored = positions[index];
-      if (!stored || jsonValue({
-        rank: stored.rank,
-        platformItemId: stored.platformItemId,
-        url: stored.url,
-        shopName: stored.shopName,
-        title: stored.title,
-        displayPriceMinFen: stored.displayPriceMinFen,
-        displayPriceMaxFen: stored.displayPriceMaxFen,
-        sponsored: stored.sponsored,
-        capturedAt: stored.capturedAt.toISOString()
-      }) !== jsonValue(expected)) return false;
-    }
-
-    const candidateRows = await transaction.searchCandidate.findMany({
-      where: {
-        monitoredModelId: run.monitoredModelId,
-        providerKey: run.providerKey,
-        platformItemId: { in: report.competitorItems.map((item) => item.platformItemId) }
-      },
-      select: { id: true, platformItemId: true }
-    });
-    const candidates = new Map(candidateRows.map((candidate) => [candidate.platformItemId, candidate.id]));
-    if (candidates.size !== report.competitorItems.length) return false;
-
-    const expectedSnapshots = new Map<string, ReturnType<typeof snapshotValues>>();
-    for (const item of report.ownItems) {
-      for (const sku of item.skus) {
-        const ingestionKey = snapshotIngestionKey(
-          report.runId,
-          "own-listing",
-          item.ownListingId,
-          item.platformItemId,
-          sku.skuId,
-          sku.capturedAt
-        );
-        expectedSnapshots.set(ingestionKey, snapshotValues({
-          runId: report.runId,
-          item,
-          sku,
-          ownListingId: item.ownListingId,
-          searchCandidateId: null,
-          ingestionKey
-        }));
-      }
-    }
-    for (const item of report.competitorItems) {
-      const candidateId = candidates.get(item.platformItemId);
-      if (!candidateId) return false;
-      for (const sku of item.skus) {
-        const ingestionKey = snapshotIngestionKey(
-          report.runId,
-          "candidate",
-          candidateId,
-          item.platformItemId,
-          sku.skuId,
-          sku.capturedAt
-        );
-        expectedSnapshots.set(ingestionKey, snapshotValues({
-          runId: report.runId,
-          item,
-          sku,
-          ownListingId: null,
-          searchCandidateId: candidateId,
-          ingestionKey
-        }));
-      }
-    }
-    const snapshots = await transaction.offerSnapshot.findMany({ where: { collectionRunId: report.runId } });
-    if (snapshots.length !== expectedSnapshots.size) return false;
-    for (const snapshot of snapshots) {
-      if (!snapshot.ingestionKey) return false;
-      const expected = expectedSnapshots.get(snapshot.ingestionKey);
-      if (!expected || !this.snapshotMatches(snapshot, expected)) return false;
-    }
-
-    const issues = await transaction.collectionIssue.findMany({
-      where: {
-        collectionRunId: report.runId,
-        code: { notIn: ["OWN_BASELINE_MISSING", "OWN_BASELINE_AMBIGUOUS"] }
-      }
-    });
-    if (issues.length !== report.issues.length) return false;
-    const storedIssues = new Map(issues.map((issue) => [issue.issueKey, issue]));
-    for (const [index, expected] of report.issues.entries()) {
-      const stored = storedIssues.get(issueIngestionKey(report.runId, expected, index));
-      if (!stored || jsonValue({
-        code: stored.code,
-        platformItemId: stored.platformItemId,
-        skuId: stored.skuId,
-        message: stored.message,
-        evidenceKey: stored.evidenceKey,
-        capturedAt: stored.capturedAt.toISOString()
-      }) !== jsonValue({
-        code: expected.code,
-        platformItemId: expected.platformItemId ?? null,
-        skuId: expected.skuId ?? null,
-        message: expected.message,
-        evidenceKey: expected.evidenceKey ?? null,
-        capturedAt: expected.capturedAt
-      })) return false;
-    }
-    return true;
-  }
-
-  private snapshotMatches(
-    stored: {
-      collectionRunId: string;
-      ownListingId: string | null;
-      searchCandidateId: string | null;
-      platformItemId: string;
-      skuId: string | null;
-      shopName: string;
-      title: string;
-      skuText: string | null;
-      listPriceFen: number | null;
-      activityPriceFen: number | null;
-      couponDiscountFen: number;
-      fullReductionFen: number;
-      directDiscountFen: number;
-      mandatoryFeeFen: number;
-      publicDiscountFen: number;
-      payableFen: number | null;
-      priceConfidence: string;
-      evidenceKey: string | null;
-      ingestionKey: string | null;
-      stockState: string;
-      promotions: unknown;
-      rawEvidence: unknown;
-      capturedAt: Date;
-    },
-    expected: ReturnType<typeof snapshotValues>
-  ): boolean {
-    return jsonValue({
-      collectionRunId: stored.collectionRunId,
-      ownListingId: stored.ownListingId,
-      searchCandidateId: stored.searchCandidateId,
-      platformItemId: stored.platformItemId,
-      skuId: stored.skuId,
-      shopName: stored.shopName,
-      title: stored.title,
-      skuText: stored.skuText,
-      listPriceFen: stored.listPriceFen,
-      activityPriceFen: stored.activityPriceFen,
-      couponDiscountFen: stored.couponDiscountFen,
-      fullReductionFen: stored.fullReductionFen,
-      directDiscountFen: stored.directDiscountFen,
-      mandatoryFeeFen: stored.mandatoryFeeFen,
-      publicDiscountFen: stored.publicDiscountFen,
-      payableFen: stored.payableFen,
-      priceConfidence: stored.priceConfidence,
-      evidenceKey: stored.evidenceKey,
-      ingestionKey: stored.ingestionKey,
-      stockState: stored.stockState,
-      promotions: stored.promotions,
-      rawEvidence: stored.rawEvidence,
-      capturedAt: stored.capturedAt.toISOString()
-    }) === jsonValue({
-      collectionRunId: expected.collectionRunId,
-      ownListingId: expected.ownListingId,
-      searchCandidateId: expected.searchCandidateId,
-      platformItemId: expected.platformItemId,
-      skuId: expected.skuId,
-      shopName: expected.shopName,
-      title: expected.title,
-      skuText: expected.skuText,
-      listPriceFen: expected.listPriceFen,
-      activityPriceFen: expected.activityPriceFen,
-      couponDiscountFen: expected.couponDiscountFen,
-      fullReductionFen: expected.fullReductionFen,
-      directDiscountFen: expected.directDiscountFen,
-      mandatoryFeeFen: expected.mandatoryFeeFen,
-      publicDiscountFen: expected.publicDiscountFen,
-      payableFen: expected.payableFen,
-      priceConfidence: expected.priceConfidence,
-      evidenceKey: expected.evidenceKey,
-      ingestionKey: expected.ingestionKey,
-      stockState: expected.stockState,
-      promotions: expected.promotions,
-      rawEvidence: expected.rawEvidence,
-      capturedAt: expected.capturedAt.toISOString()
-    });
   }
 
 }

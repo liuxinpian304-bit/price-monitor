@@ -23,7 +23,11 @@ const job: CollectorJob = {
   searchQuery: "Sony MDR-7506",
   searchLimit: 3,
   ownShopName: "Own Shop",
-  ownListings: [],
+  ownListings: [{
+    id: "own-1",
+    url: "https://item.example.test/item.htm?id=1001",
+    skuText: "Black"
+  }],
   rule: {
     brand: "Sony",
     standardModel: "MDR-7506",
@@ -50,7 +54,31 @@ function report(status: CollectorReport["status"] = "SUCCEEDED"): CollectorRepor
     status,
     searchLimit: 3,
     positions: [],
-    ownItems: [],
+    ownItems: status === "SUCCEEDED" ? [{
+      ownListingId: "own-1",
+      platformItemId: "1001",
+      url: "https://item.example.test/item.htm?id=1001",
+      shopName: "Own Shop",
+      title: "Sony MDR-7506",
+      searchRanks: [],
+      skus: [{
+        skuId: `sku_${"a".repeat(64)}`,
+        label: "Black",
+        attributes: { color: "Black" },
+        stockState: "IN_STOCK",
+        listPriceFen: 1_000,
+        activityPriceFen: 1_000,
+        couponDiscountFen: 0,
+        fullReductionFen: 0,
+        directDiscountFen: 0,
+        promotions: [],
+        mandatoryFeeFen: 0,
+        priceConfidence: "CONFIRMED",
+        payableFen: 1_000,
+        capturedAt: "2026-08-24T01:00:30.000Z",
+        evidenceKey: null
+      }]
+    }] : [],
     competitorItems: [],
     issues: pauseCode ? [{
       code: pauseCode,
@@ -93,9 +121,9 @@ class FakeApi implements CollectorWorkerApi {
       status: "SUCCEEDED" as const,
       positionCount: 0,
       uniqueItemCount: 0,
-      skuCount: 0,
+      skuCount: inputReport.status === "SUCCEEDED" ? 1 : 0,
       issueCount: 0,
-      ownSnapshotIds: [],
+      ownSnapshotIds: inputReport.status === "SUCCEEDED" ? ["own-snapshot-1"] : [],
       competitorSnapshotIds: []
     };
   }

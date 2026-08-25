@@ -117,6 +117,26 @@ test("accepts the approved first-50 all-SKU job contract", () => {
   assert.equal(collectorJobSchema.parse(job).searchLimit, 50);
 });
 
+test("requires claimed jobs and successful reports to include an own listing", () => {
+  assert.throws(() => collectorJobSchema.parse({ ...job, ownListings: [] }));
+  assert.throws(() => collectorReportSchema.parse({ ...report, ownItems: [] }));
+
+  for (const status of ["PARTIAL_FAILED", "FAILED"] as const) {
+    assert.doesNotThrow(() => collectorReportSchema.parse({
+      ...report,
+      status,
+      positions: [],
+      ownItems: [],
+      competitorItems: [],
+      issues: [{
+        code: "APP_VERSION_UNSUPPORTED" as const,
+        message: "Collector could not start",
+        capturedAt
+      }]
+    }));
+  }
+});
+
 test("accepts a report with one own SKU and two competitor SKUs", () => {
   const parsed = collectorReportSchema.parse(report);
 

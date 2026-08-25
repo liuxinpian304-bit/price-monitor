@@ -131,7 +131,8 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
       const nextRun = await transaction.collectionRun.findFirst({
         where: {
           status: "QUEUED",
-          OR: [{ collectorAgentId: null }, { collectorAgentId: agentId }]
+          OR: [{ collectorAgentId: null }, { collectorAgentId: agentId }],
+          monitoredModel: { ownListings: { some: { active: true } } }
         },
         orderBy: [{ scheduledFor: "asc" }, { createdAt: "asc" }, { id: "asc" }],
         select: { id: true }
@@ -142,7 +143,8 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
         where: {
           id: nextRun.id,
           status: "QUEUED",
-          OR: [{ collectorAgentId: null }, { collectorAgentId: agentId }]
+          OR: [{ collectorAgentId: null }, { collectorAgentId: agentId }],
+          monitoredModel: { ownListings: { some: { active: true } } }
         },
         data: {
           status: "RUNNING",
@@ -200,7 +202,7 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
         monitoredModelId: run.monitoredModel.id,
         searchQuery: run.monitoredModel.searchQuery,
         searchLimit: run.searchLimit,
-        ownShopName: run.monitoredModel.ownListings[0]?.shopName ?? "星空乐器专营店",
+        ownShopName: run.monitoredModel.ownListings[0]!.shopName,
         ownListings: run.monitoredModel.ownListings.map((listing) => ({
           id: listing.id,
           url: listing.url,

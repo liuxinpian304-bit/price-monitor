@@ -127,7 +127,9 @@ function validateTerminalSemantics(report: CollectorReport): void {
   }
 
   if (report.status === "SUCCEEDED") {
-    if (report.issues.length !== 0) throw new DesktopReportValidationError();
+    if (report.ownItems.length === 0 || report.issues.length !== 0) {
+      throw new DesktopReportValidationError();
+    }
     return;
   }
 
@@ -224,7 +226,9 @@ function validateClaimBinding(
   const reportedOwnListings = new Set(report.ownItems.map((item) => item.ownListingId));
   if (report.ownItems.some((item) => !claimedOwnListings.has(item.ownListingId))
     || (report.status === "SUCCEEDED"
-      && (reportedOwnListings.size !== claimedOwnListings.size
+      && (claimedOwnListings.size === 0
+        || reportedOwnListings.size === 0
+        || reportedOwnListings.size !== claimedOwnListings.size
         || [...claimedOwnListings].some((id) => !reportedOwnListings.has(id))))) {
     throw new DesktopReportConflictError();
   }

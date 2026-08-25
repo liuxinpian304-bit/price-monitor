@@ -44,6 +44,98 @@ after(async () => {
   await rm(evidenceRootTemporary, { recursive: true, force: true });
 });
 
+test("claim skips queued desktop runs without an active own listing", async () => {
+  const suffix = randomUUID().replaceAll("-", "");
+  const token = createCollectorToken();
+  const modelIds: string[] = [];
+  let agentId: string | undefined;
+
+  try {
+    const emptyModel = await prisma.monitoredModel.create({
+      data: {
+        monitorCode: `T11-E0-${suffix.slice(0, 17)}`,
+        brand: "Sony",
+        standardModel: "MDR-7506-empty",
+        category: "headphones",
+        searchQuery: "Sony MDR-7506 empty",
+        comparisonType: "BARE",
+        owner: "task-11-empty-claim"
+      }
+    });
+    modelIds.push(emptyModel.id);
+    const eligibleModel = await prisma.monitoredModel.create({
+      data: {
+        monitorCode: `T11-E1-${suffix.slice(0, 17)}`,
+        brand: "Sony",
+        standardModel: "MDR-7506-eligible",
+        category: "headphones",
+        searchQuery: "Sony MDR-7506 eligible",
+        comparisonType: "BARE",
+        owner: "task-11-empty-claim"
+      }
+    });
+    modelIds.push(eligibleModel.id);
+    const ownListing = await prisma.ownListing.create({
+      data: {
+        monitoredModelId: eligibleModel.id,
+        platform: "TAOBAO",
+        shopName: "Own Shop",
+        platformItemId: `eligible-${suffix}`,
+        url: `https://item.taobao.com/item.htm?id=eligible-${suffix}`,
+        skuText: "Black"
+      }
+    });
+    const agent = await prisma.collectorAgent.create({
+      data: {
+        name: `task-11-empty-claim-agent-${suffix}`,
+        platform: "MACOS",
+        tokenHash: token.hash,
+        enabled: true
+      }
+    });
+    agentId = agent.id;
+    const baseTime = Date.now() - 60_000;
+    const emptyRun = await prisma.collectionRun.create({
+      data: {
+        monitoredModelId: emptyModel.id,
+        providerKey: "taobao-desktop",
+        status: "QUEUED",
+        scheduledFor: new Date(baseTime),
+        collectorAgentId: agent.id,
+        searchLimit: 50
+      }
+    });
+    const eligibleRun = await prisma.collectionRun.create({
+      data: {
+        monitoredModelId: eligibleModel.id,
+        providerKey: "taobao-desktop",
+        status: "QUEUED",
+        scheduledFor: new Date(baseTime + 1),
+        collectorAgentId: agent.id,
+        searchLimit: 50
+      }
+    });
+
+    const claimed = await new PrismaCollectorAgentRepository(prisma).claimNext(agent.id, {
+      appVersion: "2.4.5",
+      capabilities: ["accessibility"]
+    });
+
+    assert.equal(claimed?.runId, eligibleRun.id);
+    assert.deepEqual(claimed?.ownListings.map((listing) => listing.id), [ownListing.id]);
+    assert.deepEqual(await prisma.collectionRun.findUniqueOrThrow({
+      where: { id: emptyRun.id },
+      select: { status: true, claimedOwnListingIds: true }
+    }), { status: "QUEUED", claimedOwnListingIds: [] });
+  } finally {
+    if (modelIds.length > 0) {
+      await prisma.collectionRun.deleteMany({ where: { monitoredModelId: { in: modelIds } } });
+      await prisma.monitoredModel.deleteMany({ where: { id: { in: modelIds } } });
+    }
+    if (agentId) await prisma.collectorAgent.deleteMany({ where: { id: agentId } });
+  }
+});
+
 test("transactionally ingests one concurrent report history and returns its original summary", async (context) => {
   const suffix = randomUUID().replaceAll("-", "");
   const token = createCollectorToken();
@@ -426,16 +518,90 @@ test("transactionally ingests one concurrent report history and returns its orig
     assert.equal(issue.evidenceKey, secondEvidence.key);
     assert.equal(issue.message, "Public price did not stabilize");
 
-    await context.test("upgrades an identical terminal replay accepted before receipt persistence", async () => {
+    await context.test("rejects every replay when a terminal run has no durable receipt", async () => {
+      const historyCounts = {
+        positions: await prisma.collectionSearchPosition.count({ where: { collectionRunId: run.id } }),
+        snapshots: await prisma.offerSnapshot.count({ where: { collectionRunId: run.id } }),
+        issues: await prisma.collectionIssue.count({ where: { collectionRunId: run.id } })
+      };
       await prisma.collectionRun.update({
         where: { id: run.id },
         data: { desktopReportDigest: null, desktopIngestionSummary: Prisma.JsonNull }
       });
 
-      assert.deepEqual(await service.ingest(token.plaintext, structuredClone(report)), first);
-      const upgraded = await prisma.collectionRun.findUniqueOrThrow({ where: { id: run.id } });
-      assert.match(upgraded.desktopReportDigest ?? "", /^sha256:[0-9a-f]{64}$/);
-      assert.deepEqual(upgraded.desktopIngestionSummary, first);
+      for (const entry of [
+        { name: "identical", mutate: (_candidate: CollectorReport) => undefined },
+        {
+          name: "appVersion",
+          mutate: (candidate: CollectorReport) => { candidate.appVersion = "2.4.6"; }
+        },
+        {
+          name: "URL",
+          mutate: (candidate: CollectorReport) => {
+            candidate.ownItems[0]!.url = `${candidate.ownItems[0]!.url}&source=legacy`;
+          }
+        },
+        {
+          name: "searchRanks",
+          mutate: (candidate: CollectorReport) => { candidate.competitorItems[0]!.searchRanks.reverse(); }
+        },
+        {
+          name: "zero-SKU metadata",
+          mutate: (candidate: CollectorReport) => {
+            candidate.competitorItems[1]!.title = "Changed unavailable title";
+          }
+        }
+      ]) {
+        const candidate = structuredClone(report);
+        entry.mutate(candidate);
+        await assert.rejects(
+          () => service.ingest(token.plaintext, candidate),
+          (error) => error instanceof Error && error.name === "DesktopReportConflictError",
+          entry.name
+        );
+      }
+
+      const receiptless = await prisma.collectionRun.findUniqueOrThrow({ where: { id: run.id } });
+      assert.equal(receiptless.desktopReportDigest, null);
+      assert.equal(receiptless.desktopIngestionSummary, null);
+      assert.deepEqual({
+        positions: await prisma.collectionSearchPosition.count({ where: { collectionRunId: run.id } }),
+        snapshots: await prisma.offerSnapshot.count({ where: { collectionRunId: run.id } }),
+        issues: await prisma.collectionIssue.count({ where: { collectionRunId: run.id } })
+      }, historyCounts);
+
+      await prisma.collectionRun.update({
+        where: { id: run.id },
+        data: { desktopIngestionSummary: first as unknown as Prisma.InputJsonValue }
+      });
+      await assert.rejects(
+        () => service.ingest(token.plaintext, structuredClone(report)),
+        (error) => error instanceof Error && error.name === "DesktopReportConflictError"
+      );
+      assert.equal((await prisma.collectionRun.findUniqueOrThrow({ where: { id: run.id } }))
+        .desktopReportDigest, null);
+
+      await prisma.collectionRun.update({
+        where: { id: run.id },
+        data: {
+          desktopReportDigest: storedRun.desktopReportDigest,
+          desktopIngestionSummary: Prisma.JsonNull
+        }
+      });
+      await assert.rejects(
+        () => service.ingest(token.plaintext, structuredClone(report)),
+        (error) => error instanceof Error && error.name === "DesktopReportConflictError"
+      );
+      assert.equal((await prisma.collectionRun.findUniqueOrThrow({ where: { id: run.id } }))
+        .desktopIngestionSummary, null);
+
+      await prisma.collectionRun.update({
+        where: { id: run.id },
+        data: {
+          desktopReportDigest: storedRun.desktopReportDigest,
+          desktopIngestionSummary: first as unknown as Prisma.InputJsonValue
+        }
+      });
     });
 
     await context.test("normalizes equivalent timestamps and object key order for replay", async () => {

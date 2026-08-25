@@ -57,7 +57,7 @@ export const collectorJobSchema = z.object({
   searchQuery: z.string().min(1),
   searchLimit: searchLimitSchema,
   ownShopName: z.string().min(1),
-  ownListings: z.array(ownListingSchema),
+  ownListings: z.array(ownListingSchema).min(1),
   rule: ruleSchema
 }).strict();
 
@@ -142,6 +142,14 @@ const reportBodySchema = z.object({
 }).strict();
 
 export const collectorReportSchema = reportBodySchema.superRefine((report, context) => {
+  if (report.status === "SUCCEEDED" && report.ownItems.length === 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["ownItems"],
+      message: "successful reports require at least one own listing"
+    });
+  }
+
   if (Date.parse(report.completedAt) < Date.parse(report.startedAt)) {
     context.addIssue({
       code: "custom",

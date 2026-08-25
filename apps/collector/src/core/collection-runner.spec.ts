@@ -442,7 +442,6 @@ test("resets search-derived progress coherently when a later rank has no stable 
   const missingJob: CollectorJob = {
     ...job,
     runId: "late-missing-item-id-run",
-    ownListings: [],
     searchLimit: 2
   };
   const capturedAt = "2026-08-24T09:00:00.000Z";
@@ -465,7 +464,18 @@ test("resets search-derived progress coherently when a later rank has no stable 
           rawEvidence: { source: "test", capturedAt, metadata: {} }
         };
       },
-      async openOwnListing() { throw new Error("No own listing expected"); },
+      async openOwnListing() {
+        currentRank = -1;
+        return {
+          platformItemId: "own-7506",
+          url: "https://detail.example.test/item.htm?id=own-7506",
+          shopName: missingJob.ownShopName,
+          title: "Sony MDR-7506 own",
+          skuDimensions: [],
+          pageSkuCount: 1,
+          rawEvidence: { source: "test", capturedAt, metadata: {} }
+        };
+      },
       async search() {
         return [
           { rank: 1, platformItemId: "stable-a", url: "https://item.example.test/item.htm?id=stable-a" },
@@ -687,7 +697,6 @@ test("resolves same-URL host-only ranks independently across pause and resume", 
   const identityJob: CollectorJob = {
     ...job,
     runId: "rank-scoped-identities-run",
-    ownListings: [],
     searchLimit: 2
   };
   const capturedAt = "2026-08-24T08:00:00.000Z";
@@ -711,7 +720,18 @@ test("resolves same-URL host-only ranks independently across pause and resume", 
           rawEvidence: { source: "test", capturedAt, metadata: {} }
         };
       },
-      async openOwnListing() { throw new Error("No own listing expected"); },
+      async openOwnListing() {
+        currentId = "own-7506";
+        return {
+          platformItemId: "own-7506",
+          url: "https://detail.example.test/item.htm?id=own-7506",
+          shopName: identityJob.ownShopName,
+          title: "Sony MDR-7506 own",
+          skuDimensions: [],
+          pageSkuCount: 1,
+          rawEvidence: { source: "test", capturedAt, metadata: {} }
+        };
+      },
       async search() {
         return [1, 2].map((rank) => ({
           rank,

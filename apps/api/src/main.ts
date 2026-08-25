@@ -4,9 +4,10 @@ import type { NestExpressApplication } from "@nestjs/platform-express";
 
 import { AppModule } from "./app.module.ts";
 import { configureApiBodyParsing } from "./http/api-body-parsing.ts";
-import { closeRuntime, collectorAgentService } from "./runtime.ts";
+import { closeRuntime, collectionEvidenceStore, collectorAgentService } from "./runtime.ts";
 
 async function bootstrap() {
+  await collectionEvidenceStore.initialize();
   const app = await NestFactory.create<NestExpressApplication>(
     AppModule,
     { cors: false, bodyParser: false }
