@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, realpath, rename, rm, stat, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
@@ -79,6 +79,8 @@ test("publishes once across two independent store instances", async () => {
     assert.deepEqual(await readdir(join(canonicalRoot, "run-1")), [`${sha256}.png`]);
     assert.equal(await firstStore.has("run-1", `sha256:${sha256}`), true);
     assert.equal(await secondStore.has("run-1", `sha256:${sha256}`), true);
+    assert.deepEqual((await readdir(canonicalRoot)).filter((entry) =>
+      entry.endsWith(".tmp") || entry.endsWith(".lock")), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -102,7 +104,7 @@ test("rejects a configured root reached through a symlinked ancestor", async () 
   }
 });
 
-test("never removes a final object after another store acknowledged it", async () => {
+test("does not expose a final object to another store until publication cleanup completes", async () => {
   const root = await mkdtemp(join(tmpdir(), "collection-evidence-published-cleanup-"));
   const canonicalRoot = await realpath(root);
   try {
@@ -126,59 +128,83 @@ test("never removes a final object after another store acknowledged it", async (
 
     const first = firstStore.put("run-1", sha256, png);
     await syncEntered;
-    assert.deepEqual(await secondStore.put("run-1", sha256, Buffer.from(png)), {
-      evidenceKey: `sha256:${sha256}`,
-      created: false
-    });
-    releaseSync();
+    let secondSettled = false;
+    const second = secondStore.put("run-1", sha256, Buffer.from(png))
+      .finally(() => { secondSettled = true; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(secondSettled, false);
+    } finally {
+      releaseSync();
+    }
     await assert.rejects(
       () => first,
       (error) => error instanceof EvidenceStoreUnavailableError
     );
+    assert.deepEqual(await second, {
+      evidenceKey: `sha256:${sha256}`,
+      created: false
+    });
 
     assert.equal(await secondStore.has("run-1", `sha256:${sha256}`), true);
     assert.deepEqual(await readdir(join(canonicalRoot, "run-1")), [`${sha256}.png`]);
+    assert.deepEqual((await readdir(canonicalRoot)).filter((entry) =>
+      entry.endsWith(".tmp") || entry.endsWith(".lock")), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("rejects a timed run-directory swap without writing outside the evidence root", async () => {
+test("rolls back a check-to-link child-symlink publication outside the evidence root", async () => {
   const root = await mkdtemp(join(tmpdir(), "collection-evidence-parent-change-"));
   const canonicalRoot = await realpath(root);
   const outside = join(dirname(canonicalRoot), `${basename(canonicalRoot)}-outside`);
+  const movedRun = join(canonicalRoot, "run-1-original");
   try {
+    await mkdir(outside);
     const store = new CollectionEvidenceStore(canonicalRoot);
-    const original = Reflect.get(store, "requireDirectoryIdentities").bind(store) as
-      (directory: unknown) => Promise<void>;
-    let checks = 0;
     let enteredCheck!: () => void;
     let releaseCheck!: () => void;
     const checkEntered = new Promise<void>((resolve) => { enteredCheck = resolve; });
     const checkReleased = new Promise<void>((resolve) => { releaseCheck = resolve; });
-    Reflect.set(store, "requireDirectoryIdentities", async (directory: unknown) => {
-      checks += 1;
-      if (checks === 3) {
-        enteredCheck();
-        await checkReleased;
-      }
-      return original(directory);
+    Reflect.set(store, "afterFinalPreLinkIdentityCheck", async () => {
+      enteredCheck();
+      await checkReleased;
     });
 
-    const publication = store.put("run-1", digest(png), png);
+    const sha256 = digest(png);
+    const publication = store.put("run-1", sha256, png);
     await checkEntered;
-    await rename(join(canonicalRoot, "run-1"), outside);
-    await mkdir(join(canonicalRoot, "run-1"));
+    await rename(join(canonicalRoot, "run-1"), movedRun);
+    await symlink(outside, join(canonicalRoot, "run-1"), "dir");
     releaseCheck();
     await assert.rejects(() => publication, (error) => error instanceof EvidenceStoreUnavailableError);
 
-    assert.deepEqual(await readdir(join(canonicalRoot, "run-1")), []);
     assert.deepEqual(await readdir(outside), []);
-    assert.deepEqual((await readdir(canonicalRoot)).filter((entry) => entry.endsWith(".tmp")), []);
+    assert.deepEqual(await readdir(movedRun), []);
+    assert.deepEqual((await readdir(canonicalRoot)).filter((entry) =>
+      entry.endsWith(".tmp") || entry.endsWith(".lock")), []);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
   }
+});
+
+test("rollback never removes a pre-existing final with a different inode", async () => {
+  await withStore(async (store, root) => {
+    const sha256 = digest(png);
+    await store.put("run-1", sha256, png);
+    const target = join(root, "run-1", `${sha256}.png`);
+    const unrelatedTemporary = join(root, ".unrelated.tmp");
+    await writeFile(unrelatedTemporary, png, { mode: 0o600 });
+    const unrelatedIdentity = await stat(unrelatedTemporary);
+    const rollback = Reflect.get(store, "rollbackPublishedLink") as
+      ((path: string, expected: Awaited<ReturnType<typeof stat>>) => Promise<boolean>) | undefined;
+
+    assert.equal(typeof rollback, "function");
+    assert.equal(await rollback!.call(store, target, unrelatedIdentity), false);
+    assert.equal(await store.has("run-1", `sha256:${sha256}`), true);
+  });
 });
 
 test("rejects oversized, non-PNG, and hash-mismatched bytes before writing", async () => {

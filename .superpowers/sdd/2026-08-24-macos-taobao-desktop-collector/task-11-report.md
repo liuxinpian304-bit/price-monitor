@@ -201,3 +201,39 @@ No known Task 11 functional concerns remain. Task 13 still owns the configurable
 - Confirmed the evidence store has no final-target unlink or overwrite path; every unlink is limited to a unique temp. Cross-store create-if-absent and blocked run-state serialization remain covered.
 - Confirmed no new logging or response path includes report data, tokens, item/account text, evidence bytes, or local paths.
 - This section supersedes the Round 1 statements that zero-own claims were valid, legacy receipts could be upgraded, or a newly linked final inode could be removed after publication failure.
+
+## Fix Round 3
+
+### Publication lock and rollback state machine
+
+- Evidence publication now acquires a per-object `O_EXCL` lock file directly under the startup-validated canonical evidence root. Its filename is a SHA-256 digest of the strict run ID and evidence digest, so no report text or local path enters the lock name.
+- Every store instance acquires that filesystem lock before deciding whether an object already exists. The lock remains held through the final run-directory identity check, hard-link publication, post-link identity checks, durability work, rollback, and unique-temp cleanup. The existing PostgreSQL run-row lock remains unchanged.
+- Lock acquisition retries every 10 ms for at most 10 seconds and then returns the existing sanitized storage-unavailable error. It deliberately does not delete an age-based "stale" lock because doing so can race a live publisher and violate create-if-absent correctness.
+- The unique fsynced temp remains directly under the canonical root, uses an opaque bounded filename, and retains its device/inode identity before publication.
+- A dedicated test hook now runs at the exact reviewed window: after the final pre-link directory/temp identity checks and immediately before `link()`.
+- If publication succeeds and a later root/run-directory identity check fails, rollback resolves the current target parent, compares the visible final entry with the temp's device/inode, removes only that matching hard link, and verifies that the same inode is no longer visible at that path. A different or pre-existing inode is never unlinked.
+- Generic errors after a verified publication still retain the final object for idempotent retry. Competing stores cannot observe or acknowledge it until the publisher has completed post-checks, rollback if required, temp cleanup, and lock release.
+
+### RED evidence
+
+- The focused evidence suite initially had three failures: a second store settled while the first publisher was still in cleanup, the synchronized check-to-link child-symlink swap left `<hash>.png` outside the evidence root, and no inode-safe rollback primitive existed to prove preservation of an unrelated final.
+- The attack fixture moves the original run directory within the canonical root and installs a child symlink to a separate outside directory while paused at the exact new hook.
+
+### GREEN verification
+
+- Focused evidence store tests: 10 passed, 0 failed. The synchronized swap returns the sanitized unavailable error and leaves no outside PNG, root temp, or publication lock; two independent stores still return one `created: true` and one `created: false`; the final remains; and rollback preserves a pre-existing different inode.
+- Focused real HTTP controller probes: 13 passed, 0 failed, including authentication-before-Multer and authentication-before-JSON-parser ordering.
+- Focused real PostgreSQL Task 11 integration: 10 passed, 0 failed, including concurrent report replay and evidence publication serialized with a terminal run transition.
+- `pnpm test:api:portable`: 120 passed, 0 failed.
+- `pnpm test:api`: 141 passed, 0 failed against the requested PostgreSQL and running Redis.
+- `pnpm test:collector`: 144 passed, 0 failed.
+- `pnpm typecheck`: passed for API, web, and collector.
+- `prisma validate`: passed. `prisma migrate status`: five migrations found and the database schema is up to date.
+
+### Fix Round 3 self-review
+
+- Re-read the physical-confinement finding against the final state machine and confirmed the object lock covers every cooperative store's existence decision through publication completion or rollback.
+- Confirmed the check-to-link swap cleanup follows the currently resolved target path but unlinks only the temp inode, then removes only the operation's root temp and lock.
+- Confirmed no normally published final is deleted for an unrelated fsync error and no pre-existing valid final is removed by rollback.
+- Confirmed no report, token, item/account text, evidence bytes, or local path was added to logging, responses, filenames, or database persistence.
+- `pnpm audit:public` continues to report three absolute local paths in the already committed, unrelated `docs/superpowers/plans/2026-08-21-local-demo-runtime-fixes.md`; this Round 3 diff does not modify that file or add an audit finding.

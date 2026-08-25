@@ -8,7 +8,8 @@ import {
   realpath,
   unlink
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 export const MAX_EVIDENCE_BYTES = 2 * 1024 * 1024;
 
@@ -16,6 +17,8 @@ const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const digestPattern = /^[0-9a-f]{64}$/;
 const evidenceKeyPattern = /^sha256:([0-9a-f]{64})$/;
 const runIdPattern = /^[A-Za-z0-9_-]+$/;
+const publicationLockRetryMs = 10;
+const publicationLockTimeoutMs = 10_000;
 
 interface VerifiedDirectory {
   rootPath: string;
@@ -27,6 +30,13 @@ interface VerifiedDirectory {
 interface VerifiedRoot {
   path: string;
   identity: Stats;
+}
+
+interface PublicationLock {
+  handle: Awaited<ReturnType<typeof open>>;
+  identity: Stats;
+  path: string;
+  root: VerifiedRoot;
 }
 
 class EvidenceStoreIdentityChangedError extends Error {}
@@ -105,6 +115,10 @@ function verifyBytes(bytes: Uint8Array, sha256: string): Buffer {
   return buffer;
 }
 
+function publicationObjectId(runId: string, sha256: string): string {
+  return createHash("sha256").update(runId).update("\0").update(sha256).digest("hex");
+}
+
 export class CollectionEvidenceStore {
   private readonly root: string;
   private readonly writeTails = new Map<string, Promise<void>>();
@@ -134,70 +148,22 @@ export class CollectionEvidenceStore {
         const directory = await this.ensureRunDirectory(runId);
         const target = join(directory.runPath, `${sha256}.png`);
         assertContained(directory.runPath, target);
-
-        if (await this.isVerifiedFile(directory, target, sha256)) {
-          await this.syncDirectory(directory.runPath);
-          await this.requireDirectoryIdentities(directory);
-          return { evidenceKey: `sha256:${sha256}`, created: false };
-        }
-
-        const temporary = join(directory.rootPath, `.${runId}.${sha256}.${randomUUID()}.tmp`);
-        assertContained(directory.rootPath, temporary);
-        let handle: Awaited<ReturnType<typeof open>> | undefined;
-        let temporaryIdentity: Stats | undefined;
+        const objectId = publicationObjectId(runId, sha256);
+        const publicationLock = await this.acquirePublicationLock({
+          path: directory.rootPath,
+          identity: directory.rootIdentity
+        }, objectId);
         try {
-          handle = await open(
-            temporary,
-            constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollowFlag(),
-            0o600
+          const created = await this.putWithPublicationLock(
+            directory,
+            target,
+            sha256,
+            objectId,
+            bytes
           );
-          temporaryIdentity = await handle.stat();
-          await handle.writeFile(bytes);
-          await handle.sync();
-          const writtenIdentity = await handle.stat();
-          if (!writtenIdentity.isFile() || writtenIdentity.size !== bytes.byteLength
-            || !sameIdentity(writtenIdentity, temporaryIdentity)) {
-            throw new EvidenceStoreUnavailableError();
-          }
-          temporaryIdentity = writtenIdentity;
-          await handle.close();
-          handle = undefined;
-          await this.requireDirectoryIdentities(directory);
-          await this.requireFileIdentity(temporary, temporaryIdentity);
-
-          try {
-            await link(temporary, target);
-          } catch (error) {
-            if (!isAlreadyPresent(error)) throw error;
-            if (!await this.isVerifiedFile(directory, target, sha256)) {
-              throw new EvidenceStoreValidationError();
-            }
-            await this.syncDirectory(directory.runPath);
-            await this.requireDirectoryIdentities(directory);
-            await this.requireFileIdentity(temporary, temporaryIdentity);
-            await unlink(temporary);
-            await this.syncDirectory(directory.rootPath);
-            await this.requireDirectoryIdentities(directory);
-            return { evidenceKey: `sha256:${sha256}`, created: false };
-          }
-
-          await this.requireDirectoryIdentities(directory);
-          const targetMetadata = await lstat(target);
-          if (targetMetadata.isSymbolicLink() || !targetMetadata.isFile()
-            || !temporaryIdentity || !sameIdentity(targetMetadata, temporaryIdentity)) {
-            throw new EvidenceStoreIdentityChangedError();
-          }
-          await this.syncDirectory(directory.runPath);
-          await this.requireDirectoryIdentities(directory);
-          await this.requireFileIdentity(temporary, temporaryIdentity);
-          await unlink(temporary);
-          await this.syncDirectory(directory.rootPath);
-          await this.requireDirectoryIdentities(directory);
-          return { evidenceKey: `sha256:${sha256}`, created: true };
-        } catch (error) {
-          await handle?.close().catch(() => undefined);
-          await this.unlinkTemporary(temporary, temporaryIdentity);
-          throw error;
+          return { evidenceKey: `sha256:${sha256}`, created };
+        } finally {
+          await this.releasePublicationLock(publicationLock);
         }
       } catch (error) {
         if (
@@ -225,6 +191,147 @@ export class CollectionEvidenceStore {
       if (error instanceof EvidenceStorePayloadTooLargeError) return false;
       throw new EvidenceStoreUnavailableError();
     }
+  }
+
+  private async putWithPublicationLock(
+    directory: VerifiedDirectory,
+    target: string,
+    sha256: string,
+    objectId: string,
+    bytes: Buffer
+  ): Promise<boolean> {
+    await this.requireDirectoryIdentities(directory);
+    if (await this.isVerifiedFile(directory, target, sha256)) {
+      await this.syncDirectory(directory.runPath);
+      await this.requireDirectoryIdentities(directory);
+      return false;
+    }
+
+    const temporary = join(directory.rootPath, `.evidence.${objectId}.${randomUUID()}.tmp`);
+    assertContained(directory.rootPath, temporary);
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    let temporaryIdentity: Stats | undefined;
+    let published = false;
+    try {
+      handle = await open(
+        temporary,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollowFlag(),
+        0o600
+      );
+      temporaryIdentity = await handle.stat();
+      await handle.writeFile(bytes);
+      await handle.sync();
+      const writtenIdentity = await handle.stat();
+      if (!writtenIdentity.isFile() || writtenIdentity.size !== bytes.byteLength
+        || !sameIdentity(writtenIdentity, temporaryIdentity)) {
+        throw new EvidenceStoreUnavailableError();
+      }
+      temporaryIdentity = writtenIdentity;
+      await handle.close();
+      handle = undefined;
+
+      await this.requireDirectoryIdentities(directory);
+      await this.requireFileIdentity(temporary, temporaryIdentity);
+      await this.afterFinalPreLinkIdentityCheck();
+
+      try {
+        await link(temporary, target);
+      } catch (error) {
+        if (!isAlreadyPresent(error)) throw error;
+        if (!await this.isVerifiedFile(directory, target, sha256)) {
+          throw new EvidenceStoreValidationError();
+        }
+        await this.syncDirectory(directory.runPath);
+        await this.requireDirectoryIdentities(directory);
+        return false;
+      }
+      published = true;
+
+      await this.requireDirectoryIdentities(directory);
+      await this.requireFileIdentity(target, temporaryIdentity);
+      await this.syncDirectory(directory.runPath);
+      await this.requireDirectoryIdentities(directory);
+      await this.requireFileIdentity(target, temporaryIdentity);
+      await this.requireFileIdentity(temporary, temporaryIdentity);
+      await unlink(temporary);
+      await this.syncDirectory(directory.rootPath);
+      await this.requireDirectoryIdentities(directory);
+      await this.requireFileIdentity(target, temporaryIdentity);
+      return true;
+    } catch (error) {
+      let failure = error;
+      if (published && temporaryIdentity && error instanceof EvidenceStoreIdentityChangedError) {
+        try {
+          await this.rollbackPublishedLink(target, temporaryIdentity);
+        } catch (rollbackError) {
+          failure = rollbackError;
+        }
+      }
+      throw failure;
+    } finally {
+      await handle?.close().catch(() => undefined);
+      await this.unlinkTemporary(temporary, temporaryIdentity);
+    }
+  }
+
+  private async acquirePublicationLock(
+    root: VerifiedRoot,
+    objectId: string
+  ): Promise<PublicationLock> {
+    const path = join(root.path, `.evidence.${objectId}.lock`);
+    assertContained(root.path, path);
+    const deadline = Date.now() + publicationLockTimeoutMs;
+
+    while (true) {
+      await this.requireDirectoryIdentity(root.path, root.identity);
+      let handle: Awaited<ReturnType<typeof open>>;
+      try {
+        handle = await open(
+          path,
+          constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollowFlag(),
+          0o600
+        );
+      } catch (error) {
+        if (!isAlreadyPresent(error)) throw error;
+        if (Date.now() >= deadline) throw new EvidenceStoreUnavailableError();
+        await delay(publicationLockRetryMs);
+        continue;
+      }
+
+      let identity: Stats | undefined;
+      try {
+        identity = await handle.stat();
+        if (!identity.isFile() || identity.isSymbolicLink()) {
+          throw new EvidenceStoreIdentityChangedError();
+        }
+        await handle.sync();
+        await this.requireDirectoryIdentity(root.path, root.identity);
+        await this.requireFileIdentity(path, identity);
+        return { handle, identity, path, root };
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        if (identity) await this.unlinkMatchingFile(path, identity).catch(() => undefined);
+        throw error;
+      }
+    }
+  }
+
+  private async releasePublicationLock(lock: PublicationLock): Promise<void> {
+    let closeError: unknown;
+    try {
+      await lock.handle.close();
+    } catch (error) {
+      closeError = error;
+    }
+    if (!await this.unlinkMatchingFile(lock.path, lock.identity)) {
+      throw new EvidenceStoreIdentityChangedError();
+    }
+    await this.syncDirectory(lock.root.path);
+    if (closeError) throw closeError;
+  }
+
+  private afterFinalPreLinkIdentityCheck(): Promise<void> {
+    return Promise.resolve();
   }
 
   private async ensureCanonicalRoot(): Promise<VerifiedRoot> {
@@ -375,13 +482,42 @@ export class CollectionEvidenceStore {
     }
   }
 
+  private async rollbackPublishedLink(path: string, expected: Stats): Promise<boolean> {
+    const resolvedParent = await realpath(dirname(path));
+    const resolvedPath = join(resolvedParent, basename(path));
+    return this.unlinkMatchingFile(resolvedPath, expected);
+  }
+
+  private async unlinkMatchingFile(path: string, expected: Stats): Promise<boolean> {
+    let metadata: Stats;
+    try {
+      metadata = await lstat(path);
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
+    if (!metadata.isFile() || metadata.isSymbolicLink() || !sameIdentity(metadata, expected)) {
+      return false;
+    }
+
+    await unlink(path);
+    try {
+      const afterUnlink = await lstat(path);
+      if (afterUnlink.isFile() && !afterUnlink.isSymbolicLink()
+        && sameIdentity(afterUnlink, expected)) {
+        throw new EvidenceStoreIdentityChangedError();
+      }
+    } catch (error) {
+      if (isMissing(error)) return true;
+      throw error;
+    }
+    return true;
+  }
+
   private async unlinkTemporary(path: string, expected: Stats | undefined): Promise<void> {
     if (!expected) return;
     try {
-      const metadata = await lstat(path);
-      if (metadata.isFile() && !metadata.isSymbolicLink() && sameIdentity(metadata, expected)) {
-        await unlink(path);
-      }
+      await this.unlinkMatchingFile(path, expected);
     } catch {
       // A unique temp is best-effort cleanup; a published final is never removed here.
     }
