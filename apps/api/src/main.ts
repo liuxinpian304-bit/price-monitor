@@ -1,38 +1,43 @@
 import "reflect-metadata";
+import "dotenv/config";
 import { NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 
-import { AppModule } from "./app.module.ts";
-import {
-  adminPrincipalConfigFromEnvironment,
-  createVerifiedPrincipalMiddleware
-} from "./auth/verified-principal.ts";
+import { createVerifiedPrincipalMiddleware } from "./auth/verified-principal.ts";
 import { configureApiBodyParsing } from "./http/api-body-parsing.ts";
-import { closeRuntime, collectionEvidenceStore, collectorAgentService, startRuntime } from "./runtime.ts";
+import { bootstrapApi } from "./startup/api-bootstrap.ts";
 
 async function bootstrap() {
-  await collectionEvidenceStore.initialize();
-  const app = await NestFactory.create<NestExpressApplication>(
-    AppModule,
-    { cors: false, bodyParser: false }
-  );
-  app.setGlobalPrefix("api");
-  app.use(createVerifiedPrincipalMiddleware(adminPrincipalConfigFromEnvironment()));
-  configureApiBodyParsing(app, collectorAgentService);
-  app.enableCors({ origin: [/^http:\/\/127\.0\.0\.1(?::\d+)?$/, /^http:\/\/localhost(?::\d+)?$/] });
-  app.enableShutdownHooks();
+  const started = await bootstrapApi<NestExpressApplication>(process.env, async () => {
+    let runtime: typeof import("./runtime.ts") | null = null;
+    try {
+      runtime = await import("./runtime.ts");
+      const { AppModule } = await import("./app.module.ts");
+      return {
+        initializeRuntimeResources: () => runtime!.collectionEvidenceStore.initialize(),
+        createApplication: () => NestFactory.create<NestExpressApplication>(
+          AppModule,
+          { cors: false, bodyParser: false }
+        ),
+        configureApplication(app, config) {
+          app.setGlobalPrefix("api");
+          app.use(createVerifiedPrincipalMiddleware(config.adminPrincipal));
+          configureApiBodyParsing(app, runtime!.collectorAgentService, config.collectorReportJsonLimit);
+          app.enableCors({ origin: [/^http:\/\/127\.0\.0\.1(?::\d+)?$/, /^http:\/\/localhost(?::\d+)?$/] });
+        },
+        startRuntime: () => runtime!.startRuntime(),
+        closeRuntime: () => runtime!.closeRuntime()
+      };
+    } catch (error) {
+      if (runtime) await runtime.closeRuntime();
+      throw error;
+    }
+  });
 
-  await startRuntime();
-  const port = Number(process.env.API_PORT ?? 4100);
-  const host = process.env.API_HOST?.trim() || "127.0.0.1";
-  if (process.env.NODE_ENV === "production" && host === "0.0.0.0" && process.env.ALLOW_PRIVATE_NETWORK_API !== "true") {
-    throw new Error("API_HOST=0.0.0.0 requires ALLOW_PRIVATE_NETWORK_API=true in production");
-  }
-  await app.listen(port, host);
-
-  const shutdown = async () => {
-    await app.close();
-    await closeRuntime();
+  const shutdown = () => {
+    void started.close().catch(() => {
+      process.exitCode = 1;
+    });
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);

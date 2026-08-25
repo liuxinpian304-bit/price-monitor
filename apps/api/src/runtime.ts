@@ -47,22 +47,19 @@ import { PrismaManualClassificationRepository } from "./operations/prisma-manual
 import { PrismaSettingsRepository } from "./settings/prisma-settings.repository.ts";
 import { SecretStore } from "./settings/secret-store.ts";
 import { SettingsService } from "./settings/settings.service.ts";
+import {
+  databaseUrlFromEnvironment,
+  publicBaseUrlFromEnvironment,
+  redisConnectionFromEnvironment,
+  reportUrlForRun,
+  settingsMasterKeyFromEnvironment
+} from "./startup/api-startup-config.ts";
 
-function settingsMasterKey(): string {
-  const configured = process.env.SETTINGS_MASTER_KEY?.trim();
-  if (configured) {
-    return configured;
-  }
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("SETTINGS_MASTER_KEY is required in production");
-  }
-  return "local-development-key-change-before-production";
-}
-
-export const prisma = createPrismaClient();
+export const prisma = createPrismaClient(databaseUrlFromEnvironment());
+const redisConnection = redisConnectionFromEnvironment();
 export const redis = new Redis({
-  host: process.env.REDIS_HOST ?? "127.0.0.1",
-  port: Number(process.env.REDIS_PORT ?? 6380),
+  host: redisConnection.host,
+  port: redisConnection.port,
   maxRetriesPerRequest: null,
   lazyConnect: true
 });
@@ -93,7 +90,7 @@ export const alertController = new AlertController(
 );
 export const settingsService = new SettingsService(
   new PrismaSettingsRepository(prisma),
-  new SecretStore(settingsMasterKey()),
+  new SecretStore(settingsMasterKeyFromEnvironment()),
   audit,
   reconcileCollectionSchedules
 );
@@ -119,27 +116,11 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../.
 export const collectionEvidenceStore = new CollectionEvidenceStore(
   resolve(repositoryRoot, "work/collector-evidence")
 );
-function reportUrlForRun(runId: string): string {
-  const configured = process.env.PUBLIC_BASE_URL?.trim();
-  const base = configured || `http://127.0.0.1:${process.env.API_PORT ?? "4100"}`;
-  const url = new URL(base);
-  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1";
-  if (
-    (url.protocol !== "https:" && url.protocol !== "http:")
-    || (!loopback && url.protocol !== "https:")
-    || url.username !== ""
-    || url.password !== ""
-    || url.search !== ""
-    || url.hash !== ""
-  ) {
-    throw new Error("PUBLIC_BASE_URL is invalid");
-  }
-  return new URL(`/collection-runs/${encodeURIComponent(runId)}`, url).toString();
-}
+const publicBaseUrl = publicBaseUrlFromEnvironment();
 
 export const runAlertService = new RunAlertService(
   new PrismaRunAlertRepository(prisma),
-  reportUrlForRun
+  (runId) => reportUrlForRun(publicBaseUrl, runId)
 );
 export const runAlertNotifier = new RunAlertNotifier(
   new PrismaRunAlertNotificationRepository(prisma),

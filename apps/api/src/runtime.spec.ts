@@ -21,3 +21,22 @@ test("runtime starts one schedule worker and closes worker, queue, Redis, then P
   assert.equal(registered, 1);
   assert.deepEqual(events, ["worker", "queue", "redis", "prisma"]);
 });
+
+test("runtime attempts every ordered cleanup step after an earlier close failure", async () => {
+  const events: string[] = [];
+  const runtime = createRuntimeLifecycle({
+    scheduler: { registerSchedules: async () => undefined },
+    worker: {
+      close: async () => {
+        events.push("worker");
+        throw new Error("worker close failed");
+      }
+    },
+    queue: { close: async () => { events.push("queue"); } },
+    redis: { disconnect: () => { events.push("redis"); }, status: "ready" },
+    prisma: { $disconnect: async () => { events.push("prisma"); } }
+  });
+
+  await assert.rejects(runtime.close(), /runtime resource cleanup failed/);
+  assert.deepEqual(events, ["worker", "queue", "redis", "prisma"]);
+});

@@ -134,6 +134,12 @@ select {
   font-weight: 700;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
 .system-health {
   display: inline-flex;
   align-items: center;

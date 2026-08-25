@@ -23,8 +23,8 @@ export function SettingsPage() {
     const values = await form.validateFields();
     try {
       await Promise.all([
-        apiRequest("/api/settings/provider", { method: "PATCH", role: "ADMIN", actorId: "本地管理员", body: JSON.stringify({ provider: values.provider }) }),
-        apiRequest("/api/settings/schedule", { method: "PATCH", role: "ADMIN", actorId: "本地管理员", body: JSON.stringify({ enabled: values.enabled, checkTimes: times }) })
+        apiRequest("/api/settings/provider", { method: "PATCH", role: "ADMIN", body: JSON.stringify({ provider: values.provider }) }),
+        apiRequest("/api/settings/schedule", { method: "PATCH", role: "ADMIN", body: JSON.stringify({ enabled: values.enabled, checkTimes: times }) })
       ]);
       await refresh();
       messageApi.success("基础配置已保存");
@@ -43,7 +43,6 @@ export function SettingsPage() {
       await apiRequest(`/api/settings/secrets/${kind}`, {
         method: "PUT",
         role: "ADMIN",
-        actorId: "本地管理员",
         body: JSON.stringify({ value })
       });
       kind === "wecom" ? setWecomWebhook("") : setCommerceApiKey("");

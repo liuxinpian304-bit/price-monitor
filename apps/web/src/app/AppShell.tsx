@@ -17,6 +17,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useApiData } from "../api/client.ts";
 import type { HealthData } from "../api/types.ts";
+import { AdminAccessControl } from "../auth/AdminAccessControl.tsx";
 
 const { Header, Sider, Content } = Layout;
 
@@ -94,8 +95,11 @@ export function AppShell() {
           {mobile ? <Button type="text" icon={<MenuOutlined />} onClick={() => setDrawerOpen(true)} aria-label="打开导航" /> : null}
           <h1>{pageTitles[titleKey] ?? "预警详情"}</h1>
         </Space>
-        <div className={`system-health health-${health.loading ? "loading" : health.data.status}`} title={health.error ?? undefined}>
-          <span className="health-dot" />{healthLabel}
+        <div className="header-actions">
+          <AdminAccessControl compact={mobile} />
+          <div className={`system-health health-${health.loading ? "loading" : health.data.status}`} title={health.error ?? undefined}>
+            <span className="health-dot" />{healthLabel}
+          </div>
         </div>
       </Header>
       <Content className="app-content">

@@ -1,0 +1,108 @@
+import type { AdminPrincipalConfig } from "../auth/verified-principal.ts";
+import { adminPrincipalConfigFromEnvironment } from "../auth/verified-principal.ts";
+import { parseCollectorReportJsonLimit } from "../http/api-body-parsing.ts";
+
+export interface ApiStartupConfig {
+  host: string;
+  port: number;
+  adminPrincipal: AdminPrincipalConfig;
+  collectorReportJsonLimit: number;
+  publicBaseUrl: string;
+}
+
+function parsePort(name: string, value: string | undefined, fallback: number): number {
+  const normalized = value?.trim();
+  const port = normalized ? Number(normalized) : fallback;
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`${name} must be an integer between 1 and 65535`);
+  }
+  return port;
+}
+
+export function settingsMasterKeyFromEnvironment(environment: NodeJS.ProcessEnv = process.env): string {
+  const configured = environment.SETTINGS_MASTER_KEY?.trim();
+  if (configured) return configured;
+  if (environment.NODE_ENV === "production") {
+    throw new Error("SETTINGS_MASTER_KEY is required in production");
+  }
+  return "local-development-key-change-before-production";
+}
+
+export function databaseUrlFromEnvironment(environment: NodeJS.ProcessEnv = process.env): string {
+  const databaseUrl = environment.DATABASE_URL?.trim();
+  if (!databaseUrl) throw new Error("DATABASE_URL is required");
+  try {
+    const parsedDatabaseUrl = new URL(databaseUrl);
+    if (parsedDatabaseUrl.protocol !== "postgresql:" && parsedDatabaseUrl.protocol !== "postgres:") {
+      throw new Error();
+    }
+  } catch {
+    throw new Error("DATABASE_URL must be a PostgreSQL URL");
+  }
+  return databaseUrl;
+}
+
+export function redisConnectionFromEnvironment(environment: NodeJS.ProcessEnv = process.env): {
+  host: string;
+  port: number;
+} {
+  const host = environment.REDIS_HOST === undefined ? "127.0.0.1" : environment.REDIS_HOST.trim();
+  if (!host) throw new Error("REDIS_HOST must not be blank");
+  return { host, port: parsePort("REDIS_PORT", environment.REDIS_PORT, 6380) };
+}
+
+export function publicBaseUrlFromEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+  apiPort = parsePort("API_PORT", environment.API_PORT, 4100)
+): string {
+  const configured = environment.PUBLIC_BASE_URL?.trim();
+  let url: URL;
+  try {
+    url = new URL(configured || `http://127.0.0.1:${apiPort}`);
+  } catch {
+    throw new Error("PUBLIC_BASE_URL is invalid");
+  }
+  const loopback = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname);
+  if (
+    (url.protocol !== "https:" && url.protocol !== "http:")
+    || (!loopback && url.protocol !== "https:")
+    || url.username !== ""
+    || url.password !== ""
+    || url.search !== ""
+    || url.hash !== ""
+  ) {
+    throw new Error("PUBLIC_BASE_URL is invalid");
+  }
+  return url.toString();
+}
+
+export function reportUrlForRun(publicBaseUrl: string, runId: string): string {
+  return new URL(`/collection-runs/${encodeURIComponent(runId)}`, publicBaseUrl).toString();
+}
+
+export function apiStartupConfigFromEnvironment(
+  environment: NodeJS.ProcessEnv = process.env
+): ApiStartupConfig {
+  const nodeEnvironment = environment.NODE_ENV?.trim() || "development";
+  const host = environment.API_HOST?.trim() || "127.0.0.1";
+  const port = parsePort("API_PORT", environment.API_PORT, 4100);
+  if (
+    nodeEnvironment === "production"
+    && host === "0.0.0.0"
+    && environment.ALLOW_PRIVATE_NETWORK_API !== "true"
+  ) {
+    throw new Error("API_HOST=0.0.0.0 requires ALLOW_PRIVATE_NETWORK_API=true in production");
+  }
+
+  databaseUrlFromEnvironment(environment);
+  settingsMasterKeyFromEnvironment(environment);
+  redisConnectionFromEnvironment(environment);
+
+  return {
+    host,
+    port,
+    adminPrincipal: adminPrincipalConfigFromEnvironment(environment),
+    collectorReportJsonLimit: parseCollectorReportJsonLimit(environment.COLLECTOR_REPORT_JSON_LIMIT),
+    publicBaseUrl: publicBaseUrlFromEnvironment(environment, port)
+  };
+}

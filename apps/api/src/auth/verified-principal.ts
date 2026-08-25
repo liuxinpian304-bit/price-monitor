@@ -14,7 +14,8 @@ export interface AdminPrincipalConfig {
 }
 
 const VERIFIED_PRINCIPAL = Symbol("verified-api-principal");
-const MINIMUM_ADMIN_TOKEN_LENGTH = 32;
+const minimumAdminCredentialLength = 32;
+const weakAdminCredentialMarkers = ["change-me", "changeme", "password", "replace-with", "example-token"];
 
 function digest(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
@@ -24,12 +25,22 @@ function tokenMatches(candidate: string, expected: string): boolean {
   return timingSafeEqual(digest(candidate), digest(expected));
 }
 
+function tokenMeetsMinimumSecurity(token: string): boolean {
+  const normalized = token.toLowerCase();
+  return token.length >= minimumAdminCredentialLength
+    && new Set(token).size >= 10
+    && weakAdminCredentialMarkers.every((marker) => !normalized.includes(marker));
+}
+
 export function adminPrincipalConfigFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env
 ): AdminPrincipalConfig {
   const configured = environment.ADMIN_API_TOKEN?.trim() || null;
-  if (configured && configured.length < MINIMUM_ADMIN_TOKEN_LENGTH) {
-    throw new Error("ADMIN_API_TOKEN must contain at least 32 characters");
+  if (!configured && environment.NODE_ENV === "production") {
+    throw new Error("ADMIN_API_TOKEN is required in production");
+  }
+  if (configured && !tokenMeetsMinimumSecurity(configured)) {
+    throw new Error("ADMIN_API_TOKEN must contain at least 32 characters and use a high-entropy random value");
   }
   return {
     adminToken: configured,

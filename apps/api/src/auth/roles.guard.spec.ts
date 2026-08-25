@@ -7,7 +7,9 @@ import { Reflector } from "@nestjs/core";
 import { RolesGuard, roleIsAllowed } from "./roles.guard.ts";
 import {
   adminPrincipalConfigFromEnvironment,
-  setVerifiedPrincipal
+  createVerifiedPrincipalMiddleware,
+  setVerifiedPrincipal,
+  verifiedPrincipal
 } from "./verified-principal.ts";
 
 function context(request: object): ExecutionContext {
@@ -32,12 +34,32 @@ test("role checks use only a verified principal and ignore forged identity heade
 });
 
 test("administrator access is disabled without a token and rejects weak configuration", () => {
-  assert.deepEqual(adminPrincipalConfigFromEnvironment({}), {
+  const disabled = adminPrincipalConfigFromEnvironment({});
+  assert.deepEqual(disabled, {
     adminToken: null,
     adminActorId: "local-admin"
   });
+  const request = { headers: { authorization: "Bearer test-client-supplied-value" } };
+  createVerifiedPrincipalMiddleware(disabled)(request as never, {} as never, () => undefined);
+  assert.deepEqual(verifiedPrincipal(request), { actorId: "local-operator", role: "OPERATOR" });
   assert.throws(
-    () => adminPrincipalConfigFromEnvironment({ ADMIN_API_TOKEN: "too-short" }),
+    () => adminPrincipalConfigFromEnvironment({ ["ADMIN_API_TOKEN"]: "test-too-short" }),
     /at least 32 characters/
   );
+});
+
+test("production rejects a missing administrator token without reflecting secret input", () => {
+  assert.throws(
+    () => adminPrincipalConfigFromEnvironment({ NODE_ENV: "production" }),
+    /ADMIN_API_TOKEN is required/
+  );
+  const weak = "this-token-is-still-too-short";
+  let caught: unknown;
+  try {
+    adminPrincipalConfigFromEnvironment({ NODE_ENV: "production", ["ADMIN_API_TOKEN"]: weak });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof Error);
+  assert.equal(caught.message.includes(weak), false);
 });

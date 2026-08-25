@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { getAdminSessionToken, requireAdminUnlock } from "../auth/admin-session.ts";
+
 export class ApiError extends Error {
   readonly status: number;
 
@@ -11,24 +13,30 @@ export class ApiError extends Error {
 
 export interface ApiRequestOptions extends RequestInit {
   role?: "ADMIN" | "OPERATOR";
-  actorId?: string;
 }
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const { role = "OPERATOR", ...requestOptions } = options;
   const headers = new Headers(options.headers);
-  headers.set("x-role", options.role ?? "OPERATOR");
-  headers.set("x-actor-id", options.actorId ?? "local-operator");
+  headers.delete("authorization");
+  headers.delete("x-role");
+  headers.delete("x-actor-id");
+  const adminToken = role === "ADMIN" ? getAdminSessionToken() : null;
+  if (adminToken) headers.set("authorization", `Bearer ${adminToken}`);
   if (options.body && !(options.body instanceof FormData) && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
 
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(path, { ...requestOptions, headers });
   const contentType = response.headers.get("content-type") ?? "";
   const body: unknown = contentType.includes("application/json")
     ? await response.json()
     : await response.text();
 
   if (!response.ok) {
+    if (role === "ADMIN" && (response.status === 401 || response.status === 403)) {
+      requireAdminUnlock();
+    }
     const message = typeof body === "object" && body !== null
       ? String((body as { message?: unknown; error?: unknown }).message ?? (body as { error?: unknown }).error ?? `请求失败 (${response.status})`)
       : String(body || `请求失败 (${response.status})`);
