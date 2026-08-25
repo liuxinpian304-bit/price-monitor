@@ -237,3 +237,40 @@ No known Task 11 functional concerns remain. Task 13 still owns the configurable
 - Confirmed no normally published final is deleted for an unrelated fsync error and no pre-existing valid final is removed by rollback.
 - Confirmed no report, token, item/account text, evidence bytes, or local path was added to logging, responses, filenames, or database persistence.
 - `pnpm audit:public` continues to report three absolute local paths in the already committed, unrelated `docs/superpowers/plans/2026-08-21-local-demo-runtime-fixes.md`; this Round 3 diff does not modify that file or add an audit finding.
+
+## Fix Round 4
+
+### Crash-recoverable publication lease
+
+- Each per-object lock is now an append-only, checksummed JSON-lines lease. Every record carries a random ownership token, hostname, PID, process-instance ID, heartbeat time, and bounded expiry. Append-only refreshes keep a superseded owner's open file handle tied to the old inode, so it cannot rewrite a successor's token.
+- Production uses a 5-second lease, 1-second heartbeat, and 250 ms waiter sleep. Lease records longer than 10 seconds are rejected as invalid and fall back to bounded age-based recovery. This leaves multiple missed heartbeats before reclaiming a valid 2 MiB write while fitting the collector's 15-second request expectation where the filesystem remains responsive.
+- A waiter has no fixed failure deadline. It sleeps between inspections, follows renewed expiry records for as long as the owner remains valid, and acquires the lock before performing full root/run identity, PNG signature, size, and SHA-256 verification of an existing final.
+- Same-host dead PIDs are reclaimable immediately when the liveness probe can establish death. A reused current PID with a different process-instance ID is also immediately stale. Unknown hosts, inconclusive probes, and malformed crash remnants use the conservative bounded lease or file-age expiry.
+- Reclamation and release create one fixed hard-link claim to the observed lock inode. Only the claim holder may unlink that exact inode; it rechecks root identity, inode, token, and staleness immediately before removal. Competing reclaimers remain serialized, and an abandoned claim has its own conservative grace before inode-checked cleanup.
+- Heartbeat refresh, the final pre-link publication window, final acknowledgement, and release all re-read the current path and require the same inode and ownership token. A resumed superseded owner aborts before `link()` and its release cannot remove the successor's lock.
+- A valid final left beside a provably stale crash lock is retained and acknowledged with `created: false`; only the stale lock is reclaimed. Existing inode-safe physical-confinement rollback remains limited to the operation's own published inode. Normal success, idempotent replay, storage failure, directory-swap rollback, stale-final recovery, and stale-owner recovery leave no root temp, lock, or claim artifact.
+
+### RED evidence
+
+- The deterministic long-publisher regression advanced an active publisher and concurrent waiter past 10 seconds. Before implementation, the waiter failed in 43 ms of wall time at the old fixed-deadline branch with `EvidenceStoreUnavailableError` instead of remaining pending.
+- The added crash probes cover dead-owner recovery with no final, a valid final left before lock removal, a resumed old owner, and two simultaneous reclaimers. They use injected clock, delay, heartbeat-delay, and process-liveness hooks while exercising the real filesystem publication path.
+
+### GREEN verification
+
+- Focused evidence store tests: 15 passed, 0 failed.
+- Focused Task 11 ingestion/evidence/real HTTP tests: 43 passed, 0 failed.
+- Focused real PostgreSQL Task 11 integration: 10 passed, 0 failed, including evidence publication serialized with a terminal run transition.
+- `pnpm test:api:portable`: 125 passed, 0 failed.
+- `pnpm test:api`: 146 passed, 0 failed against PostgreSQL and Redis.
+- `pnpm test:collector`: 144 passed, 0 failed.
+- `pnpm typecheck`: passed for API, web, and collector.
+- `prisma validate`: passed. `prisma migrate status`: five migrations found and the database schema is up to date.
+- `git diff --check`: passed.
+
+### Fix Round 4 self-review
+
+- Re-read all seven crash-recovery requirements against the final state machine. Confirmed a valid renewed lease has no waiter deadline, dead/expired ownership is reclaimable, stale-final acknowledgement performs full evidence verification, and every ownership mutation is token/inode checked.
+- Confirmed the old owner cannot publish after the reviewed pre-link pause, cannot remove the recovery owner's lock, and cannot roll back or replace a final acknowledged by the recovery path.
+- Confirmed physical root/run confinement, unique-temp cleanup, inode-safe directory-swap rollback, PostgreSQL run-row serialization, HTTP authentication ordering, exact report receipts, bounds, and database locks are unchanged.
+- Confirmed no report, token, item/account text, evidence bytes, local path, PID, hostname, process-instance ID, or lease token is logged, returned, or stored outside the opaque root lock file.
+- `pnpm audit:public` still exits nonzero only for the same three absolute local paths in the already committed, unrelated `docs/superpowers/plans/2026-08-21-local-demo-runtime-fixes.md`; this Round 4 diff does not modify that file or add an audit finding.

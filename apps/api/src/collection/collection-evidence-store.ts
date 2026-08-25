@@ -8,8 +8,9 @@ import {
   realpath,
   unlink
 } from "node:fs/promises";
+import { hostname as systemHostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setTimeout as productionDelay } from "node:timers/promises";
 
 export const MAX_EVIDENCE_BYTES = 2 * 1024 * 1024;
 
@@ -17,8 +18,14 @@ const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const digestPattern = /^[0-9a-f]{64}$/;
 const evidenceKeyPattern = /^sha256:([0-9a-f]{64})$/;
 const runIdPattern = /^[A-Za-z0-9_-]+$/;
-const publicationLockRetryMs = 10;
-const publicationLockTimeoutMs = 10_000;
+const defaultLeaseDurationMs = 5_000;
+const defaultHeartbeatIntervalMs = 1_000;
+const defaultLockWaitIntervalMs = 250;
+const defaultReclaimClaimGraceMs = 1_000;
+const maximumLeaseDurationMs = 10_000;
+const maximumLeaseRecordBytes = 4_096;
+const maximumLeaseReadBytes = 64 * 1024;
+const localProcessInstanceId = randomUUID();
 
 interface VerifiedDirectory {
   rootPath: string;
@@ -32,14 +39,53 @@ interface VerifiedRoot {
   identity: Stats;
 }
 
+interface PublicationLeasePayload {
+  version: 1;
+  token: string;
+  hostname: string;
+  pid: number;
+  processInstanceId: string;
+  heartbeatAtMs: number;
+  expiresAtMs: number;
+}
+
+interface PublicationLeaseRecord extends PublicationLeasePayload {
+  checksum: string;
+}
+
+interface PublicationLockSnapshot {
+  identity: Stats;
+  mtimeMs: number;
+  record: PublicationLeaseRecord | null;
+}
+
 interface PublicationLock {
   handle: Awaited<ReturnType<typeof open>>;
   identity: Stats;
   path: string;
+  claimPath: string;
   root: VerifiedRoot;
+  token: string;
+  refreshTail: Promise<void>;
+  heartbeatError?: unknown;
 }
 
 class EvidenceStoreIdentityChangedError extends Error {}
+class PublicationLockOwnershipLostError extends EvidenceStoreIdentityChangedError {}
+
+export interface CollectionEvidenceStoreOptions {
+  now?: () => number;
+  delay?: (milliseconds: number) => Promise<void>;
+  heartbeatDelay?: (milliseconds: number) => Promise<void>;
+  isProcessAlive?: (pid: number) => boolean | undefined;
+  hostname?: string;
+  pid?: number;
+  processInstanceId?: string;
+  leaseDurationMs?: number;
+  heartbeatIntervalMs?: number;
+  waitIntervalMs?: number;
+  reclaimClaimGraceMs?: number;
+}
 
 export class EvidenceStoreValidationError extends Error {
   constructor() {
@@ -72,6 +118,79 @@ function isMissing(error: unknown): boolean {
 
 function isAlreadyPresent(error: unknown): boolean {
   return errorCode(error) === "EEXIST";
+}
+
+function defaultProcessLiveness(pid: number): boolean | undefined {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "ESRCH") return false;
+    if (errorCode(error) === "EPERM") return true;
+    return undefined;
+  }
+}
+
+function isNonEmptyBoundedString(value: unknown, maximumLength: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maximumLength;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function leaseChecksum(payload: PublicationLeasePayload): string {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
+function serializeLeaseRecord(payload: PublicationLeasePayload): Buffer {
+  const bytes = Buffer.from(JSON.stringify({ ...payload, checksum: leaseChecksum(payload) }) + "\n");
+  if (bytes.byteLength > maximumLeaseRecordBytes) throw new EvidenceStoreUnavailableError();
+  return bytes;
+}
+
+function parseLeaseRecord(line: string): PublicationLeaseRecord | null {
+  if (Buffer.byteLength(line) > maximumLeaseRecordBytes) return null;
+  let candidate: unknown;
+  try {
+    candidate = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof candidate !== "object" || candidate === null) return null;
+  const version = Reflect.get(candidate, "version");
+  const token = Reflect.get(candidate, "token");
+  const hostname = Reflect.get(candidate, "hostname");
+  const pid = Reflect.get(candidate, "pid");
+  const processInstanceId = Reflect.get(candidate, "processInstanceId");
+  const heartbeatAtMs = Reflect.get(candidate, "heartbeatAtMs");
+  const expiresAtMs = Reflect.get(candidate, "expiresAtMs");
+  const checksum = Reflect.get(candidate, "checksum");
+  if (
+    version !== 1
+    || !isNonEmptyBoundedString(token, 128)
+    || !isNonEmptyBoundedString(hostname, 255)
+    || !isPositiveSafeInteger(pid)
+    || !isNonEmptyBoundedString(processInstanceId, 128)
+    || !isPositiveSafeInteger(heartbeatAtMs)
+    || !isPositiveSafeInteger(expiresAtMs)
+    || expiresAtMs <= heartbeatAtMs
+    || expiresAtMs - heartbeatAtMs > maximumLeaseDurationMs
+    || typeof checksum !== "string"
+  ) {
+    return null;
+  }
+  const payload: PublicationLeasePayload = {
+    version,
+    token,
+    hostname,
+    pid,
+    processInstanceId,
+    heartbeatAtMs,
+    expiresAtMs
+  };
+  if (checksum !== leaseChecksum(payload)) return null;
+  return { ...payload, checksum };
 }
 
 function assertRunId(runId: string): void {
@@ -121,13 +240,51 @@ function publicationObjectId(runId: string, sha256: string): string {
 
 export class CollectionEvidenceStore {
   private readonly root: string;
+  private readonly now: () => number;
+  private readonly wait: (milliseconds: number) => Promise<void>;
+  private readonly heartbeatWait: (milliseconds: number) => Promise<void>;
+  private readonly isProcessAlive: (pid: number) => boolean | undefined;
+  private readonly hostname: string;
+  private readonly pid: number;
+  private readonly processInstanceId: string;
+  private readonly leaseDurationMs: number;
+  private readonly heartbeatIntervalMs: number;
+  private readonly waitIntervalMs: number;
+  private readonly reclaimClaimGraceMs: number;
   private readonly writeTails = new Map<string, Promise<void>>();
   // Node has no directory-handle-relative link API; the canonical root's parent is the trust boundary.
   private rootInitialization: Promise<VerifiedRoot> | null = null;
 
-  constructor(root: string) {
+  constructor(root: string, options: CollectionEvidenceStoreOptions = {}) {
     if (!isAbsolute(root)) throw new EvidenceStoreValidationError();
     this.root = resolve(root);
+    this.now = options.now ?? Date.now;
+    this.wait = options.delay ?? ((milliseconds) => productionDelay(milliseconds));
+    this.heartbeatWait = options.heartbeatDelay
+      ?? options.delay
+      ?? ((milliseconds) => productionDelay(milliseconds, undefined, { ref: false }));
+    this.isProcessAlive = options.isProcessAlive ?? defaultProcessLiveness;
+    this.hostname = options.hostname ?? systemHostname();
+    this.pid = options.pid ?? process.pid;
+    this.processInstanceId = options.processInstanceId ?? localProcessInstanceId;
+    this.leaseDurationMs = options.leaseDurationMs ?? defaultLeaseDurationMs;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? defaultHeartbeatIntervalMs;
+    this.waitIntervalMs = options.waitIntervalMs ?? defaultLockWaitIntervalMs;
+    this.reclaimClaimGraceMs = options.reclaimClaimGraceMs ?? defaultReclaimClaimGraceMs;
+
+    if (
+      !isNonEmptyBoundedString(this.hostname, 255)
+      || !isPositiveSafeInteger(this.pid)
+      || !isNonEmptyBoundedString(this.processInstanceId, 128)
+      || !isPositiveSafeInteger(this.leaseDurationMs)
+      || this.leaseDurationMs > maximumLeaseDurationMs
+      || !isPositiveSafeInteger(this.heartbeatIntervalMs)
+      || this.heartbeatIntervalMs >= this.leaseDurationMs
+      || !isPositiveSafeInteger(this.waitIntervalMs)
+      || !isPositiveSafeInteger(this.reclaimClaimGraceMs)
+    ) {
+      throw new EvidenceStoreValidationError();
+    }
   }
 
   async initialize(): Promise<void> {
@@ -153,17 +310,28 @@ export class CollectionEvidenceStore {
           path: directory.rootPath,
           identity: directory.rootIdentity
         }, objectId);
+        const stopHeartbeat = this.startPublicationLockHeartbeat(publicationLock);
+        let operationError: unknown;
         try {
           const created = await this.putWithPublicationLock(
             directory,
             target,
             sha256,
             objectId,
-            bytes
+            bytes,
+            publicationLock
           );
           return { evidenceKey: `sha256:${sha256}`, created };
+        } catch (error) {
+          operationError = error;
+          throw error;
         } finally {
-          await this.releasePublicationLock(publicationLock);
+          await stopHeartbeat();
+          try {
+            await this.releasePublicationLock(publicationLock);
+          } catch (error) {
+            if (!operationError) throw error;
+          }
         }
       } catch (error) {
         if (
@@ -198,12 +366,15 @@ export class CollectionEvidenceStore {
     target: string,
     sha256: string,
     objectId: string,
-    bytes: Buffer
+    bytes: Buffer,
+    publicationLock: PublicationLock
   ): Promise<boolean> {
+    await this.requirePublicationLockOwnership(publicationLock);
     await this.requireDirectoryIdentities(directory);
     if (await this.isVerifiedFile(directory, target, sha256)) {
       await this.syncDirectory(directory.runPath);
       await this.requireDirectoryIdentities(directory);
+      await this.refreshPublicationLock(publicationLock);
       return false;
     }
 
@@ -233,6 +404,7 @@ export class CollectionEvidenceStore {
       await this.requireDirectoryIdentities(directory);
       await this.requireFileIdentity(temporary, temporaryIdentity);
       await this.afterFinalPreLinkIdentityCheck();
+      await this.requirePublicationLockOwnership(publicationLock);
 
       try {
         await link(temporary, target);
@@ -243,6 +415,7 @@ export class CollectionEvidenceStore {
         }
         await this.syncDirectory(directory.runPath);
         await this.requireDirectoryIdentities(directory);
+        await this.refreshPublicationLock(publicationLock);
         return false;
       }
       published = true;
@@ -257,10 +430,16 @@ export class CollectionEvidenceStore {
       await this.syncDirectory(directory.rootPath);
       await this.requireDirectoryIdentities(directory);
       await this.requireFileIdentity(target, temporaryIdentity);
+      await this.refreshPublicationLock(publicationLock);
       return true;
     } catch (error) {
       let failure = error;
-      if (published && temporaryIdentity && error instanceof EvidenceStoreIdentityChangedError) {
+      if (
+        published
+        && temporaryIdentity
+        && error instanceof EvidenceStoreIdentityChangedError
+        && !(error instanceof PublicationLockOwnershipLostError)
+      ) {
         try {
           await this.rollbackPublishedLink(target, temporaryIdentity);
         } catch (rollbackError) {
@@ -279,8 +458,9 @@ export class CollectionEvidenceStore {
     objectId: string
   ): Promise<PublicationLock> {
     const path = join(root.path, `.evidence.${objectId}.lock`);
+    const claimPath = join(root.path, `.evidence.${objectId}.lock.claim`);
     assertContained(root.path, path);
-    const deadline = Date.now() + publicationLockTimeoutMs;
+    assertContained(root.path, claimPath);
 
     while (true) {
       await this.requireDirectoryIdentity(root.path, root.identity);
@@ -288,29 +468,64 @@ export class CollectionEvidenceStore {
       try {
         handle = await open(
           path,
-          constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollowFlag(),
+          constants.O_APPEND | constants.O_CREAT | constants.O_EXCL
+            | constants.O_WRONLY | noFollowFlag(),
           0o600
         );
       } catch (error) {
         if (!isAlreadyPresent(error)) throw error;
-        if (Date.now() >= deadline) throw new EvidenceStoreUnavailableError();
-        await delay(publicationLockRetryMs);
+        let snapshot: PublicationLockSnapshot | null;
+        try {
+          snapshot = await this.readPublicationLock(path);
+        } catch (readError) {
+          if (!(readError instanceof EvidenceStoreIdentityChangedError)) throw readError;
+          await this.wait(this.waitIntervalMs);
+          continue;
+        }
+        if (!snapshot) continue;
+        if (
+          this.isPublicationLockStale(snapshot)
+          && await this.reclaimPublicationLock(root, path, claimPath, snapshot)
+        ) {
+          continue;
+        }
+        await this.wait(this.publicationLockWait(snapshot));
         continue;
       }
 
       let identity: Stats | undefined;
+      const token = randomUUID();
+      const lock: PublicationLock = {
+        handle,
+        identity: undefined as unknown as Stats,
+        path,
+        claimPath,
+        root,
+        token,
+        refreshTail: Promise.resolve()
+      };
       try {
         identity = await handle.stat();
         if (!identity.isFile() || identity.isSymbolicLink()) {
           throw new EvidenceStoreIdentityChangedError();
         }
+        lock.identity = identity;
+        await this.appendPublicationLeaseRecord(lock);
         await handle.sync();
+        await this.syncDirectory(root.path);
         await this.requireDirectoryIdentity(root.path, root.identity);
-        await this.requireFileIdentity(path, identity);
-        return { handle, identity, path, root };
+        await this.requirePublicationLockOwnershipNow(lock);
+        return lock;
       } catch (error) {
         await handle.close().catch(() => undefined);
-        if (identity) await this.unlinkMatchingFile(path, identity).catch(() => undefined);
+        if (identity) {
+          await this.removePublicationLockByIdentity(
+            root,
+            path,
+            claimPath,
+            identity
+          ).catch(() => undefined);
+        }
         throw error;
       }
     }
@@ -318,16 +533,362 @@ export class CollectionEvidenceStore {
 
   private async releasePublicationLock(lock: PublicationLock): Promise<void> {
     let closeError: unknown;
+    let releaseError: unknown;
+    try {
+      await this.removeOwnedPublicationLock(lock);
+    } catch (error) {
+      releaseError = error;
+    }
     try {
       await lock.handle.close();
     } catch (error) {
       closeError = error;
     }
-    if (!await this.unlinkMatchingFile(lock.path, lock.identity)) {
+    if (releaseError) throw releaseError;
+    if (closeError) throw closeError;
+  }
+
+  private startPublicationLockHeartbeat(lock: PublicationLock): () => Promise<void> {
+    let stop!: () => void;
+    const stopped = new Promise<void>((resolveStopped) => {
+      stop = resolveStopped;
+    });
+    const heartbeat = (async () => {
+      while (true) {
+        let shouldRefresh: boolean;
+        try {
+          shouldRefresh = await Promise.race([
+            this.heartbeatWait(this.heartbeatIntervalMs).then(() => true),
+            stopped.then(() => false)
+          ]);
+        } catch (error) {
+          lock.heartbeatError ??= error;
+          return;
+        }
+        if (!shouldRefresh) return;
+        try {
+          await this.refreshPublicationLock(lock);
+        } catch (error) {
+          lock.heartbeatError ??= error;
+          return;
+        }
+      }
+    })();
+
+    return async () => {
+      stop();
+      await heartbeat;
+      await lock.refreshTail;
+    };
+  }
+
+  private async refreshPublicationLock(lock: PublicationLock): Promise<void> {
+    if (lock.heartbeatError) throw lock.heartbeatError;
+    const refresh = lock.refreshTail.then(async () => {
+      if (lock.heartbeatError) throw lock.heartbeatError;
+      await this.requirePublicationLockOwnershipNow(lock);
+      await this.appendPublicationLeaseRecord(lock);
+      await lock.handle.sync();
+      await this.requirePublicationLockOwnershipNow(lock);
+    });
+    lock.refreshTail = refresh.then(
+      () => undefined,
+      (error) => {
+        lock.heartbeatError ??= error;
+      }
+    );
+    return refresh;
+  }
+
+  private async appendPublicationLeaseRecord(lock: PublicationLock): Promise<void> {
+    const heartbeatAtMs = this.now();
+    if (
+      !isPositiveSafeInteger(heartbeatAtMs)
+      || heartbeatAtMs > Number.MAX_SAFE_INTEGER - this.leaseDurationMs
+    ) {
+      throw new EvidenceStoreUnavailableError();
+    }
+    const record = serializeLeaseRecord({
+      version: 1,
+      token: lock.token,
+      hostname: this.hostname,
+      pid: this.pid,
+      processInstanceId: this.processInstanceId,
+      heartbeatAtMs,
+      expiresAtMs: heartbeatAtMs + this.leaseDurationMs
+    });
+    const written = await lock.handle.write(record);
+    if (written.bytesWritten !== record.byteLength) throw new EvidenceStoreUnavailableError();
+  }
+
+  private async requirePublicationLockOwnership(lock: PublicationLock): Promise<void> {
+    await lock.refreshTail;
+    if (lock.heartbeatError) throw lock.heartbeatError;
+    await this.requirePublicationLockOwnershipNow(lock);
+  }
+
+  private async requirePublicationLockOwnershipNow(lock: PublicationLock): Promise<void> {
+    await this.requireDirectoryIdentity(lock.root.path, lock.root.identity);
+    const snapshot = await this.readPublicationLock(lock.path);
+    if (
+      !snapshot
+      || !sameIdentity(snapshot.identity, lock.identity)
+      || snapshot.record?.token !== lock.token
+    ) {
+      throw new PublicationLockOwnershipLostError();
+    }
+    let claimIdentity: Stats;
+    try {
+      claimIdentity = await lstat(lock.claimPath);
+    } catch (error) {
+      if (isMissing(error)) return;
+      throw error;
+    }
+    if (sameIdentity(claimIdentity, lock.identity)) {
+      throw new PublicationLockOwnershipLostError();
+    }
+  }
+
+  private async readPublicationLock(path: string): Promise<PublicationLockSnapshot | null> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let expected: Stats;
+      try {
+        expected = await lstat(path);
+      } catch (error) {
+        if (isMissing(error)) return null;
+        throw error;
+      }
+      if (!expected.isFile() || expected.isSymbolicLink()) {
+        throw new EvidenceStoreIdentityChangedError();
+      }
+
+      let handle: Awaited<ReturnType<typeof open>> | undefined;
+      try {
+        try {
+          handle = await open(path, constants.O_RDONLY | noFollowFlag());
+        } catch (error) {
+          if (isMissing(error)) return null;
+          throw error;
+        }
+        const opened = await handle.stat();
+        if (!opened.isFile() || !sameIdentity(opened, expected)) {
+          throw new EvidenceStoreIdentityChangedError();
+        }
+        const readLength = Math.min(opened.size, maximumLeaseReadBytes);
+        const offset = opened.size - readLength;
+        const bytes = Buffer.alloc(readLength);
+        const result = readLength === 0
+          ? { bytesRead: 0 }
+          : await handle.read(bytes, 0, readLength, offset);
+        const afterRead = await handle.stat();
+        let pathAfterRead: Stats;
+        try {
+          pathAfterRead = await lstat(path);
+        } catch (error) {
+          if (isMissing(error)) return null;
+          throw error;
+        }
+        if (
+          !sameIdentity(opened, afterRead)
+          || !sameIdentity(opened, pathAfterRead)
+          || opened.size !== afterRead.size
+          || result.bytesRead !== readLength
+          || pathAfterRead.isSymbolicLink()
+          || !pathAfterRead.isFile()
+        ) {
+          continue;
+        }
+
+        let contents = bytes.toString("utf8");
+        if (offset > 0) {
+          const firstNewline = contents.indexOf("\n");
+          contents = firstNewline < 0 ? "" : contents.slice(firstNewline + 1);
+        }
+        const finalNewline = contents.lastIndexOf("\n");
+        const completeLines = finalNewline < 0 ? [] : contents.slice(0, finalNewline).split("\n");
+        let record: PublicationLeaseRecord | null = null;
+        for (let index = completeLines.length - 1; index >= 0; index -= 1) {
+          record = parseLeaseRecord(completeLines[index]!);
+          if (record) break;
+        }
+        return { identity: opened, mtimeMs: afterRead.mtimeMs, record };
+      } finally {
+        await handle?.close().catch(() => undefined);
+      }
+    }
+    throw new EvidenceStoreIdentityChangedError();
+  }
+
+  private isPublicationLockStale(snapshot: PublicationLockSnapshot): boolean {
+    const record = snapshot.record;
+    if (record && record.hostname === this.hostname) {
+      if (record.pid === this.pid && record.processInstanceId !== this.processInstanceId) {
+        return true;
+      }
+      if (record.pid !== this.pid) {
+        try {
+          if (this.isProcessAlive(record.pid) === false) return true;
+        } catch {
+          // Liveness probes are advisory; lease expiry remains the conservative fallback.
+        }
+      }
+    }
+    const expiresAtMs = record?.expiresAtMs ?? snapshot.mtimeMs + this.leaseDurationMs;
+    return this.now() >= expiresAtMs;
+  }
+
+  private publicationLockWait(snapshot: PublicationLockSnapshot): number {
+    const expiresAtMs = snapshot.record?.expiresAtMs
+      ?? snapshot.mtimeMs + this.leaseDurationMs;
+    const untilExpiry = Math.max(1, expiresAtMs - this.now());
+    return Math.min(this.waitIntervalMs, untilExpiry);
+  }
+
+  private async reclaimPublicationLock(
+    root: VerifiedRoot,
+    path: string,
+    claimPath: string,
+    observed: PublicationLockSnapshot
+  ): Promise<boolean> {
+    try {
+      await link(path, claimPath);
+    } catch (error) {
+      if (isMissing(error)) return true;
+      if (!isAlreadyPresent(error)) throw error;
+      await this.clearAbandonedPublicationClaim(root, claimPath);
+      return false;
+    }
+
+    let claimIdentity: Stats | undefined;
+    try {
+      claimIdentity = await lstat(claimPath);
+      if (!sameIdentity(claimIdentity, observed.identity)) return false;
+      const latest = await this.readPublicationLock(path);
+      if (
+        !latest
+        || !sameIdentity(latest.identity, observed.identity)
+        || (observed.record !== null && latest.record?.token !== observed.record.token)
+        || (observed.record === null && latest.record !== null)
+        || !this.isPublicationLockStale(latest)
+      ) {
+        return false;
+      }
+
+      await this.requireDirectoryIdentity(root.path, root.identity);
+      await this.requireFileIdentity(claimPath, claimIdentity);
+      const confirmed = await this.readPublicationLock(path);
+      if (
+        !confirmed
+        || !sameIdentity(confirmed.identity, claimIdentity)
+        || confirmed.record?.token !== latest.record?.token
+        || !this.isPublicationLockStale(confirmed)
+      ) {
+        return false;
+      }
+      await this.requireFileIdentity(claimPath, claimIdentity);
+      if (!await this.unlinkMatchingFile(path, claimIdentity)) return false;
+      await this.syncDirectory(root.path);
+      return true;
+    } finally {
+      if (claimIdentity) {
+        await this.unlinkMatchingFile(claimPath, claimIdentity).catch(() => undefined);
+        await this.syncDirectory(root.path).catch(() => undefined);
+      }
+    }
+  }
+
+  private async clearAbandonedPublicationClaim(
+    root: VerifiedRoot,
+    claimPath: string
+  ): Promise<void> {
+    let claimIdentity: Stats;
+    try {
+      claimIdentity = await lstat(claimPath);
+    } catch (error) {
+      if (isMissing(error)) return;
+      throw error;
+    }
+    if (!claimIdentity.isFile() || claimIdentity.isSymbolicLink()) {
       throw new EvidenceStoreIdentityChangedError();
     }
-    await this.syncDirectory(lock.root.path);
-    if (closeError) throw closeError;
+    const staleAtMs = claimIdentity.ctimeMs + this.reclaimClaimGraceMs;
+    if (this.now() < staleAtMs) {
+      await this.wait(Math.min(this.waitIntervalMs, Math.max(1, staleAtMs - this.now())));
+      return;
+    }
+    await this.requireDirectoryIdentity(root.path, root.identity);
+    if (await this.unlinkMatchingFile(claimPath, claimIdentity)) {
+      await this.syncDirectory(root.path);
+    }
+  }
+
+  private async removeOwnedPublicationLock(lock: PublicationLock): Promise<void> {
+    await lock.refreshTail;
+    await this.requirePublicationLockOwnershipNow(lock);
+    try {
+      await link(lock.path, lock.claimPath);
+    } catch (error) {
+      if (isAlreadyPresent(error) || isMissing(error)) {
+        throw new PublicationLockOwnershipLostError();
+      }
+      throw error;
+    }
+
+    let claimIdentity: Stats | undefined;
+    try {
+      claimIdentity = await lstat(lock.claimPath);
+      if (!sameIdentity(claimIdentity, lock.identity)) {
+        throw new PublicationLockOwnershipLostError();
+      }
+      const current = await this.readPublicationLock(lock.path);
+      if (
+        !current
+        || !sameIdentity(current.identity, lock.identity)
+        || current.record?.token !== lock.token
+      ) {
+        throw new PublicationLockOwnershipLostError();
+      }
+      await this.requireFileIdentity(lock.claimPath, claimIdentity);
+      if (!await this.unlinkMatchingFile(lock.path, lock.identity)) {
+        throw new PublicationLockOwnershipLostError();
+      }
+      await this.syncDirectory(lock.root.path);
+    } finally {
+      if (claimIdentity) {
+        await this.unlinkMatchingFile(lock.claimPath, claimIdentity).catch(() => undefined);
+        await this.syncDirectory(lock.root.path).catch(() => undefined);
+      }
+    }
+  }
+
+  private async removePublicationLockByIdentity(
+    root: VerifiedRoot,
+    path: string,
+    claimPath: string,
+    expected: Stats
+  ): Promise<void> {
+    try {
+      await link(path, claimPath);
+    } catch (error) {
+      if (isAlreadyPresent(error) || isMissing(error)) return;
+      throw error;
+    }
+
+    let claimIdentity: Stats | undefined;
+    try {
+      claimIdentity = await lstat(claimPath);
+      if (!sameIdentity(claimIdentity, expected)) return;
+      await this.requireDirectoryIdentity(root.path, root.identity);
+      await this.requireFileIdentity(claimPath, expected);
+      if (await this.unlinkMatchingFile(path, expected)) {
+        await this.syncDirectory(root.path);
+      }
+    } finally {
+      if (claimIdentity) {
+        await this.unlinkMatchingFile(claimPath, claimIdentity).catch(() => undefined);
+        await this.syncDirectory(root.path).catch(() => undefined);
+      }
+    }
   }
 
   private afterFinalPreLinkIdentityCheck(): Promise<void> {
