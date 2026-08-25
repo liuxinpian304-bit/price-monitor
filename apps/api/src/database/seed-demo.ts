@@ -1,6 +1,7 @@
 import "dotenv/config";
 
 import { Prisma, type AlertSeverity, type AlertStatus, type ComparisonType } from "../../../../generated/prisma/client.ts";
+import { assertDemoSeedAllowed } from "./demo-seed-guard.ts";
 import { createPrismaClient } from "./prisma.service.ts";
 
 interface DemoModel {
@@ -136,10 +137,7 @@ async function seedBundle(prisma: ReturnType<typeof createPrismaClient>, code: s
 }
 
 async function seed() {
-  if (process.env.NODE_ENV === "production" && process.env.ALLOW_DEMO_SEED !== "true") {
-    throw new Error("生产环境禁止写入演示数据");
-  }
-
+  assertDemoSeedAllowed();
   const prisma = createPrismaClient();
   try {
     const bundleIds = new Map<string, string>();

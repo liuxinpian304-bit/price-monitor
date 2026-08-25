@@ -17,7 +17,7 @@
 
 API 默认只监听 `127.0.0.1`，不能直接暴露到公网。管理员请求必须携带服务端配置的 `ADMIN_API_TOKEN`，格式为 `Authorization: Bearer <token>`；服务端使用恒定时间比较验证后，才会构造 `ADMIN` principal。`x-role` 和 `x-actor-id` 仅是普通客户端输入，不参与认证或审计身份判定。
 
-生产环境的 `ADMIN_API_TOKEN` 必须是 64 位十六进制字符串，即 256 个随机位。可在 API 主机执行 `openssl rand -hex 32` 生成新值，再由部署人员写入服务端环境；不要自行拼接、重复或使用顺序字符，命令输出本身也不得进入 Git、日志或工单。生产启动缺少、留空、格式错误或包含明显周期模式的 token 时，会在创建 worker、scheduler、Redis 或 Prisma 资源前失败。开发和测试可以留空，但此时所有 ADMIN 路由保持不可用。
+生产环境的 `ADMIN_API_TOKEN` 必须使用 `openssl rand -hex 32` 生成 64 位十六进制字符串，再由部署人员写入服务端环境；不要自行拼接、重复或使用顺序字符，命令输出本身也不得进入 Git、日志或工单。启动校验执行严格格式和常见弱模式拒绝，不能从 token 字符串证明真实熵；生产启动缺少、留空、格式错误或包含明显周期模式的 token 时，会在创建 worker、scheduler、Redis 或 Prisma 资源前失败。开发和测试可以留空，但此时所有 ADMIN 路由保持不可用。
 
 本地 Web 管理端点击顶栏“管理员解锁”，手工输入与服务端相同的 token。客户端只把它保存在当前标签页的 `sessionStorage` 中，并且只给标记为 ADMIN 的请求增加 `Authorization: Bearer`；不会写入 `localStorage`、URL、日志或 Vite 构建产物。点击“锁定”会立即清除，关闭标签页也会结束该会话。API 返回 `401/403` 时界面会清除旧值并重新打开解锁窗口，凭证轮换后直接输入新值即可。
 

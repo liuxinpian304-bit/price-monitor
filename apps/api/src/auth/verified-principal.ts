@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 
+import { normalizeNodeEnvironment } from "../runtime/node-environment.ts";
 import type { UserRole } from "../settings/settings.service.ts";
 
 export interface VerifiedPrincipal {
@@ -17,7 +18,7 @@ const VERIFIED_PRINCIPAL = Symbol("verified-api-principal");
 const minimumAdminCredentialLength = 32;
 const weakAdminCredentialMarkers = ["change-me", "changeme", "password", "replace-with", "example-token"];
 const productionAdminCredentialPattern = /^[0-9a-f]{64}$/i;
-const maximumRejectedPatternLength = 16;
+const maximumRejectedPatternLength = 32;
 
 function digest(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
@@ -37,7 +38,14 @@ function tokenMeetsDevelopmentMinimum(token: string): boolean {
 function hasShortRepeatedPattern(token: string): boolean {
   for (let period = 1; period <= maximumRejectedPatternLength; period += 1) {
     if (token.length <= period) break;
-    if ([...token].every((character, index) => character === token[index % period])) {
+    let repeats = true;
+    for (let index = period; index < token.length; index += 1) {
+      if (token[index] !== token[index % period]) {
+        repeats = false;
+        break;
+      }
+    }
+    if (repeats) {
       return true;
     }
   }
@@ -46,10 +54,6 @@ function hasShortRepeatedPattern(token: string): boolean {
 
 function tokenMeetsProductionFormat(token: string): boolean {
   return productionAdminCredentialPattern.test(token) && !hasShortRepeatedPattern(token.toLowerCase());
-}
-
-export function normalizeNodeEnvironment(value: string | undefined): string {
-  return value?.trim().toLowerCase() || "development";
 }
 
 export function adminPrincipalConfigFromEnvironment(

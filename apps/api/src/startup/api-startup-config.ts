@@ -1,9 +1,6 @@
-import type { AdminPrincipalConfig } from "../auth/verified-principal.ts";
-import {
-  adminPrincipalConfigFromEnvironment,
-  normalizeNodeEnvironment
-} from "../auth/verified-principal.ts";
+import { adminPrincipalConfigFromEnvironment, type AdminPrincipalConfig } from "../auth/verified-principal.ts";
 import { parseCollectorReportJsonLimit } from "../http/api-body-parsing.ts";
+import { normalizeNodeEnvironment } from "../runtime/node-environment.ts";
 
 export interface ApiStartupConfig {
   host: string;

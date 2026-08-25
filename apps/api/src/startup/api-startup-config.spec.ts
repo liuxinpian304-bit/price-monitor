@@ -30,7 +30,10 @@ test("production startup requires a random 256-bit hexadecimal administrator tok
     "0123456789abcdef".repeat(4),
     "abcdefghij".repeat(7).slice(0, 64),
     "deadbeef".repeat(8),
-    "abcdef0123".repeat(7).slice(0, 64)
+    "abcdef0123".repeat(7).slice(0, 64),
+    "0123456789abcdef0".repeat(4).slice(0, 64),
+    "0123456789abcdef0fedcba98765432".repeat(3).slice(0, 64),
+    "0123456789abcdeffedcba9876543210".repeat(2)
   ];
 
   for (const ADMIN_API_TOKEN of rejectedTokens) {
@@ -47,6 +50,21 @@ test("production startup requires a random 256-bit hexadecimal administrator tok
 
   const config = apiStartupConfigFromEnvironment(withAdminCredential(base, strongToken));
   assert.equal(config.adminPrincipal.adminToken, strongToken);
+});
+
+test("production accepts random 32-byte hexadecimal administrator tokens", () => {
+  const base = {
+    NODE_ENV: "production",
+    DATABASE_URL: "postgresql://service:secret@127.0.0.1:5432/app",
+    SETTINGS_MASTER_KEY: "test-production-settings-key",
+    PUBLIC_BASE_URL: "https://price-monitor.example.test"
+  };
+
+  for (let sample = 0; sample < 10_000; sample += 1) {
+    const ADMIN_API_TOKEN = randomBytes(32).toString("hex");
+    const config = apiStartupConfigFromEnvironment(withAdminCredential(base, ADMIN_API_TOKEN));
+    assert.equal(config.adminPrincipal.adminToken, ADMIN_API_TOKEN);
+  }
 });
 
 test("production-only checks use one trimmed case-insensitive NODE_ENV value", () => {
