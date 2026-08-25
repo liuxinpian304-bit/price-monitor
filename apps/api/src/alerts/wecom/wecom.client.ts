@@ -8,6 +8,8 @@ export interface WecomMarkdownSender {
   sendMarkdown(message: string): Promise<void>;
 }
 
+const DEFAULT_HTTP_ATTEMPTS_PER_BATCH_DELIVERY = 3;
+
 function assertWebhookUrl(value: string): string {
   try {
     const url = new URL(value);
@@ -47,7 +49,11 @@ export class WecomClient implements WecomMarkdownSender {
   constructor(options: WecomClientOptions) {
     this.webhookUrl = assertWebhookUrl(options.webhookUrl);
     this.fetcher = options.fetch ?? fetch;
-    this.attempts = positiveInteger(options.attempts ?? 3, "重试次数");
+    // Transport retries stay inside one durably claimed business delivery attempt.
+    this.attempts = positiveInteger(
+      options.attempts ?? DEFAULT_HTTP_ATTEMPTS_PER_BATCH_DELIVERY,
+      "重试次数"
+    );
     this.timeoutMilliseconds = positiveInteger(options.timeoutMilliseconds ?? 10_000, "超时时间");
   }
 

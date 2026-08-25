@@ -646,6 +646,9 @@ export class CollectionRunner {
       skuId,
       label: selectionLabel(page, selection),
       attributes: structuredClone(selection),
+      ...(view.components === undefined
+        ? {}
+        : { components: structuredClone(view.components) }),
       stockState: view.stockState,
       listPriceFen: price.listPriceFen,
       activityPriceFen: price.activityPriceFen,

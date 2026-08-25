@@ -95,7 +95,7 @@ export class AlertService {
 
     const severity = decision.comparable
       ? "CONFIRMED_LOW" as const
-      : decision.category === "BUNDLE" && decision.bundleConfiguration === "DIFFERENT"
+      : decision.category === "BUNDLE" && decision.bundleConfiguration !== "SAME"
         ? "MANUAL_REVIEW" as const
         : null;
     if (severity === null) {

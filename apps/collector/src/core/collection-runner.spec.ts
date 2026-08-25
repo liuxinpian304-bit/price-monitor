@@ -67,6 +67,12 @@ interface MutableFixtureResult {
   view?: {
     selectedLabels: Record<string, string>;
     activityPriceText: string | null;
+    components?: Array<{
+      accessoryType: string;
+      brand: string | null;
+      modelOrName: string;
+      quantity: number;
+    }>;
     evidencePath?: string;
   };
 }
@@ -203,6 +209,36 @@ test("collects every enabled Sony SKU while preserving duplicate search ranks", 
       assert.equal(store.snapshots.some((snapshot) =>
         snapshot.completedSkuKeys.length === completedCount), true);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("preserves structured bundle components from the desktop driver", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-bundle-components-"));
+  const componentJob = { ...job, runId: "sony-bundle-components-run" };
+  try {
+    const components = [
+      { accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
+      { accessoryType: "转换线", brand: null, modelOrName: "C口转换线", quantity: 1 }
+    ];
+    const path = await writeFixtureCopy(root, (fixture) => {
+      const item = fixture.search.items.find((candidate) => candidate.platformItemId === "competitor-a");
+      assert.ok(item);
+      const cable = item.skuResults.find((result) => result.view?.selectedLabels.型号 === "7506 + C口转换线");
+      assert.ok(cable?.view);
+      cable.view.components = components;
+    });
+    const report = await new CollectionRunner(
+      await FixtureDriver.fromFile(path),
+      new AtomicCheckpointStore(join(root, "checkpoints"))
+    ).run(componentJob, componentJob.collectorId);
+
+    const cable = report.competitorItems
+      .find((item) => item.platformItemId === "competitor-a")
+      ?.skus.find((sku) => sku.label === "7506 + C口转换线");
+    assert.deepEqual(cable?.components, components);
+    assert.doesNotThrow(() => collectorReportSchema.parse(report));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

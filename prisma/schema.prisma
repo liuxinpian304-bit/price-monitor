@@ -71,6 +71,7 @@ enum RunAlertNotificationState {
   PENDING
   SENDING
   NOTIFIED
+  FAILED
 }
 
 model MonitoredModel {

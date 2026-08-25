@@ -145,6 +145,42 @@ test("accepts a report with one own SKU and two competitor SKUs", () => {
   assert.equal(parsed.competitorItems[0]?.skus.length, 1);
 });
 
+test("accepts optional structured bundle components and rejects ambiguous component data", () => {
+  const components = [
+    { accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
+    { accessoryType: "转换线", brand: null, modelOrName: "C口转换线", quantity: 1 }
+  ];
+  const withComponents = {
+    ...report,
+    competitorItems: [{
+      ...report.competitorItems[0],
+      skus: [{ ...report.competitorItems[0].skus[0], components }]
+    }, report.competitorItems[1]]
+  };
+
+  const parsed = collectorReportSchema.parse(withComponents);
+
+  assert.deepEqual(parsed.competitorItems[0]?.skus[0]?.components, components);
+  assert.doesNotThrow(() => collectorReportSchema.parse(report));
+  assert.throws(() => collectorReportSchema.parse({
+    ...withComponents,
+    competitorItems: [{
+      ...withComponents.competitorItems[0],
+      skus: [{ ...withComponents.competitorItems[0].skus[0], components: [{ ...components[0], quantity: 0 }] }]
+    }, withComponents.competitorItems[1]]
+  }));
+  assert.throws(() => collectorReportSchema.parse({
+    ...withComponents,
+    competitorItems: [{
+      ...withComponents.competitorItems[0],
+      skus: [{
+        ...withComponents.competitorItems[0].skus[0],
+        components: [{ ...components[0], unstructuredDetail: "two units" }]
+      }]
+    }, withComponents.competitorItems[1]]
+  }));
+});
+
 test("rejects missing ranks, unsafe money, invalid confidence, and excess positions", () => {
   assert.throws(() => collectorReportSchema.parse({
     ...report,

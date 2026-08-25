@@ -98,7 +98,8 @@ function snapshotValues(input: {
     gifts: toJson([]),
     rawEvidence: toJson({
       source: "taobao-desktop",
-      attributes: input.sku.attributes
+      attributes: input.sku.attributes,
+      ...(input.sku.components === undefined ? {} : { components: input.sku.components })
     }),
     evidenceUrl: null,
     capturedAt: new Date(input.sku.capturedAt)

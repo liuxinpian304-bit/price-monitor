@@ -32,6 +32,7 @@ function snapshot(input: Partial<RunAlertData["snapshots"][number]> & {
     title: input.title ?? "索尼 MDR-7506 专业监听耳机",
     skuText: input.skuText,
     attributes: input.attributes ?? { 型号: input.skuText },
+    bundleComponents: input.bundleComponents ?? null,
     listPriceFen: input.listPriceFen ?? input.payableFen,
     activityPriceFen: input.activityPriceFen ?? input.payableFen ?? 0,
     publicDiscountFen: input.publicDiscountFen ?? 0,
@@ -175,6 +176,21 @@ function context(data = bareRun()) {
   return { repository, service };
 }
 
+interface BundleComponentFixture {
+  accessoryType: string;
+  brand: string | null;
+  modelOrName: string;
+  quantity: number;
+}
+
+function withBundleComponents(
+  value: RunAlertData["snapshots"][number],
+  components: BundleComponentFixture[]
+): RunAlertData["snapshots"][number] {
+  Reflect.set(value, "bundleComponents", components);
+  return value;
+}
+
 test("creates confirmed lows only for the exact in-stock confirmed 69799 and 65800 fen SKUs", async () => {
   const { repository, service } = context();
 
@@ -308,8 +324,12 @@ test("compares an exact bundle signature and makes a different signature manual 
       core: true
     }
   ];
+  const exactComponents: BundleComponentFixture[] = [
+    { accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
+    { accessoryType: "转换线", brand: null, modelOrName: "C口转换线", quantity: 1 }
+  ];
   data.snapshots = [
-    snapshot({
+    withBundleComponents(snapshot({
       id: "own-bundle",
       ownListingId: "own-listing",
       ownListingSkuText: "MDR-7506 + C口转换线套装",
@@ -320,8 +340,8 @@ test("compares an exact bundle signature and makes a different signature manual 
       attributes: { 耳机: "MDR-7506", 配件: "C口转换线", 数量: "1" },
       payableFen: 75_000,
       searchRanks: []
-    }),
-    snapshot({
+    }), exactComponents),
+    withBundleComponents(snapshot({
       id: "exact-bundle",
       searchCandidateId: "candidate-exact-bundle",
       platformItemId: "item-exact-bundle",
@@ -330,8 +350,8 @@ test("compares an exact bundle signature and makes a different signature manual 
       attributes: { 耳机: "MDR-7506", 配件: "C口转换线", 数量: "1" },
       payableFen: 74_999,
       searchRanks: [1]
-    }),
-    snapshot({
+    }), exactComponents),
+    withBundleComponents(snapshot({
       id: "different-bundle",
       searchCandidateId: "candidate-different-bundle",
       platformItemId: "item-different-bundle",
@@ -340,8 +360,11 @@ test("compares an exact bundle signature and makes a different signature manual 
       attributes: { 耳机: "MDR-7506", 配件: "Lightning转换线", 数量: "1" },
       payableFen: 70_000,
       searchRanks: [2]
-    }),
-    snapshot({
+    }), [
+      exactComponents[0]!,
+      { accessoryType: "转换线", brand: null, modelOrName: "Lightning转换线", quantity: 1 }
+    ]),
+    withBundleComponents(snapshot({
       id: "expanded-bundle",
       searchCandidateId: "candidate-expanded-bundle",
       platformItemId: "item-expanded-bundle",
@@ -350,10 +373,59 @@ test("compares an exact bundle signature and makes a different signature manual 
       attributes: { 耳机: "MDR-7506", 配件: "C口转换线", 加赠: "耳机包", 数量: "1" },
       payableFen: 69_000,
       searchRanks: [3]
+    }), [
+      ...exactComponents,
+      { accessoryType: "收纳", brand: null, modelOrName: "防尘收纳盒", quantity: 1 }
+    ]),
+    withBundleComponents(snapshot({
+      id: "quantity-x2-bundle",
+      searchCandidateId: "candidate-quantity-x2-bundle",
+      platformItemId: "item-quantity-x2-bundle",
+      skuId: "quantity-x2-bundle-sku",
+      skuText: "MDR-7506 + C口转换线 x2 套装",
+      attributes: { 耳机: "MDR-7506", 配件: "C口转换线 x2" },
+      payableFen: 68_000,
+      searchRanks: [4]
+    }), [
+      exactComponents[0]!,
+      { ...exactComponents[1]!, quantity: 2 }
+    ]),
+    withBundleComponents(snapshot({
+      id: "quantity-two-cables-bundle",
+      searchCandidateId: "candidate-quantity-two-cables-bundle",
+      platformItemId: "item-quantity-two-cables-bundle",
+      skuId: "quantity-two-cables-bundle-sku",
+      skuText: "MDR-7506 + C口转换线2条 套装",
+      attributes: { 耳机: "MDR-7506", 配件: "C口转换线2条" },
+      payableFen: 67_000,
+      searchRanks: [5]
+    }), [
+      exactComponents[0]!,
+      { ...exactComponents[1]!, quantity: 2 }
+    ]),
+    withBundleComponents(snapshot({
+      id: "missing-required-bundle",
+      searchCandidateId: "candidate-missing-required-bundle",
+      platformItemId: "item-missing-required-bundle",
+      skuId: "missing-required-bundle-sku",
+      skuText: "MDR-7506 套装",
+      attributes: { 耳机: "MDR-7506" },
+      payableFen: 66_000,
+      searchRanks: [6]
+    }), [exactComponents[0]!]),
+    snapshot({
+      id: "unstructured-bundle",
+      searchCandidateId: "candidate-unstructured-bundle",
+      platformItemId: "item-unstructured-bundle",
+      skuId: "unstructured-bundle-sku",
+      skuText: "MDR-7506 + C口转换线套装",
+      attributes: { 耳机: "MDR-7506", 配件: "C口转换线", 数量: "1" },
+      payableFen: 65_000,
+      searchRanks: [7]
     })
   ];
-  data.searchLimit = 3;
-  data.positionCount = 3;
+  data.searchLimit = 7;
+  data.positionCount = 7;
   const { repository, service } = context(data);
 
   const summary = await service.evaluateRun(data.runId);
@@ -363,7 +435,11 @@ test("compares an exact bundle signature and makes a different signature manual 
     [
       ["CONFIRMED_LOW", "exact-bundle"],
       ["MANUAL_REVIEW", "different-bundle"],
-      ["MANUAL_REVIEW", "expanded-bundle"]
+      ["MANUAL_REVIEW", "expanded-bundle"],
+      ["MANUAL_REVIEW", "quantity-x2-bundle"],
+      ["MANUAL_REVIEW", "quantity-two-cables-bundle"],
+      ["MANUAL_REVIEW", "missing-required-bundle"],
+      ["MANUAL_REVIEW", "unstructured-bundle"]
     ]
   );
   assert.equal(repository.snapshotDecisions.get("exact-bundle")?.decision, "BUNDLE");
@@ -372,4 +448,13 @@ test("compares an exact bundle signature and makes a different signature manual 
   assert.equal(repository.snapshotDecisions.get("different-bundle")?.comparable, false);
   assert.equal(repository.snapshotDecisions.get("expanded-bundle")?.decision, "MANUAL");
   assert.equal(repository.snapshotDecisions.get("expanded-bundle")?.comparable, false);
+  for (const id of [
+    "quantity-x2-bundle",
+    "quantity-two-cables-bundle",
+    "missing-required-bundle",
+    "unstructured-bundle"
+  ]) {
+    assert.equal(repository.snapshotDecisions.get(id)?.decision, "MANUAL");
+    assert.equal(repository.snapshotDecisions.get(id)?.comparable, false);
+  }
 });

@@ -1,4 +1,8 @@
-import type { CollectedSku, PromotionEvidence } from "@stau-price-monitor/contracts";
+import type {
+  CollectedSku,
+  CollectedSkuComponent,
+  PromotionEvidence
+} from "@stau-price-monitor/contracts";
 
 export type DriverEvidenceValue =
   | string
@@ -64,6 +68,7 @@ export interface DriverItemPage {
 
 export interface DriverSkuView {
   selectedLabels: SkuSelection;
+  components?: CollectedSkuComponent[];
   listPriceText: string | null;
   activityPriceText: string | null;
   officialEstimatedPayablePriceText: string | null;

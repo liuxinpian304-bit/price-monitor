@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 
-import type { PromotionEvidence } from "@stau-price-monitor/contracts";
+import type {
+  CollectedSkuComponent,
+  PromotionEvidence
+} from "@stau-price-monitor/contracts";
 
 import {
   LoginRequiredError,
@@ -17,6 +20,7 @@ import {
 
 interface FixtureSkuView {
   selectedLabels: SkuSelection;
+  components?: CollectedSkuComponent[];
   listPriceText: string | null;
   activityPriceText: string | null;
   officialEstimatedPayablePriceText: string | null;

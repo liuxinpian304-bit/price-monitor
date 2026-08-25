@@ -15,6 +15,13 @@ export interface RunAlertBundleItem {
   core: boolean;
 }
 
+export interface RunAlertBundleComponent {
+  accessoryType: string;
+  brand: string | null;
+  modelOrName: string;
+  quantity: number;
+}
+
 export interface RunAlertSnapshot {
   id: string;
   ownListingId: string | null;
@@ -26,6 +33,7 @@ export interface RunAlertSnapshot {
   title: string;
   skuText: string;
   attributes: Record<string, string>;
+  bundleComponents: RunAlertBundleComponent[] | null;
   listPriceFen: number;
   activityPriceFen: number;
   publicDiscountFen: number;
@@ -148,14 +156,6 @@ function compact(value: string): string {
   return normalizeText(value).replace(/\s+/g, "");
 }
 
-function snapshotSearchable(snapshot: RunAlertSnapshot): string {
-  return [
-    snapshot.title,
-    snapshot.skuText,
-    ...Object.entries(snapshot.attributes).flat()
-  ].join(" ");
-}
-
 function configuredSkuMatches(snapshot: RunAlertSnapshot): boolean {
   if (!snapshot.ownListingSkuText) return false;
   const target = compact(snapshot.ownListingSkuText);
@@ -165,30 +165,20 @@ function configuredSkuMatches(snapshot: RunAlertSnapshot): boolean {
   return candidates.some((candidate) => compact(candidate) === target);
 }
 
-function bundleMatches(snapshot: RunAlertSnapshot, items: RunAlertBundleItem[]): boolean {
+function configuredBundleSignature(items: RunAlertBundleItem[]): string | null {
   const coreItems = items.some((item) => item.core) ? items.filter((item) => item.core) : items;
-  if (coreItems.length === 0) return false;
-  const searchable = compact(snapshotSearchable(snapshot));
-  const requiredItemsMatch = coreItems.every((item) => {
-    if (!searchable.includes(compact(item.modelOrName))) return false;
-    if (item.quantity === 1) return true;
-    return [
-      `${item.quantity}件`,
-      `${item.quantity}个`,
-      `${item.quantity}只`,
-      `数量${item.quantity}`
-    ].some((quantity) => searchable.includes(compact(quantity)));
-  });
-  if (!requiredItemsMatch) return false;
+  return coreItems.length === 0
+    ? null
+    : bundleSignature(coreItems.map((item) => ({ ...item, unitValueFen: 0 })));
+}
 
-  const namedAccessorySignals = ["转换线", "转接线", "连接线", "线材", "耳机架", "耳机包", "耳罩"];
-  return !namedAccessorySignals.some((signal) =>
-    searchable.includes(compact(signal))
-    && !coreItems.some((item) =>
-      compact(item.modelOrName).includes(compact(signal))
-      || compact(item.accessoryType).includes(compact(signal))
-    )
-  );
+function observedBundleSignature(components: RunAlertBundleComponent[] | null): string | null {
+  if (!components || components.length === 0) return null;
+  return bundleSignature(components.map((component) => ({
+    ...component,
+    unitValueFen: 0,
+    core: true
+  })));
 }
 
 function ruleFrom(data: RunAlertData): MonitoredProductRule {
@@ -243,15 +233,18 @@ function persistenceDecision(
   const reasons = [...rawDecision.reasons];
 
   if (data.model.comparisonType === "BUNDLE" && rawDecision.category !== "REJECTED") {
-    const configuredSignature = data.model.bundleItems.length > 0
-      ? bundleSignature(data.model.bundleItems.map((item) => ({ ...item, unitValueFen: 0 })))
-      : null;
-    const exactBundle = configuredSignature !== null && bundleMatches(snapshot, data.model.bundleItems);
-    bundleConfiguration = exactBundle ? "SAME" : "DIFFERENT";
+    const configuredSignature = configuredBundleSignature(data.model.bundleItems);
+    const observedSignature = observedBundleSignature(snapshot.bundleComponents);
+    const exactBundle = configuredSignature !== null && observedSignature === configuredSignature;
+    bundleConfiguration = exactBundle ? "SAME" : observedSignature === null ? "UNKNOWN" : "DIFFERENT";
     exact = rawDecision.category === "BUNDLE" && exactBundle;
-    reasons.push(exactBundle
-      ? `套装核心配件签名一致：${configuredSignature}`
-      : "套装核心配件签名不同或无法确认，进入人工复核");
+    reasons.push(
+      exactBundle
+        ? `套装核心配件签名一致：${configuredSignature}`
+        : observedSignature === null
+          ? "缺少可验证的结构化套装配件，进入人工复核"
+          : "套装核心配件签名不同，进入人工复核"
+    );
   } else if (rawDecision.category === "BUNDLE") {
     bundleConfiguration = "DIFFERENT";
   }

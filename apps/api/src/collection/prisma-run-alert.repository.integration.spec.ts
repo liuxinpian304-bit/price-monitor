@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 
+import { Prisma } from "../../../../generated/prisma/client.ts";
 import { createPrismaClient } from "../database/prisma.service.ts";
 import { RunAlertNotifier } from "../alerts/run-alert-notifier.ts";
 import type { WecomMarkdownSender } from "../alerts/wecom/wecom.client.ts";
@@ -17,8 +18,33 @@ interface PriceFixture {
   key: string;
   payableFen: number;
   skuText?: string;
+  components?: BundleComponentFixture[];
   priceConfidence?: "CONFIRMED" | "ESTIMATED" | "MANUAL_REVIEW";
   stockState?: "IN_STOCK" | "OUT_OF_STOCK" | "UNKNOWN";
+}
+
+interface BundleComponentFixture {
+  accessoryType: string;
+  brand: string | null;
+  modelOrName: string;
+  quantity: number;
+}
+
+function rawEvidence(
+  skuText: string,
+  components?: BundleComponentFixture[]
+): Prisma.InputJsonObject {
+  const jsonComponents = components?.map((component): Prisma.InputJsonObject => ({
+    accessoryType: component.accessoryType,
+    brand: component.brand,
+    modelOrName: component.modelOrName,
+    quantity: component.quantity
+  }));
+  return {
+    source: "taobao-desktop",
+    attributes: { 型号: skuText },
+    ...(jsonComponents === undefined ? {} : { components: jsonComponents })
+  };
 }
 
 async function seedRun(input: {
@@ -26,7 +52,10 @@ async function seedRun(input: {
   ownListingId: string;
   index: number;
   prices: PriceFixture[];
+  ownSkuText?: string;
+  ownComponents?: BundleComponentFixture[];
 }) {
+  const ownSkuText = input.ownSkuText ?? "MDR-7506 单机";
   const run = await prisma.collectionRun.create({
     data: {
       monitoredModelId: input.modelId,
@@ -50,13 +79,13 @@ async function seedRun(input: {
       skuId: "own-sku",
       shopName: "星空乐器专营店",
       title: "Sony MDR-7506 专业监听耳机",
-      skuText: "MDR-7506 单机",
+      skuText: ownSkuText,
       listPriceFen: 69_800,
       activityPriceFen: 69_800,
       payableFen: 69_800,
       priceConfidence: "CONFIRMED",
       stockState: "IN_STOCK",
-      rawEvidence: { source: "taobao-desktop", attributes: { 型号: "MDR-7506 单机" } },
+      rawEvidence: rawEvidence(ownSkuText, input.ownComponents),
       capturedAt: new Date(`2026-08-25T0${input.index}:30:01.000Z`)
     }
   });
@@ -108,7 +137,7 @@ async function seedRun(input: {
         payableFen: price.payableFen,
         priceConfidence: price.priceConfidence ?? "CONFIRMED",
         stockState: price.stockState ?? "IN_STOCK",
-        rawEvidence: { source: "taobao-desktop", attributes: { 型号: skuText } },
+        rawEvidence: rawEvidence(skuText, price.components),
         capturedAt: new Date(`2026-08-25T0${input.index}:30:03.000Z`)
       }
     });
@@ -246,5 +275,137 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     assert.equal(notifiedAlerts.every((alert) => alert.notifiedAt !== null), true);
   } finally {
     await prisma.monitoredModel.delete({ where: { id: model.id } });
+  }
+});
+
+test("compares only exact structured bundle signatures after Prisma persistence", async () => {
+  const suffix = randomUUID().replaceAll("-", "");
+  const exactComponents: BundleComponentFixture[] = [
+    { accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
+    { accessoryType: "转换线", brand: null, modelOrName: "C口转换线", quantity: 1 }
+  ];
+  const bundle = await prisma.bundle.create({
+    data: {
+      code: `T12-B-${suffix.slice(0, 20)}`,
+      title: "MDR-7506 C口转换线套装",
+      items: {
+        create: exactComponents.map((component) => ({
+          ...component,
+          unitValueFen: 0,
+          core: true
+        }))
+      }
+    }
+  });
+  const model = await prisma.monitoredModel.create({
+    data: {
+      monitorCode: `T12-BM-${suffix.slice(0, 18)}`,
+      brand: "Sony",
+      standardModel: "MDR-7506",
+      category: "headphones",
+      searchQuery: "Sony MDR-7506 C口转换线套装",
+      comparisonType: "BUNDLE",
+      owner: "task-12",
+      bundleId: bundle.id,
+      excludedTerms: ["M1", "MV1"]
+    }
+  });
+  const ownSkuText = "MDR-7506 + C口转换线套装";
+  const ownListing = await prisma.ownListing.create({
+    data: {
+      monitoredModelId: model.id,
+      platform: "TAOBAO",
+      shopName: "星空乐器专营店",
+      platformItemId: "own-bundle-item",
+      url: "https://item.taobao.com/item.htm?id=own-bundle-item",
+      skuText: ownSkuText
+    }
+  });
+
+  try {
+    const run = await seedRun({
+      modelId: model.id,
+      ownListingId: ownListing.id,
+      index: 4,
+      ownSkuText,
+      ownComponents: exactComponents,
+      prices: [
+        {
+          key: "bundle-exact",
+          payableFen: 69_799,
+          skuText: "C口转换线 + MDR-7506 套装",
+          components: exactComponents
+        },
+        {
+          key: "bundle-x2",
+          payableFen: 68_000,
+          skuText: "MDR-7506 + C口转换线 x2 套装",
+          components: [exactComponents[0]!, { ...exactComponents[1]!, quantity: 2 }]
+        },
+        {
+          key: "bundle-two-cables",
+          payableFen: 67_000,
+          skuText: "MDR-7506 + C口转换线2条 套装",
+          components: [exactComponents[0]!, { ...exactComponents[1]!, quantity: 2 }]
+        },
+        {
+          key: "bundle-missing",
+          payableFen: 66_000,
+          skuText: "MDR-7506 套装",
+          components: [exactComponents[0]!]
+        },
+        {
+          key: "bundle-extra",
+          payableFen: 65_000,
+          skuText: "MDR-7506 + C口转换线 + 防尘收纳盒套装",
+          components: [
+            ...exactComponents,
+            { accessoryType: "收纳", brand: null, modelOrName: "防尘收纳盒", quantity: 1 }
+          ]
+        },
+        {
+          key: "bundle-unstructured",
+          payableFen: 64_000,
+          skuText: "MDR-7506 + C口转换线套装"
+        }
+      ]
+    });
+
+    const summary = await new RunAlertService(
+      new PrismaRunAlertRepository(prisma),
+      (runId) => `https://monitor.example.test/collection-runs/${runId}`
+    ).evaluateRun(run.id);
+
+    assert.deepEqual(
+      summary.alerts.map((alert) => [alert.severity, alert.skuText]),
+      [
+        ["CONFIRMED_LOW", "C口转换线 + MDR-7506 套装"],
+        ["MANUAL_REVIEW", "MDR-7506 + C口转换线 x2 套装"],
+        ["MANUAL_REVIEW", "MDR-7506 + C口转换线2条 套装"],
+        ["MANUAL_REVIEW", "MDR-7506 套装"],
+        ["MANUAL_REVIEW", "MDR-7506 + C口转换线 + 防尘收纳盒套装"],
+        ["MANUAL_REVIEW", "MDR-7506 + C口转换线套装"]
+      ]
+    );
+    const decisions = await prisma.offerSnapshot.findMany({
+      where: { collectionRunId: run.id, searchCandidateId: { not: null } },
+      select: { skuId: true, matchDecision: true, comparable: true },
+      orderBy: { createdAt: "asc" }
+    });
+    assert.deepEqual(decisions.map((decision) => [
+      decision.skuId,
+      decision.matchDecision,
+      decision.comparable
+    ]), [
+      ["sku-bundle-exact", "BUNDLE", true],
+      ["sku-bundle-x2", "MANUAL", false],
+      ["sku-bundle-two-cables", "MANUAL", false],
+      ["sku-bundle-missing", "MANUAL", false],
+      ["sku-bundle-extra", "MANUAL", false],
+      ["sku-bundle-unstructured", "MANUAL", false]
+    ]);
+  } finally {
+    await prisma.monitoredModel.delete({ where: { id: model.id } });
+    await prisma.bundle.delete({ where: { id: bundle.id } });
   }
 });

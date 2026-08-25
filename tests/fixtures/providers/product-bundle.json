@@ -12,7 +12,8 @@
         "label": "Babyface Pro FS+MK4套装",
         "attributes": {
           "声卡": "Babyface Pro FS",
-          "麦克风": "MK4"
+          "麦克风": "MK4",
+          "版本": "FS新版"
         },
         "list_price_yuan": "5701.00",
         "public_discount_yuan": "100.00",
@@ -24,7 +25,8 @@
         "label": "Babyface Pro FS+MK8套装",
         "attributes": {
           "声卡": "Babyface Pro FS",
-          "麦克风": "MK8"
+          "麦克风": "MK8",
+          "版本": "FS新版"
         },
         "list_price_yuan": "6701.00",
         "public_discount_yuan": "100.00",

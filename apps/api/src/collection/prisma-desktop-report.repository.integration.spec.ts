@@ -12,10 +12,14 @@ import type { CollectorReport } from "../../../../packages/contracts/src/index.t
 import { CollectorAgentService } from "../collector-agent/collector-agent.service.ts";
 import { PrismaCollectorAgentRepository } from "../collector-agent/prisma-collector-agent.repository.ts";
 import { createCollectorToken } from "../collector-agent/collector-token.ts";
+import { PrismaRunAlertNotificationRepository } from "../alerts/prisma-run-alert-notification.repository.ts";
+import { RunAlertNotifier } from "../alerts/run-alert-notifier.ts";
+import type { WecomMarkdownSender } from "../alerts/wecom/wecom.client.ts";
 import { createPrismaClient } from "../database/prisma.service.ts";
 import { CollectionEvidenceStore } from "./collection-evidence-store.ts";
 import { DesktopReportIngestionService } from "./desktop-report-ingestion.service.ts";
 import { PrismaDesktopReportRepository } from "./prisma-desktop-report.repository.ts";
+import type { RunAlertSummary } from "./run-alert.service.ts";
 
 const prisma = createPrismaClient();
 const evidenceRootTemporary = await mkdtemp(join(tmpdir(), "desktop-report-integration-"));
@@ -34,6 +38,15 @@ function shanghaiOffset(value: string): string {
 
 const firstEvidence = evidence(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 11, 12]));
 const secondEvidence = evidence(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 21, 22]));
+
+class AlwaysFailingSender implements WecomMarkdownSender {
+  readonly messages: string[] = [];
+
+  async sendMarkdown(message: string) {
+    this.messages.push(message);
+    throw new Error("private webhook failure");
+  }
+}
 
 before(async () => {
   await prisma.$connect();
@@ -413,6 +426,49 @@ test("transactionally ingests one concurrent report history and returns its orig
 
     assert.deepEqual(concurrentRepeat, first);
     assert.deepEqual(sequentialRepeat, first);
+
+    const immutableSummary: RunAlertSummary = {
+      runId: run.id,
+      monitoredModelId: model.id,
+      brand: "Sony",
+      standardModel: "MDR-7506",
+      comparisonType: "BARE",
+      owner: "task-12-ingestion-retry",
+      completedAt: new Date(report.completedAt),
+      checkedItemCount: 1,
+      searchLimit: 50,
+      skuCount: 6,
+      issueCount: 2,
+      reportUrl: `https://monitor.example.test/collection-runs/${run.id}`,
+      baseline: null,
+      systemIssue: "OWN_BASELINE_MISSING",
+      alerts: []
+    };
+    const failingSender = new AlwaysFailingSender();
+    const replayService = new DesktopReportIngestionService(
+      new CollectorAgentService(new PrismaCollectorAgentRepository(prisma)),
+      repository,
+      evidenceStore,
+      { async evaluateRun() { return structuredClone(immutableSummary); } },
+      new RunAlertNotifier(
+        new PrismaRunAlertNotificationRepository(prisma),
+        async () => failingSender
+      )
+    );
+    for (let replay = 0; replay < 3; replay += 1) {
+      assert.deepEqual(
+        await replayService.ingest(token.plaintext, structuredClone(report)),
+        first
+      );
+    }
+    assert.equal(failingSender.messages.length, 2);
+    assert.equal(failingSender.messages[0], failingSender.messages[1]);
+    const exhaustedBatch = await prisma.runAlertNotificationBatch.findUniqueOrThrow({
+      where: { collectionRunId: run.id }
+    });
+    assert.equal(exhaustedBatch.state, "FAILED");
+    assert.equal(exhaustedBatch.notificationAttempts, 2);
+
     assert.deepEqual({
       runId: first.runId,
       status: first.status,

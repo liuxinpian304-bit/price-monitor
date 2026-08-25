@@ -71,10 +71,18 @@ const promotionEvidenceSchema = z.object({
   includedInActivityPrice: z.boolean()
 }).strict();
 
+const collectedSkuComponentSchema = z.object({
+  accessoryType: z.string().min(1).max(200),
+  brand: z.string().min(1).max(200).nullable(),
+  modelOrName: z.string().min(1).max(500),
+  quantity: positiveCountSchema
+}).strict();
+
 const collectedSkuSchema = z.object({
   skuId: reportIdentifierSchema,
   label: z.string().min(1).max(500),
   attributes: attributesSchema,
+  components: z.array(collectedSkuComponentSchema).min(1).max(100).optional(),
   stockState: stockStateSchema,
   listPriceFen: moneyFenSchema,
   activityPriceFen: moneyFenSchema,
@@ -317,6 +325,7 @@ export const collectorHeartbeatSchema = z.object({
 
 export type PriceConfidence = z.infer<typeof priceConfidenceSchema>;
 export type PromotionEvidence = z.infer<typeof promotionEvidenceSchema>;
+export type CollectedSkuComponent = z.infer<typeof collectedSkuComponentSchema>;
 export type CollectorJob = z.infer<typeof collectorJobSchema>;
 export type CollectedSku = z.infer<typeof collectedSkuSchema>;
 export type CollectedItem = z.infer<typeof ownItemSchema> | z.infer<typeof competitorItemSchema>;

@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import { Prisma, type PrismaClient } from "../../../../generated/prisma/client.ts";
+import {
+  Prisma,
+  type PrismaClient,
+  type RunAlertNotificationBatch
+} from "../../../../generated/prisma/client.ts";
 import type { RunAlertSummary } from "../collection/run-alert.service.ts";
 import { PrismaAlertRepository } from "./prisma-alert.repository.ts";
 import type {
@@ -10,6 +14,7 @@ import type {
 } from "./run-alert-notifier.ts";
 
 const CLAIM_LEASE_MILLISECONDS = 5 * 60 * 1_000;
+const MAX_BATCH_DELIVERY_ATTEMPTS = 2;
 const moneySchema = z.number().int().nonnegative().safe();
 const nonNegativeIntegerSchema = z.number().int().nonnegative().safe();
 const summarySchema = z.object({
@@ -108,12 +113,23 @@ export class PrismaRunAlertNotificationRepository implements RunAlertNotificatio
         });
       }
 
-      if (batch.state === "NOTIFIED") return null;
+      if (batch.state === "NOTIFIED" || batch.state === "FAILED") return null;
       if (
         batch.state === "SENDING"
         && batch.attemptStartedAt
         && batch.attemptStartedAt.getTime() > attemptedAt.getTime() - CLAIM_LEASE_MILLISECONDS
       ) {
+        return null;
+      }
+      if (batch.notificationAttempts >= MAX_BATCH_DELIVERY_ATTEMPTS) {
+        await transaction.runAlertNotificationBatch.update({
+          where: { id: batch.id },
+          data: {
+            state: "FAILED",
+            attemptToken: null,
+            attemptStartedAt: null
+          }
+        });
         return null;
       }
 
@@ -159,7 +175,7 @@ export class PrismaRunAlertNotificationRepository implements RunAlertNotificatio
     message: "WECOM_NOT_CONFIGURED" | "WECOM_DELIVERY_FAILED",
     failedAt: Date
   ): Promise<void> {
-    await this.completeAttempt(batch, async (transaction) => {
+    await this.completeAttempt(batch, async (transaction, stored) => {
       await new PrismaAlertRepository(transaction).recordBatchNotificationFailure(
         batch.alertIds,
         message
@@ -167,7 +183,9 @@ export class PrismaRunAlertNotificationRepository implements RunAlertNotificatio
       await transaction.runAlertNotificationBatch.update({
         where: { id: batch.batchId },
         data: {
-          state: "PENDING",
+          state: stored.notificationAttempts >= MAX_BATCH_DELIVERY_ATTEMPTS
+            ? "FAILED"
+            : "PENDING",
           attemptToken: null,
           attemptStartedAt: null,
           lastNotificationError: message,
@@ -179,7 +197,10 @@ export class PrismaRunAlertNotificationRepository implements RunAlertNotificatio
 
   private async completeAttempt(
     batch: ClaimedRunAlertBatch,
-    operation: (transaction: Prisma.TransactionClient) => Promise<void>
+    operation: (
+      transaction: Prisma.TransactionClient,
+      stored: RunAlertNotificationBatch
+    ) => Promise<void>
   ): Promise<void> {
     await this.prisma.$transaction(async (transaction) => {
       const locked = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -199,7 +220,7 @@ export class PrismaRunAlertNotificationRepository implements RunAlertNotificatio
       ) {
         throw new RunAlertNotificationPersistenceError();
       }
-      await operation(transaction);
+      await operation(transaction, stored);
     }, { isolationLevel: "ReadCommitted", maxWait: 10_000, timeout: 30_000 });
   }
 }

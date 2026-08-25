@@ -5,6 +5,7 @@ import { PrismaAlertRepository } from "../alerts/prisma-alert.repository.ts";
 import type {
   BaselineIssueCode,
   CandidateMatchPersistence,
+  RunAlertBundleComponent,
   RunAlertData,
   RunAlertRepository,
   RunAlertUnitOfWork,
@@ -35,6 +36,35 @@ function attributesFromJson(value: Prisma.JsonValue | null): Record<string, stri
       (entry): entry is [string, string] => typeof entry[1] === "string"
     )
   );
+}
+
+function bundleComponentsFromJson(value: Prisma.JsonValue | null): RunAlertBundleComponent[] | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const components = Reflect.get(value, "components");
+  if (!Array.isArray(components) || components.length === 0) return null;
+  const parsed: RunAlertBundleComponent[] = [];
+  for (const component of components) {
+    if (!component || typeof component !== "object" || Array.isArray(component)) return null;
+    const accessoryType = Reflect.get(component, "accessoryType");
+    const brand = Reflect.get(component, "brand");
+    const modelOrName = Reflect.get(component, "modelOrName");
+    const quantity = Reflect.get(component, "quantity");
+    if (
+      typeof accessoryType !== "string"
+      || accessoryType.trim().length === 0
+      || (brand !== null && typeof brand !== "string")
+      || (typeof brand === "string" && brand.trim().length === 0)
+      || typeof modelOrName !== "string"
+      || modelOrName.trim().length === 0
+      || typeof quantity !== "number"
+      || !Number.isSafeInteger(quantity)
+      || quantity <= 0
+    ) {
+      return null;
+    }
+    parsed.push({ accessoryType, brand, modelOrName, quantity });
+  }
+  return parsed;
 }
 
 function issueKey(runId: string, code: BaselineIssueCode): string {
@@ -246,6 +276,7 @@ export class PrismaRunAlertRepository implements RunAlertRepository {
           title: snapshot.title,
           skuText: snapshot.skuText ?? "",
           attributes: attributesFromJson(snapshot.rawEvidence),
+          bundleComponents: bundleComponentsFromJson(snapshot.rawEvidence),
           listPriceFen: snapshot.listPriceFen ?? snapshot.payableFen ?? 0,
           activityPriceFen: snapshot.activityPriceFen ?? snapshot.payableFen ?? 0,
           publicDiscountFen: snapshot.publicDiscountFen,
