@@ -6,6 +6,8 @@ node_modules/
 .pnpm-store/
 coverage/
 dist/
+playwright-report/
+test-results/
 build/
 .cache/
 .next/

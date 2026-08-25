@@ -39,18 +39,25 @@ describe("collection run API", () => {
   it("uses ADMIN report endpoints and serializes all report filters", async () => {
     vi.mocked(apiRequest).mockResolvedValue({ runs: [] });
 
-    await listCollectionRuns();
+    await listCollectionRuns({ page: 2, pageSize: 25 });
     await getCollectionRun("run one", {
       source: "COMPETITOR",
       match: "EXACT",
       price: "LOWER",
       confidence: "CONFIRMED"
+    }, {
+      positionPage: 2,
+      positionPageSize: 20,
+      issuePage: 3,
+      issuePageSize: 30,
+      skuPage: 4,
+      skuPageSize: 40
     });
 
-    expect(apiRequest).toHaveBeenNthCalledWith(1, "/api/operations/collection-runs", { role: "ADMIN" });
+    expect(apiRequest).toHaveBeenNthCalledWith(1, "/api/operations/collection-runs?page=2&pageSize=25", { role: "ADMIN" });
     expect(apiRequest).toHaveBeenNthCalledWith(
       2,
-      "/api/operations/collection-runs/run%20one?source=COMPETITOR&match=EXACT&price=LOWER&confidence=CONFIRMED",
+      "/api/operations/collection-runs/run%20one?source=COMPETITOR&match=EXACT&price=LOWER&confidence=CONFIRMED&positionPage=2&positionPageSize=20&issuePage=3&issuePageSize=30&skuPage=4&skuPageSize=40",
       { role: "ADMIN" }
     );
   });

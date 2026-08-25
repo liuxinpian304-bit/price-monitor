@@ -24,9 +24,14 @@ const run = {
 describe("CollectionRunsPage", () => {
   beforeEach(() => {
     vi.mocked(useApiData).mockReturnValue({
-      data: { runs: [run] },
+      data: {
+        runs: [run],
+        pagination: { page: 1, pageSize: 25, total: 1, totalPages: 1, hasPrevious: false, hasNext: false }
+      },
       loading: false,
       error: null,
+      errorStatus: null,
+      hasSuccessfulData: true,
       refresh: vi.fn(),
       setData: vi.fn()
     });
@@ -44,5 +49,53 @@ describe("CollectionRunsPage", () => {
     render(<MemoryRouter><CollectionRunsPage /></MemoryRouter>);
 
     expect(screen.getByTestId("collection-runs-scroll")).toHaveClass("collection-runs-scroll");
+  });
+
+  it("renders an explicit initial loading state without fabricated report rows", () => {
+    vi.mocked(useApiData).mockReturnValue({
+      data: null,
+      loading: true,
+      error: null,
+      errorStatus: null,
+      hasSuccessfulData: false,
+      refresh: vi.fn(),
+      setData: vi.fn()
+    });
+
+    render(<MemoryRouter><CollectionRunsPage /></MemoryRouter>);
+
+    expect(screen.getByText("正在加载采集报告")).toBeInTheDocument();
+    expect(screen.queryByText(/0 \/ 50/)).not.toBeInTheDocument();
+  });
+
+  it("distinguishes initial ADMIN failure from a successful empty list", () => {
+    vi.mocked(useApiData).mockReturnValue({
+      data: null,
+      loading: false,
+      error: "Forbidden resource",
+      errorStatus: 403,
+      hasSuccessfulData: false,
+      refresh: vi.fn(),
+      setData: vi.fn()
+    });
+    const first = render(<MemoryRouter><CollectionRunsPage /></MemoryRouter>);
+    expect(screen.getByText("需要管理员权限")).toBeInTheDocument();
+    expect(screen.queryByText("暂无采集运行")).not.toBeInTheDocument();
+    first.unmount();
+
+    vi.mocked(useApiData).mockReturnValue({
+      data: {
+        runs: [],
+        pagination: { page: 1, pageSize: 25, total: 0, totalPages: 0, hasPrevious: false, hasNext: false }
+      },
+      loading: false,
+      error: null,
+      errorStatus: null,
+      hasSuccessfulData: true,
+      refresh: vi.fn(),
+      setData: vi.fn()
+    });
+    render(<MemoryRouter><CollectionRunsPage /></MemoryRouter>);
+    expect(screen.getByText("暂无采集运行")).toBeInTheDocument();
   });
 });

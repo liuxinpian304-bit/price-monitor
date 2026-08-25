@@ -14,7 +14,9 @@ describe("AppShell", () => {
     vi.mocked(useApiData).mockReturnValue({
       data: { status: "ok", database: "up", redis: "up", runtime: "PROTOTYPE" },
       error: null,
+      errorStatus: null,
       loading: false,
+      hasSuccessfulData: true,
       refresh: vi.fn(),
       setData: vi.fn()
     });
@@ -44,7 +46,9 @@ describe("AppShell", () => {
     vi.mocked(useApiData).mockReturnValue({
       data: { status: "ok", database: "up", redis: "up", runtime: "ASSEMBLED" },
       error: null,
+      errorStatus: null,
       loading: false,
+      hasSuccessfulData: true,
       refresh: vi.fn(),
       setData: vi.fn()
     });

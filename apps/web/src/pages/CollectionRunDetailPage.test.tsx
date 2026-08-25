@@ -7,7 +7,8 @@ import { requeueCollectionRun } from "../api/collection-runs.ts";
 import { CollectionRunDetailPage } from "./CollectionRunDetailPage.tsx";
 
 vi.mock("../api/client.ts", () => ({ useApiData: vi.fn() }));
-vi.mock("../api/collection-runs.ts", () => ({
+vi.mock("../api/collection-runs.ts", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../api/collection-runs.ts")>(),
   fetchCollectionEvidence: vi.fn(),
   requeueCollectionRun: vi.fn()
 }));
@@ -29,6 +30,11 @@ function report(status: string) {
     issues: [{ id: "issue-1", code: "LOGIN_REQUIRED", platformItemId: null, skuId: null, message: "淘宝登录已失效", evidenceSha256: null, capturedAt: "2026-08-25T01:31:00.000Z" }],
     filters: {},
     totalSkuCount: 2,
+    pagination: {
+      positions: { page: 1, pageSize: 50, total: 1, totalPages: 1, hasPrevious: false, hasNext: false },
+      issues: { page: 1, pageSize: 50, total: 1, totalPages: 1, hasPrevious: false, hasNext: false },
+      skus: { page: 1, pageSize: 50, total: 2, totalPages: 1, hasPrevious: false, hasNext: false }
+    },
     skus: [
       {
         id: "own-sku", source: "OWN", platformItemId: "own-1", skuId: "own-standard", shopName: "星空乐器专营店", title: "Sony MDR-7506", skuText: "标准版", url: "https://detail.tmall.com/item.htm?id=own-1", ranks: [1],
@@ -55,7 +61,7 @@ describe("CollectionRunDetailPage", () => {
   });
 
   it("shows all SKU price components and gives a paused login run an operator-only recovery action", async () => {
-    vi.mocked(useApiData).mockReturnValue({ data: report("PAUSED_LOGIN"), loading: false, error: null, refresh: vi.fn(), setData: vi.fn() });
+    vi.mocked(useApiData).mockReturnValue({ data: report("PAUSED_LOGIN"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
     renderPage();
 
     expect(screen.getByText("47 / 50，未完成")).toBeInTheDocument();
@@ -71,9 +77,59 @@ describe("CollectionRunDetailPage", () => {
   });
 
   it("does not surface requeue controls for a running report", () => {
-    vi.mocked(useApiData).mockReturnValue({ data: report("RUNNING"), loading: false, error: null, refresh: vi.fn(), setData: vi.fn() });
+    vi.mocked(useApiData).mockReturnValue({ data: report("RUNNING"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
     renderPage();
 
     expect(screen.queryByRole("button", { name: /重新入队/ })).not.toBeInTheDocument();
+  });
+
+  it("does not render a synthetic report while the first detail request is loading", () => {
+    vi.mocked(useApiData).mockReturnValue({ data: null, loading: true, error: null, errorStatus: null, hasSuccessfulData: false, refresh: vi.fn(), setData: vi.fn() });
+    renderPage();
+
+    expect(screen.getByText("正在加载采集运行")).toBeInTheDocument();
+    expect(screen.queryByText(/0 \/ 50/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "搜索位置" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [404, "采集运行不存在"],
+    [403, "需要管理员权限"],
+    [0, "采集运行加载失败"]
+  ])("renders a dedicated initial error state for status %s", (errorStatus, title) => {
+    vi.mocked(useApiData).mockReturnValue({
+      data: null,
+      loading: false,
+      error: errorStatus === 404 ? "Not Found" : errorStatus === 403 ? "Forbidden resource" : "无法连接后台接口",
+      errorStatus,
+      hasSuccessfulData: false,
+      refresh: vi.fn(),
+      setData: vi.fn()
+    });
+    renderPage();
+
+    expect(screen.getByText(title)).toBeInTheDocument();
+    expect(screen.queryByText(/0 \/ 50/)).not.toBeInTheDocument();
+  });
+
+  it("renders explicit table empty states only after a successful empty detail response", () => {
+    const empty = report("SUCCEEDED");
+    empty.completion = { ...empty.completion, positionsCaptured: 0, uniqueItemCount: 0, skuCount: 0, incompleteCount: 0, label: "0 / 50，未完成" };
+    empty.positions = [];
+    empty.issues = [];
+    empty.skus = [];
+    empty.totalSkuCount = 0;
+    empty.pagination = {
+      positions: { page: 1, pageSize: 50, total: 0, totalPages: 0, hasPrevious: false, hasNext: false },
+      issues: { page: 1, pageSize: 50, total: 0, totalPages: 0, hasPrevious: false, hasNext: false },
+      skus: { page: 1, pageSize: 50, total: 0, totalPages: 0, hasPrevious: false, hasNext: false }
+    };
+    vi.mocked(useApiData).mockReturnValue({ data: empty, loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
+    renderPage();
+
+    expect(screen.getByText("0 / 50，未完成")).toBeInTheDocument();
+    expect(screen.getByText("暂无搜索位置")).toBeInTheDocument();
+    expect(screen.getByText("暂无 SKU")).toBeInTheDocument();
+    expect(screen.getByText("暂无问题")).toBeInTheDocument();
   });
 });

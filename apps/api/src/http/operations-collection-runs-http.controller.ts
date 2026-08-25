@@ -13,18 +13,28 @@ import type { Response } from "express";
 
 import { Roles } from "../auth/roles.guard.ts";
 import type {
+  CollectionReportPaginationInput,
+  CollectionRunDetailPaginationInput,
   CollectionRunReportConfidence,
+  CollectionRunReportList,
   CollectionRunReportFilters,
   CollectionRunReportMatch,
   CollectionRunReportPrice,
   CollectionRunReportSource,
-  CollectionRunReportDetail,
-  CollectionRunReportSummary
+  CollectionRunReportDetail
+} from "../operations/collection-report-query.service.ts";
+import {
+  COLLECTION_REPORT_MAX_PAGE,
+  COLLECTION_REPORT_MAX_PAGE_SIZE
 } from "../operations/collection-report-query.service.ts";
 
 export interface CollectionRunsOperationsService {
-  listRuns(): Promise<{ runs: CollectionRunReportSummary[] }>;
-  getRun(runId: string, filters?: CollectionRunReportFilters): Promise<CollectionRunReportDetail | null>;
+  listRuns(input?: CollectionReportPaginationInput): Promise<CollectionRunReportList>;
+  getRun(
+    runId: string,
+    filters?: CollectionRunReportFilters,
+    pagination?: CollectionRunDetailPaginationInput
+  ): Promise<CollectionRunReportDetail | null>;
   isEvidenceReferenced(runId: string, sha256: string): Promise<boolean>;
 }
 
@@ -63,6 +73,44 @@ function filtersFromQuery(query: Record<string, unknown>): CollectionRunReportFi
   return filters;
 }
 
+function optionalPositiveInteger(value: unknown, field: string, maximum: number): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    throw new BadRequestException(`${field} 无效`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > maximum) {
+    throw new BadRequestException(`${field} 无效`);
+  }
+  return parsed;
+}
+
+function listPaginationFromQuery(query: Record<string, unknown>): CollectionReportPaginationInput {
+  const page = optionalPositiveInteger(query.page, "page", COLLECTION_REPORT_MAX_PAGE);
+  const pageSize = optionalPositiveInteger(query.pageSize, "pageSize", COLLECTION_REPORT_MAX_PAGE_SIZE);
+  const pagination: CollectionReportPaginationInput = {};
+  if (page !== undefined) pagination.page = page;
+  if (pageSize !== undefined) pagination.pageSize = pageSize;
+  return pagination;
+}
+
+function detailPaginationFromQuery(query: Record<string, unknown>): CollectionRunDetailPaginationInput {
+  const pagination: CollectionRunDetailPaginationInput = {};
+  const fields = [
+    ["positionPage", COLLECTION_REPORT_MAX_PAGE],
+    ["positionPageSize", COLLECTION_REPORT_MAX_PAGE_SIZE],
+    ["issuePage", COLLECTION_REPORT_MAX_PAGE],
+    ["issuePageSize", COLLECTION_REPORT_MAX_PAGE_SIZE],
+    ["skuPage", COLLECTION_REPORT_MAX_PAGE],
+    ["skuPageSize", COLLECTION_REPORT_MAX_PAGE_SIZE]
+  ] as const;
+  for (const [field, maximum] of fields) {
+    const value = optionalPositiveInteger(query[field], field, maximum);
+    if (value !== undefined) pagination[field] = value;
+  }
+  return pagination;
+}
+
 function validRunId(runId: string): boolean {
   return runIdPattern.test(runId) && runId !== "." && runId !== "..";
 }
@@ -76,13 +124,17 @@ export class OperationsCollectionRunsHttpController {
     this.evidenceStore = evidenceStore;
   }
 
-  list() {
-    return this.reports.listRuns();
+  list(query: Record<string, unknown>) {
+    return this.reports.listRuns(listPaginationFromQuery(query));
   }
 
   async detail(runId: string, query: Record<string, unknown>) {
     if (!validRunId(runId)) throw new BadRequestException("runId 无效");
-    const result = await this.reports.getRun(runId, filtersFromQuery(query));
+    const result = await this.reports.getRun(
+      runId,
+      filtersFromQuery(query),
+      detailPaginationFromQuery(query)
+    );
     if (!result) throw new NotFoundException("采集运行不存在");
     return result;
   }
@@ -116,6 +168,7 @@ Inject(COLLECTION_EVIDENCE_STORE)(OperationsCollectionRunsHttpController, undefi
 Controller("operations/collection-runs")(OperationsCollectionRunsHttpController);
 Roles("ADMIN")(OperationsCollectionRunsHttpController);
 
+Query()(controllerPrototype, "list", 0);
 Get()(controllerPrototype, "list", Object.getOwnPropertyDescriptor(controllerPrototype, "list")!);
 
 Param("runId")(controllerPrototype, "detail", 0);

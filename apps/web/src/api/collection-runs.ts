@@ -1,6 +1,8 @@
 import { ApiError, apiRequest } from "./client.ts";
 import type {
   CollectionRunReportDetail,
+  CollectionReportPaginationInput,
+  CollectionRunDetailPaginationInput,
   CollectionRunReportFilters,
   CollectionRunReportList
 } from "./types.ts";
@@ -31,22 +33,47 @@ export function requeueCollectionRun(runId: string): Promise<{ runId: string }> 
   });
 }
 
-export function listCollectionRuns(): Promise<CollectionRunReportList> {
-  return apiRequest<CollectionRunReportList>("/api/operations/collection-runs", { role: "ADMIN" });
+function appendPagination(
+  query: URLSearchParams,
+  pagination: CollectionReportPaginationInput | CollectionRunDetailPaginationInput
+): void {
+  for (const [key, value] of Object.entries(pagination) as Array<[string, number | undefined]>) {
+    if (value !== undefined) query.set(key, String(value));
+  }
 }
 
-export function getCollectionRun(
+export function collectionRunsReportPath(pagination: CollectionReportPaginationInput = {}): string {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  return `/api/operations/collection-runs${query.size ? `?${query.toString()}` : ""}`;
+}
+
+export function listCollectionRuns(pagination: CollectionReportPaginationInput = {}): Promise<CollectionRunReportList> {
+  return apiRequest<CollectionRunReportList>(collectionRunsReportPath(pagination), { role: "ADMIN" });
+}
+
+export function collectionRunDetailReportPath(
   runId: string,
-  filters: CollectionRunReportFilters = {}
-): Promise<CollectionRunReportDetail> {
+  filters: CollectionRunReportFilters = {},
+  pagination: CollectionRunDetailPaginationInput = {}
+): string {
   const query = new URLSearchParams();
   if (filters.source) query.set("source", filters.source);
   if (filters.match) query.set("match", filters.match);
   if (filters.price) query.set("price", filters.price);
   if (filters.confidence) query.set("confidence", filters.confidence);
+  appendPagination(query, pagination);
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return `/api/operations/collection-runs/${encodeURIComponent(runId)}${suffix}`;
+}
+
+export function getCollectionRun(
+  runId: string,
+  filters: CollectionRunReportFilters = {},
+  pagination: CollectionRunDetailPaginationInput = {}
+): Promise<CollectionRunReportDetail> {
   return apiRequest<CollectionRunReportDetail>(
-    `/api/operations/collection-runs/${encodeURIComponent(runId)}${suffix}`,
+    collectionRunDetailReportPath(runId, filters, pagination),
     { role: "ADMIN" }
   );
 }

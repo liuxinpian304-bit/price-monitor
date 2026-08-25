@@ -32,6 +32,7 @@
     "test:collector": "node scripts/run-collector-tests.mjs",
     "test:portable": "pnpm test:local-env && pnpm test:config && pnpm test:contracts && pnpm test:api:portable && pnpm test:collector && pnpm test:web",
     "test:web": "pnpm --filter @stau-price-monitor/web test",
+    "test:browser": "playwright test",
     "test:e2e": "node --test --test-concurrency=1 tests/e2e/*.spec.ts",
     "audit:public": "node scripts/public-audit.mjs",
     "verify": "pnpm test && pnpm test:e2e && pnpm build",
@@ -50,6 +51,7 @@
   "devDependencies": {
     "@types/node": "^26.2.0",
     "@types/pg": "^8.23.1",
+    "playwright": "1.62.1",
     "prisma": "7.9.1",
     "typescript": "^7.0.2"
   }

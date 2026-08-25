@@ -126,6 +126,29 @@ export interface CollectionRunReportFilters {
   confidence?: CollectionRunReportConfidence;
 }
 
+export interface CollectionReportPaginationInput {
+  page?: number;
+  pageSize?: number;
+}
+
+export interface CollectionRunDetailPaginationInput {
+  positionPage?: number;
+  positionPageSize?: number;
+  issuePage?: number;
+  issuePageSize?: number;
+  skuPage?: number;
+  skuPageSize?: number;
+}
+
+export interface CollectionReportPageMeta {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  hasPrevious: boolean;
+  hasNext: boolean;
+}
+
 export interface CollectionRunCompletion {
   positionsCaptured: number;
   requestedPositions: number;
@@ -232,8 +255,14 @@ export interface CollectionRunReportDetail extends CollectionRunReportSummary {
   filters: CollectionRunReportFilters;
   totalSkuCount: number;
   skus: CollectionRunReportSku[];
+  pagination: {
+    positions: CollectionReportPageMeta;
+    issues: CollectionReportPageMeta;
+    skus: CollectionReportPageMeta;
+  };
 }
 
 export interface CollectionRunReportList {
   runs: CollectionRunReportSummary[];
+  pagination: CollectionReportPageMeta;
 }

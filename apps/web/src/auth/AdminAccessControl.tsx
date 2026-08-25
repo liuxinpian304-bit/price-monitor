@@ -1,26 +1,28 @@
 import { LockOutlined, UnlockOutlined } from "@ant-design/icons";
 import { Alert, Button, Input, Modal, Space, Tag } from "antd";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import {
-  isAdminSessionUnlocked,
+  getAdminSessionServerSnapshot,
+  getAdminSessionSnapshot,
   lockAdminSession,
   subscribeAdminSession,
+  subscribeAdminSessionStore,
   unlockAdminSession
 } from "./admin-session.ts";
 
 export function AdminAccessControl({ compact = false }: { compact?: boolean }) {
-  const [unlocked, setUnlocked] = useState(isAdminSessionUnlocked);
+  const session = useSyncExternalStore(
+    subscribeAdminSessionStore,
+    getAdminSessionSnapshot,
+    getAdminSessionServerSnapshot
+  );
   const [open, setOpen] = useState(false);
   const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => subscribeAdminSession((event) => {
-    if (event.type === "changed") {
-      setUnlocked(event.unlocked);
-      return;
-    }
-    setUnlocked(false);
+    if (event.type === "changed") return;
     setToken("");
     setError("管理员凭证无效或已过期，请重新输入。");
     setOpen(true);
@@ -44,7 +46,7 @@ export function AdminAccessControl({ compact = false }: { compact?: boolean }) {
   };
 
   return <>
-    {unlocked ? <Space size={8}>
+    {session.unlocked ? <Space size={8}>
       {!compact ? <Tag color="success" icon={<UnlockOutlined />}>管理员已解锁</Tag> : null}
       <Button size="small" icon={<LockOutlined />} onClick={lock} aria-label="锁定管理员操作">
         {compact ? null : "锁定"}

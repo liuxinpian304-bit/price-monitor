@@ -89,7 +89,18 @@ pnpm collector:worker
 | `PAUSED_LOGIN` 或 `PAUSED_CHALLENGE` | 按第 5 节手动恢复，再由管理员重新入队。 |
 | API/配对失败 | 检查 API、PostgreSQL、Redis 和本地 token；不得在错误反馈中粘贴 token。 |
 
-## 9. 现场验收待办
+## 9. 自动化页面回归
+
+以下命令使用仓库内脱敏 fixture 验证 `/runs` 和 `/runs/:runId` 的桌面端及 `390px` 布局、管理员解锁恢复、表格横向滚动和控制台错误。它只启动本地预览站点并拦截本地 `/api` 请求，不会运行淘宝桌面版，也不会发送企业微信消息。
+
+```bash
+pnpm exec playwright install chromium
+pnpm test:browser
+```
+
+首次安装 Chromium 后，日常只需执行 `pnpm test:browser`。自动化通过不代表真实淘宝或企业微信验收完成。
+
+## 10. 现场验收待办
 
 以下项目仍是 **LIVE PENDING**，完成前不得对外称“真实采集已上线”：
 

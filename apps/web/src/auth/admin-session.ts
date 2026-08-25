@@ -6,8 +6,15 @@ export type AdminSessionEvent =
 
 type AdminSessionListener = (event: AdminSessionEvent) => void;
 
+export interface AdminSessionSnapshot {
+  unlocked: boolean;
+  revision: number;
+}
+
 const listeners = new Set<AdminSessionListener>();
 let memoryToken: string | null | undefined;
+let snapshot: AdminSessionSnapshot | undefined;
+const serverSnapshot: AdminSessionSnapshot = { unlocked: false, revision: 0 };
 
 function sessionStorageOrNull(): Storage | null {
   try {
@@ -18,6 +25,10 @@ function sessionStorageOrNull(): Storage | null {
 }
 
 function emit(event: AdminSessionEvent): void {
+  snapshot = {
+    unlocked: event.type === "changed" ? event.unlocked : false,
+    revision: (snapshot?.revision ?? 0) + 1
+  };
   for (const listener of listeners) listener(event);
 }
 
@@ -54,4 +65,17 @@ export function requireAdminUnlock(): void {
 export function subscribeAdminSession(listener: AdminSessionListener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+export function getAdminSessionSnapshot(): AdminSessionSnapshot {
+  snapshot ??= { unlocked: isAdminSessionUnlocked(), revision: 0 };
+  return snapshot;
+}
+
+export function getAdminSessionServerSnapshot(): AdminSessionSnapshot {
+  return serverSnapshot;
+}
+
+export function subscribeAdminSessionStore(listener: () => void): () => void {
+  return subscribeAdminSession(() => listener());
 }

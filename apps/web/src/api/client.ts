@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
-import { getAdminSessionToken, requireAdminUnlock } from "../auth/admin-session.ts";
+import {
+  getAdminSessionServerSnapshot,
+  getAdminSessionSnapshot,
+  getAdminSessionToken,
+  requireAdminUnlock,
+  subscribeAdminSessionStore
+} from "../auth/admin-session.ts";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -17,6 +23,16 @@ export interface ApiRequestOptions extends RequestInit {
 
 export interface UseApiDataOptions {
   role?: "ADMIN" | "OPERATOR";
+}
+
+export interface UseApiDataResult<T> {
+  data: T;
+  loading: boolean;
+  error: string | null;
+  errorStatus: number | null;
+  hasSuccessfulData: boolean;
+  refresh: () => Promise<void>;
+  setData: (data: Exclude<T, null>) => void;
 }
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
@@ -49,21 +65,45 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   return body as T;
 }
 
-export function useApiData<T>(path: string, initialValue: T, options: UseApiDataOptions = {}) {
-  const [data, setData] = useState<T>(initialValue);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export function useApiData<T>(path: string, initialValue: null, options?: UseApiDataOptions): UseApiDataResult<T | null>;
+export function useApiData<T>(path: string, initialValue: T, options?: UseApiDataOptions): UseApiDataResult<T>;
+export function useApiData<T>(
+  path: string,
+  initialValue: T | null,
+  options: UseApiDataOptions = {}
+): UseApiDataResult<T | null> {
   const role = options.role ?? "OPERATOR";
+  const adminSession = useSyncExternalStore(
+    subscribeAdminSessionStore,
+    getAdminSessionSnapshot,
+    getAdminSessionServerSnapshot
+  );
+  const [success, setSuccess] = useState<{ path: string; data: T } | null>(null);
+  const [requestState, setRequestState] = useState<{
+    path: string;
+    loading: boolean;
+    error: string | null;
+    errorStatus: number | null;
+  }>({ path, loading: true, error: null, errorStatus: null });
+  const requestSequence = useRef(0);
+  const lastRetriedUnlockRevision = useRef(adminSession.unlocked ? adminSession.revision : -1);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
+    const sequence = ++requestSequence.current;
+    setRequestState({ path, loading: true, error: null, errorStatus: null });
     try {
-      setData(await apiRequest<T>(path, { role }));
-      setError(null);
+      const data = await apiRequest<T>(path, { role });
+      if (requestSequence.current !== sequence) return;
+      setSuccess({ path, data });
+      setRequestState({ path, loading: false, error: null, errorStatus: null });
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "无法连接后台接口");
-    } finally {
-      setLoading(false);
+      if (requestSequence.current !== sequence) return;
+      setRequestState({
+        path,
+        loading: false,
+        error: requestError instanceof Error ? requestError.message : "无法连接后台接口",
+        errorStatus: requestError instanceof ApiError ? requestError.status : 0
+      });
     }
   }, [path, role]);
 
@@ -71,5 +111,26 @@ export function useApiData<T>(path: string, initialValue: T, options: UseApiData
     void refresh();
   }, [refresh]);
 
-  return { data, loading, error, refresh, setData };
+  useEffect(() => {
+    if (role !== "ADMIN" || !adminSession.unlocked) return;
+    if (lastRetriedUnlockRevision.current === adminSession.revision) return;
+    lastRetriedUnlockRevision.current = adminSession.revision;
+    void refresh();
+  }, [adminSession.revision, adminSession.unlocked, refresh, role]);
+
+  const hasSuccessfulData = success?.path === path;
+  const currentRequest = requestState.path === path
+    ? requestState
+    : { path, loading: true, error: null, errorStatus: null };
+  const setData = useCallback((data: T) => setSuccess({ path, data }), [path]);
+
+  return {
+    data: hasSuccessfulData ? success.data : initialValue,
+    loading: currentRequest.loading,
+    error: currentRequest.error,
+    errorStatus: currentRequest.errorStatus,
+    hasSuccessfulData,
+    refresh,
+    setData
+  };
 }

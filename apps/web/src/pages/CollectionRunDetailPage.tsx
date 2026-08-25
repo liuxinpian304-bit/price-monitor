@@ -1,10 +1,14 @@
 import { ExportOutlined, ReloadOutlined } from "@ant-design/icons";
-import { Alert, Button, Descriptions, Select, Space, Table, Tag, message } from "antd";
+import { Alert, Button, Descriptions, Result, Select, Space, Spin, Table, Tag, message } from "antd";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { useApiData } from "../api/client.ts";
-import { fetchCollectionEvidence, requeueCollectionRun } from "../api/collection-runs.ts";
+import {
+  collectionRunDetailReportPath,
+  fetchCollectionEvidence,
+  requeueCollectionRun
+} from "../api/collection-runs.ts";
 import type {
   CollectionRunReportConfidence,
   CollectionRunReportDetail,
@@ -17,27 +21,6 @@ import type {
 import { PageToolbar } from "../components/PageToolbar.tsx";
 import { formatFen } from "../data/demo-data.ts";
 import { formatDateTime } from "../features/operations/table-tools.ts";
-
-function emptyReport(runId: string): CollectionRunReportDetail {
-  return {
-    id: runId,
-    status: "QUEUED",
-    provider: "taobao-desktop",
-    scheduledFor: new Date(0).toISOString(),
-    startedAt: null,
-    finishedAt: null,
-    model: { id: "", monitorCode: "", label: "采集运行", comparisonType: "BARE", owner: "" },
-    collector: null,
-    completion: { positionsCaptured: 0, requestedPositions: 50, discoveredCount: 0, fetchedCount: 0, matchedCount: 0, failedCount: 0, uniqueItemCount: 0, skuCount: 0, incompleteCount: 0, complete: false, label: "0 / 50，未完成" },
-    notification: { state: "NOT_CREATED", attempts: 0, notifiedAt: null, lastError: null },
-    error: null,
-    positions: [],
-    issues: [],
-    filters: {},
-    totalSkuCount: 0,
-    skus: []
-  };
-}
 
 function pauseGuidance(status: string): string | null {
   if (status === "PAUSED_LOGIN") return "请在已登记的 Mac 上打开淘宝桌面版，恢复登录后再重新入队。";
@@ -96,21 +79,60 @@ function EvidenceButton({ runId, sha256 }: { runId: string; sha256: string | nul
   return <>{contextHolder}<Button size="small" loading={opening} onClick={() => void openEvidence()}>查看证据</Button></>;
 }
 
+function InitialDetailState({ loading, error, errorStatus }: {
+  loading: boolean;
+  error: string | null;
+  errorStatus: number | null;
+}) {
+  if (loading) return <section className="panel collection-report-state"><Spin /><span>正在加载采集运行</span></section>;
+  const authorizationError = errorStatus === 401 || errorStatus === 403;
+  return <section className="panel collection-report-state"><Result
+    status={errorStatus === 404 ? "404" : authorizationError ? "403" : "error"}
+    title={errorStatus === 404 ? "采集运行不存在" : authorizationError ? "需要管理员权限" : "采集运行加载失败"}
+    subTitle={error ?? "无法连接后台接口"}
+  /></section>;
+}
+
 export function CollectionRunDetailPage() {
   const { runId = "" } = useParams();
   const [filters, setFilters] = useState<CollectionRunReportFilters>({});
+  const [positionPage, setPositionPage] = useState(1);
+  const [issuePage, setIssuePage] = useState(1);
+  const [skuPage, setSkuPage] = useState(1);
   const [requeueing, setRequeueing] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
-  const path = useMemo(() => {
-    const query = new URLSearchParams();
-    if (filters.source) query.set("source", filters.source);
-    if (filters.match) query.set("match", filters.match);
-    if (filters.price) query.set("price", filters.price);
-    if (filters.confidence) query.set("confidence", filters.confidence);
-    return `/api/operations/collection-runs/${encodeURIComponent(runId)}${query.size ? `?${query}` : ""}`;
-  }, [filters, runId]);
-  const { data: report, error, refresh } = useApiData<CollectionRunReportDetail>(path, emptyReport(runId), { role: "ADMIN" });
+  const path = useMemo(() => collectionRunDetailReportPath(runId, filters, {
+    positionPage,
+    positionPageSize: 50,
+    issuePage,
+    issuePageSize: 50,
+    skuPage,
+    skuPageSize: 50
+  }), [filters, issuePage, positionPage, runId, skuPage]);
+  const {
+    data: report,
+    loading,
+    error,
+    errorStatus,
+    hasSuccessfulData,
+    refresh
+  } = useApiData<CollectionRunReportDetail>(path, null, { role: "ADMIN" });
+
+  if (!hasSuccessfulData || !report) {
+    return <>
+      <PageToolbar title="采集运行报告" description={runId} actions={<Link to="/runs">返回报告列表</Link>} />
+      <InitialDetailState loading={loading} error={error} errorStatus={errorStatus} />
+    </>;
+  }
+
   const guidance = pauseGuidance(report.status);
+  const changeFilter = <K extends keyof CollectionRunReportFilters>(
+    key: K,
+    value: CollectionRunReportFilters[K] | undefined
+  ) => {
+    setSkuPage(1);
+    setFilters((current) => replaceFilter(current, key, value));
+  };
 
   const requeue = async () => {
     setRequeueing(true);
@@ -128,11 +150,11 @@ export function CollectionRunDetailPage() {
   return <>
     {contextHolder}
     <PageToolbar
-      title={report.model.label || "采集运行报告"}
-      description={`${report.model.monitorCode || "运行"} · ${report.id}`}
+      title={report.model.label}
+      description={`${report.model.monitorCode} · ${report.id}`}
       actions={<Link to="/runs">返回报告列表</Link>}
     />
-    {error ? <Alert className="data-warning" type="warning" showIcon title="采集报告暂时无法刷新" description={error} /> : null}
+    {error ? <Alert className="data-warning" type="warning" showIcon title="采集报告刷新失败，当前显示上次成功数据。" description={error} /> : null}
     {guidance ? <Alert
       className="data-warning"
       type="warning"
@@ -146,7 +168,7 @@ export function CollectionRunDetailPage() {
       <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 4 }}>
         <Descriptions.Item label="运行状态"><Tag>{report.status}</Tag></Descriptions.Item>
         <Descriptions.Item label="完成度"><Tag color={report.completion.complete ? "success" : "warning"}>{report.completion.label}</Tag></Descriptions.Item>
-        <Descriptions.Item label="SKU"><strong>{report.completion.skuCount}</strong> / {report.totalSkuCount} 条</Descriptions.Item>
+        <Descriptions.Item label="SKU"><strong>{report.pagination.skus.total}</strong> / {report.totalSkuCount} 条</Descriptions.Item>
         <Descriptions.Item label="发现 / 抓取">{report.completion.discoveredCount} / {report.completion.fetchedCount}</Descriptions.Item>
         <Descriptions.Item label="匹配 / 失败">{report.completion.matchedCount} / {report.completion.failedCount}</Descriptions.Item>
         <Descriptions.Item label="通知"><Tag>{report.notification.state}</Tag> {report.notification.attempts} 次</Descriptions.Item>
@@ -159,12 +181,20 @@ export function CollectionRunDetailPage() {
     </section>
 
     <section className="panel table-panel run-positions-panel">
-      <div className="panel-heading"><h2>搜索位置</h2><span>已捕获 {report.positions.length} / {report.completion.requestedPositions}</span></div>
+      <div className="panel-heading"><h2>搜索位置</h2><span>已捕获 {report.completion.positionsCaptured} / {report.completion.requestedPositions}</span></div>
       <div className="collection-runs-scroll" data-testid="collection-run-positions-scroll">
         <Table
           rowKey={(position) => `${position.rank}-${position.platformItemId}`}
           dataSource={report.positions}
-          pagination={false}
+          loading={loading}
+          locale={{ emptyText: "暂无搜索位置" }}
+          pagination={{
+            current: report.pagination.positions.page,
+            pageSize: report.pagination.positions.pageSize,
+            total: report.pagination.positions.total,
+            showSizeChanger: false,
+            onChange: setPositionPage
+          }}
           scroll={{ x: 1_050 }}
           columns={[
             { title: "排名", dataIndex: "rank", width: 90, render: (rank: number) => `排名 ${rank}` },
@@ -181,19 +211,27 @@ export function CollectionRunDetailPage() {
 
     <section className="panel table-panel run-sku-panel">
       <div className="table-tools run-filter-tools">
-        <strong>每个 SKU</strong>
+        <strong>每个 SKU（筛选结果 {report.pagination.skus.total} / 全部 {report.totalSkuCount}）</strong>
         <Space wrap>
-          <Select<CollectionRunReportSource | undefined> aria-label="来源筛选" allowClear placeholder="全部来源" value={filters.source} onChange={(source) => setFilters((current) => replaceFilter(current, "source", source))} options={[{ value: "OWN", label: "我方" }, { value: "COMPETITOR", label: "同行" }]} />
-          <Select<CollectionRunReportMatch | undefined> aria-label="匹配筛选" allowClear placeholder="全部匹配" value={filters.match} onChange={(match) => setFilters((current) => replaceFilter(current, "match", match))} options={[{ value: "EXACT", label: "精确可比" }, { value: "REVIEW", label: "人工复核" }, { value: "EXCLUDED", label: "排除" }]} />
-          <Select<CollectionRunReportPrice | undefined> aria-label="价格筛选" allowClear placeholder="全部价格" value={filters.price} onChange={(price) => setFilters((current) => replaceFilter(current, "price", price))} options={[{ value: "LOWER", label: "同行更低" }, { value: "NOT_LOWER", label: "同行不低" }]} />
-          <Select<CollectionRunReportConfidence | undefined> aria-label="置信度筛选" allowClear placeholder="全部置信度" value={filters.confidence} onChange={(confidence) => setFilters((current) => replaceFilter(current, "confidence", confidence))} options={[{ value: "CONFIRMED", label: "已确认" }, { value: "ESTIMATED", label: "估算" }, { value: "MANUAL_REVIEW", label: "人工复核" }]} />
+          <Select<CollectionRunReportSource | undefined> aria-label="来源筛选" allowClear placeholder="全部来源" value={filters.source} onChange={(value) => changeFilter("source", value)} options={[{ value: "OWN", label: "我方" }, { value: "COMPETITOR", label: "同行" }]} />
+          <Select<CollectionRunReportMatch | undefined> aria-label="匹配筛选" allowClear placeholder="全部匹配" value={filters.match} onChange={(value) => changeFilter("match", value)} options={[{ value: "EXACT", label: "精确可比" }, { value: "REVIEW", label: "人工复核" }, { value: "EXCLUDED", label: "排除" }]} />
+          <Select<CollectionRunReportPrice | undefined> aria-label="价格筛选" allowClear placeholder="全部价格" value={filters.price} onChange={(value) => changeFilter("price", value)} options={[{ value: "LOWER", label: "同行更低" }, { value: "NOT_LOWER", label: "同行不低" }]} />
+          <Select<CollectionRunReportConfidence | undefined> aria-label="置信度筛选" allowClear placeholder="全部置信度" value={filters.confidence} onChange={(value) => changeFilter("confidence", value)} options={[{ value: "CONFIRMED", label: "已确认" }, { value: "ESTIMATED", label: "估算" }, { value: "MANUAL_REVIEW", label: "人工复核" }]} />
         </Space>
       </div>
       <div className="collection-runs-scroll" data-testid="collection-run-skus-scroll">
         <Table
           rowKey="id"
           dataSource={report.skus}
-          pagination={{ pageSize: 50, showSizeChanger: false }}
+          loading={loading}
+          locale={{ emptyText: "暂无 SKU" }}
+          pagination={{
+            current: report.pagination.skus.page,
+            pageSize: report.pagination.skus.pageSize,
+            total: report.pagination.skus.total,
+            showSizeChanger: false,
+            onChange: setSkuPage
+          }}
           scroll={{ x: 1540 }}
           columns={[
             { title: "来源 / 排名", width: 120, render: (_value, row: CollectionRunReportSku) => <div><Tag>{row.source === "OWN" ? "我方" : "同行"}</Tag><small>{row.ranks.length ? `排名 ${row.ranks.join(",")}` : "非搜索位"}</small></div> },
@@ -212,15 +250,29 @@ export function CollectionRunDetailPage() {
     </section>
 
     <section className="panel table-panel run-issues-panel">
-      <div className="panel-heading"><h2>问题与未完成项</h2><span>{report.issues.length} 项</span></div>
+      <div className="panel-heading"><h2>问题与未完成项</h2><span>{report.pagination.issues.total} 项</span></div>
       <div className="collection-runs-scroll">
-        <Table rowKey="id" dataSource={report.issues} pagination={false} scroll={{ x: 900 }} columns={[
-          { title: "代码", dataIndex: "code", width: 220 },
-          { title: "商品 / SKU", width: 220, render: (_value, issue) => `${issue.platformItemId ?? "--"} / ${issue.skuId ?? "--"}` },
-          { title: "说明", dataIndex: "message" },
-          { title: "采集时间", dataIndex: "capturedAt", width: 180, render: formatDateTime },
-          { title: "证据", width: 110, render: (_value, issue) => <EvidenceButton runId={report.id} sha256={issue.evidenceSha256} /> }
-        ]} />
+        <Table
+          rowKey="id"
+          dataSource={report.issues}
+          loading={loading}
+          locale={{ emptyText: "暂无问题" }}
+          pagination={{
+            current: report.pagination.issues.page,
+            pageSize: report.pagination.issues.pageSize,
+            total: report.pagination.issues.total,
+            showSizeChanger: false,
+            onChange: setIssuePage
+          }}
+          scroll={{ x: 900 }}
+          columns={[
+            { title: "代码", dataIndex: "code", width: 220 },
+            { title: "商品 / SKU", width: 220, render: (_value, issue) => `${issue.platformItemId ?? "--"} / ${issue.skuId ?? "--"}` },
+            { title: "说明", dataIndex: "message" },
+            { title: "采集时间", dataIndex: "capturedAt", width: 180, render: formatDateTime },
+            { title: "证据", width: 110, render: (_value, issue) => <EvidenceButton runId={report.id} sha256={issue.evidenceSha256} /> }
+          ]}
+        />
       </div>
     </section>
   </>;

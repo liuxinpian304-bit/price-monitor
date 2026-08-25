@@ -20,6 +20,8 @@ describe("SettingsPage", () => {
       },
       loading: false,
       error: null,
+      errorStatus: null,
+      hasSuccessfulData: true,
       refresh: vi.fn(),
       setData: vi.fn()
     });
