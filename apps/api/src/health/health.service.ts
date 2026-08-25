@@ -17,6 +17,7 @@ export interface HealthResult {
   redis: "up" | "down";
   queue: "up" | "down";
   collectorAgent: "up" | "down";
+  runtime: "ASSEMBLED" | "PROTOTYPE";
   collection: { status: string; finishedAt: string | null };
   checkedAt: string;
 }
@@ -35,28 +36,32 @@ export class HealthService {
   private readonly collections: CollectionHealthRepository;
   private readonly queue: HealthProbe;
   private readonly collectorAgent: HealthProbe;
+  private readonly runtime: HealthProbe;
 
   constructor(
     database: HealthProbe,
     redis: HealthProbe,
     collections: CollectionHealthRepository,
     queue: HealthProbe = redis,
-    collectorAgent: HealthProbe = { ping: async () => true }
+    collectorAgent: HealthProbe = { ping: async () => true },
+    runtime: HealthProbe = { ping: async () => false }
   ) {
     this.database = database;
     this.redis = redis;
     this.collections = collections;
     this.queue = queue;
     this.collectorAgent = collectorAgent;
+    this.runtime = runtime;
   }
 
   async getHealth(): Promise<HealthResult> {
-    const [databaseUp, redisUp, latest, queueUp, collectorAgentUp] = await Promise.all([
+    const [databaseUp, redisUp, latest, queueUp, collectorAgentUp, runtimeAssembled] = await Promise.all([
       safePing(this.database),
       safePing(this.redis),
       this.collections.latest().catch(() => null),
       safePing(this.queue),
-      safePing(this.collectorAgent)
+      safePing(this.collectorAgent),
+      safePing(this.runtime)
     ]);
     return {
       status: databaseUp && redisUp && queueUp && collectorAgentUp ? "ok" : "degraded",
@@ -64,6 +69,7 @@ export class HealthService {
       redis: redisUp ? "up" : "down",
       queue: queueUp ? "up" : "down",
       collectorAgent: collectorAgentUp ? "up" : "down",
+      runtime: runtimeAssembled ? "ASSEMBLED" : "PROTOTYPE",
       collection: {
         status: latest?.status ?? "NO_RUN",
         finishedAt: latest?.finishedAt?.toISOString() ?? null

@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { apiRequest } from "./client.ts";
-import { createCollectionRun, requeueCollectionRun } from "./collection-runs.ts";
+import {
+  createCollectionRun,
+  getCollectionRun,
+  listCollectionRuns,
+  requeueCollectionRun
+} from "./collection-runs.ts";
 
 vi.mock("./client.ts", () => ({ apiRequest: vi.fn() }));
 
@@ -29,5 +34,24 @@ describe("collection run API", () => {
       method: "POST",
       role: "ADMIN"
     });
+  });
+
+  it("uses ADMIN report endpoints and serializes all report filters", async () => {
+    vi.mocked(apiRequest).mockResolvedValue({ runs: [] });
+
+    await listCollectionRuns();
+    await getCollectionRun("run one", {
+      source: "COMPETITOR",
+      match: "EXACT",
+      price: "LOWER",
+      confidence: "CONFIRMED"
+    });
+
+    expect(apiRequest).toHaveBeenNthCalledWith(1, "/api/operations/collection-runs", { role: "ADMIN" });
+    expect(apiRequest).toHaveBeenNthCalledWith(
+      2,
+      "/api/operations/collection-runs/run%20one?source=COMPETITOR&match=EXACT&price=LOWER&confidence=CONFIRMED",
+      { role: "ADMIN" }
+    );
   });
 });

@@ -82,6 +82,9 @@ const healthSchema = z.object({
   status: z.enum(["ok", "degraded"]),
   database: z.enum(["up", "down"]),
   redis: z.enum(["up", "down"]),
+  queue: z.enum(["up", "down"]),
+  collectorAgent: z.enum(["up", "down"]),
+  runtime: z.enum(["ASSEMBLED", "PROTOTYPE"]),
   collection: z.object({
     status: z.string().min(1),
     finishedAt: z.iso.datetime({ offset: true }).nullable()

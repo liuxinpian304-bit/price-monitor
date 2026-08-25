@@ -6,6 +6,7 @@ import { after, before, test } from "node:test";
 import { createPrismaClient } from "../database/prisma.service.ts";
 
 const prisma = createPrismaClient();
+const testPrefix = `TASK14-SCHEMA-${process.pid}-${Date.now()}`;
 
 async function clearData(): Promise<void> {
   if (runId) {
@@ -40,7 +41,7 @@ after(async () => {
 test("persists desktop collector agents, positions, SKU confidence, and issues", async () => {
   const monitoredModel = await prisma.monitoredModel.create({
     data: {
-      monitorCode: "MON-7506",
+      monitorCode: `${testPrefix}-7506`,
       brand: "Sony",
       standardModel: "MDR-7506",
       category: "headphones",
@@ -63,9 +64,9 @@ test("persists desktop collector agents, positions, SKU confidence, and issues",
   candidateId = candidate.id;
   const agent = await prisma.collectorAgent.create({
     data: {
-      name: "mac-studio-1",
+      name: `${testPrefix}-mac-studio-1`,
       platform: "MACOS",
-      tokenHash: "sha256:test-only",
+      tokenHash: `${testPrefix}-token`,
       enabled: true,
       appVersion: "2.4.5"
     }
@@ -122,7 +123,7 @@ test("persists desktop collector agents, positions, SKU confidence, and issues",
     payableFen: 62_800,
     priceConfidence: "CONFIRMED" as const,
     evidenceKey: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-    ingestionKey: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ingestionKey: `${testPrefix}-snapshot-a`,
     matchDecision: "BARE" as const,
     comparable: true,
     matchConfidenceBps: 9_800,
@@ -137,13 +138,13 @@ test("persists desktop collector agents, positions, SKU confidence, and issues",
       ...firstSnapshot,
       skuId: "white",
       skuText: "白色",
-      ingestionKey: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ingestionKey: `${testPrefix}-snapshot-b`
     }
   });
   await prisma.collectionIssue.create({
     data: {
       collectionRunId: run.id,
-      issueKey: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      issueKey: `${testPrefix}-issue`,
       code: "SKU_ENUMERATION_INCOMPLETE",
       platformItemId: candidate.platformItemId,
       message: "The collector could not enumerate every SKU.",
@@ -166,7 +167,7 @@ test("persists desktop collector agents, positions, SKU confidence, and issues",
   await assert.rejects(() => prisma.collectionIssue.create({
     data: {
       collectionRunId: run.id,
-      issueKey: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      issueKey: `${testPrefix}-issue`,
       code: "SKU_ENUMERATION_INCOMPLETE",
       message: "Duplicate issue key.",
       capturedAt: new Date("2026-08-24T01:32:00.000Z")

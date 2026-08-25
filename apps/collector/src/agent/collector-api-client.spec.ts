@@ -136,6 +136,27 @@ test("returns null only for the claim endpoint's empty 204 contract", async () =
   assert.equal(await client.claim({ appVersion: "2.4.5", capabilities: [] }), null);
 });
 
+test("accepts the assembled runtime health contract without weakening its response validation", async () => {
+  const health = {
+    status: "ok",
+    database: "up",
+    redis: "up",
+    queue: "up",
+    collectorAgent: "up",
+    runtime: "ASSEMBLED",
+    collection: { status: "NO_RUN", finishedAt: null },
+    checkedAt: "2026-08-24T01:00:00.000Z"
+  } as const;
+  const { client, requests } = clientWith(() => jsonResponse(health));
+
+  assert.deepEqual(await client.checkReachability(), health);
+  assert.equal(requests[0]?.url, "https://collector.example.test/api/health");
+  assert.equal(new Headers(requests[0]?.init.headers).has("authorization"), false);
+
+  const unknownField = clientWith(() => jsonResponse({ ...health, unsafeExtra: true })).client;
+  await assert.rejects(() => unknownField.checkReachability(), { code: "INVALID_RESPONSE" });
+});
+
 test("sends exact heartbeat and pause payloads to encoded run routes", async () => {
   const { client, requests } = clientWith(() => new Response(null, { status: 204 }));
 

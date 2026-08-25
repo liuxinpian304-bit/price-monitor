@@ -46,3 +46,19 @@ test("health includes the queue and collector agent availability", async () => {
   assert.equal(result.collectorAgent, "down");
   assert.equal(result.status, "degraded");
 });
+
+test("health reports assembled runtime separately from dependency health", async () => {
+  const service = new HealthService(
+    { ping: async () => true },
+    { ping: async () => true },
+    { latest: async () => null },
+    { ping: async () => true },
+    { ping: async () => false },
+    { ping: async () => true }
+  );
+
+  const result = await service.getHealth();
+
+  assert.equal(result.runtime, "ASSEMBLED");
+  assert.equal(result.status, "degraded");
+});

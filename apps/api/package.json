@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx --tsconfig tsconfig.json watch src/main.ts",
+    "dev": "tsx watch --tsconfig tsconfig.json src/main.ts",
     "start": "tsx --tsconfig tsconfig.json src/main.ts",
     "seed:demo": "tsx --tsconfig tsconfig.json src/database/seed-demo.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"

@@ -47,6 +47,9 @@ class FakeCliApi implements CollectorCliApi {
       status: "ok" as const,
       database: "up" as const,
       redis: "up" as const,
+      queue: "up" as const,
+      collectorAgent: "up" as const,
+      runtime: "ASSEMBLED" as const,
       collection: { status: "NO_RUN", finishedAt: null },
       checkedAt: "2026-08-24T01:00:00.000Z"
     };

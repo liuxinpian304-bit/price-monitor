@@ -239,8 +239,8 @@ git commit -m "fix: encode local actor identity headers"
 
 **Files:**
 - Verify: all tracked source files
-- Update: `/Users/jixiang/Documents/Codex/price-monitor` to the final source tree
-- Regenerate: `/Users/jixiang/Documents/Codex/比价工具_跨平台公开版_2026-08-19.zip`
+- Update: `<public-release-source-tree>` to the final source tree
+- Regenerate: `<public-release-archive>.zip`
 
 **Interfaces:**
 - Consumes: Task 1 and Task 2 commits.
@@ -288,7 +288,7 @@ Query the alert action endpoint or PostgreSQL through an existing repository/API
 
 - [ ] **Step 5: Synchronize the clean public repository**
 
-Copy only the source repository's Git-tracked final tree into `/Users/jixiang/Documents/Codex/price-monitor`, preserve its one-commit `main` history, run `pnpm audit:public`, and confirm both repositories have the same tree hash.
+Copy only the source repository's Git-tracked final tree into `<public-release-source-tree>`, preserve its one-commit `main` history, run `pnpm audit:public`, and confirm both repositories have the same tree hash.
 
 - [ ] **Step 6: Amend and push the sanitized public root commit**
 

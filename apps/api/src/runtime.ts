@@ -42,6 +42,10 @@ import {
   RedisHealthProbe
 } from "./health/prisma-health.ts";
 import { OperationsQueryService } from "./operations/operations-query.service.ts";
+import {
+  CollectionReportQueryService,
+  PrismaCollectionReportRepository
+} from "./operations/collection-report-query.service.ts";
 import { ManualClassificationService } from "./operations/manual-classification.service.ts";
 import { PrismaManualClassificationRepository } from "./operations/prisma-manual-classification.repository.ts";
 import { PrismaSettingsRepository } from "./settings/prisma-settings.repository.ts";
@@ -96,12 +100,16 @@ export const settingsService = new SettingsService(
 );
 export const healthService = new HealthService(
   new PrismaDatabaseProbe(prisma),
-  { ping: async () => runtimeStarted },
+  new RedisHealthProbe(redis),
   new PrismaCollectionHealthRepository(prisma),
   new RedisHealthProbe(redis),
-  new PrismaCollectorAgentHealthProbe(prisma)
+  new PrismaCollectorAgentHealthProbe(prisma),
+  { ping: async () => runtimeStarted }
 );
 export const operationsQuery = new OperationsQueryService(prisma);
+export const collectionReportQuery = new CollectionReportQueryService(
+  new PrismaCollectionReportRepository(prisma)
+);
 export const manualClassificationService = new ManualClassificationService(
   new PrismaManualClassificationRepository(prisma),
   audit

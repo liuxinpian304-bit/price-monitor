@@ -61,9 +61,9 @@ test("production accepts random 32-byte hexadecimal administrator tokens", () =>
   };
 
   for (let sample = 0; sample < 10_000; sample += 1) {
-    const ADMIN_API_TOKEN = randomBytes(32).toString("hex");
-    const config = apiStartupConfigFromEnvironment(withAdminCredential(base, ADMIN_API_TOKEN));
-    assert.equal(config.adminPrincipal.adminToken, ADMIN_API_TOKEN);
+    const token = randomBytes(32).toString("hex");
+    const config = apiStartupConfigFromEnvironment(withAdminCredential(base, token));
+    assert.equal(config.adminPrincipal.adminToken, token);
   }
 });
 
@@ -81,18 +81,16 @@ test("production-only checks use one trimmed case-insensitive NODE_ENV value", (
     );
     assert.throws(
       () => apiStartupConfigFromEnvironment({
-        ...base,
+        ...withAdminCredential(base, strongToken),
         NODE_ENV,
-        ADMIN_API_TOKEN: strongToken,
         API_HOST: "0.0.0.0"
       }),
       /ALLOW_PRIVATE_NETWORK_API/
     );
     assert.throws(
       () => apiStartupConfigFromEnvironment({
-        ...base,
+        ...withAdminCredential(base, strongToken),
         NODE_ENV,
-        ADMIN_API_TOKEN: strongToken,
         SETTINGS_MASTER_KEY: " "
       }),
       /SETTINGS_MASTER_KEY/

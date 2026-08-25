@@ -126,6 +126,28 @@ test("writes a verified PNG atomically and does not rewrite an idempotent repeat
   });
 });
 
+test("reads only an existing verified PNG by canonical run and digest", async () => {
+  await withStore(async (store, root) => {
+    const sha256 = digest(png);
+    await store.put("run-1", sha256, png);
+
+    assert.deepEqual(await store.read("run-1", sha256), png);
+    await writeFile(join(root, "run-1", `${sha256}.png`), Buffer.from("tampered"));
+    await assert.rejects(
+      () => store.read("run-1", sha256),
+      (error) => error instanceof EvidenceStoreValidationError
+    );
+    await assert.rejects(
+      () => store.read("../run-1", sha256),
+      (error) => error instanceof EvidenceStoreValidationError
+    );
+    await assert.rejects(
+      () => store.read("run-1", `sha256:${sha256}`),
+      (error) => error instanceof EvidenceStoreValidationError
+    );
+  });
+});
+
 test("serializes concurrent same-hash writes into one object", async () => {
   await withStore(async (store, root) => {
     const sha256 = digest(png);

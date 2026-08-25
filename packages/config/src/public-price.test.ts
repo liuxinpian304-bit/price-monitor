@@ -203,6 +203,18 @@ test("rejects negative and unsafe fen values", () => {
   }), /非负整数分/);
 });
 
+test("rejects aggregate public discounts that overflow despite each input being safe", () => {
+  assert.throws(() => calculatePublicPrice({
+    listPriceFen: Number.MAX_SAFE_INTEGER,
+    activityPriceFen: Number.MAX_SAFE_INTEGER,
+    promotions: [
+      { kind: "COUPON", label: "大额店铺券", amountFen: Number.MAX_SAFE_INTEGER, thresholdFen: 0, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false },
+      { kind: "DIRECT_DISCOUNT", label: "大额平台立减", amountFen: Number.MAX_SAFE_INTEGER, thresholdFen: 0, audience: "PUBLIC", stackGroup: "platform-direct", includedInActivityPrice: false }
+    ],
+    mandatoryFeeFen: 0
+  }), /金额超出安全范围/);
+});
+
 test("validates fen values in ignored private promotions", () => {
   assert.throws(() => calculatePublicPrice({
     listPriceFen: 70_000,

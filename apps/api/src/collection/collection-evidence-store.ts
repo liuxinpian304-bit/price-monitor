@@ -363,10 +363,30 @@ export class CollectionEvidenceStore {
       if (!directory) return false;
       const target = join(directory.runPath, `${sha256}.png`);
       assertContained(directory.runPath, target);
-      return await this.isVerifiedFile(directory, target, sha256);
+      return Boolean(await this.readVerifiedFile(directory, target, sha256));
     } catch (error) {
       if (error instanceof EvidenceStoreValidationError) return false;
       if (error instanceof EvidenceStorePayloadTooLargeError) return false;
+      throw new EvidenceStoreUnavailableError();
+    }
+  }
+
+  async read(runId: string, sha256: string): Promise<Buffer | null> {
+    assertRunId(runId);
+    assertDigest(sha256);
+    try {
+      const directory = await this.existingRunDirectory(runId);
+      if (!directory) return null;
+      const target = join(directory.runPath, `${sha256}.png`);
+      assertContained(directory.runPath, target);
+      return await this.readVerifiedFile(directory, target, sha256);
+    } catch (error) {
+      if (
+        error instanceof EvidenceStoreValidationError
+        || error instanceof EvidenceStorePayloadTooLargeError
+      ) {
+        throw error;
+      }
       throw new EvidenceStoreUnavailableError();
     }
   }
@@ -1249,12 +1269,20 @@ export class CollectionEvidenceStore {
     target: string,
     sha256: string
   ): Promise<boolean> {
+    return Boolean(await this.readVerifiedFile(directory, target, sha256));
+  }
+
+  private async readVerifiedFile(
+    directory: VerifiedDirectory,
+    target: string,
+    sha256: string
+  ): Promise<Buffer | null> {
     await this.requireDirectoryIdentities(directory);
     let expected: Stats;
     try {
       expected = await lstat(target);
     } catch (error) {
-      if (isMissing(error)) return false;
+      if (isMissing(error)) return null;
       throw error;
     }
     if (!expected.isFile() || expected.isSymbolicLink() || expected.size > MAX_EVIDENCE_BYTES) {
@@ -1276,8 +1304,7 @@ export class CollectionEvidenceStore {
         || pathAfterRead.isSymbolicLink() || !pathAfterRead.isFile()) {
         throw new EvidenceStoreIdentityChangedError();
       }
-      verifyBytes(bytes, sha256);
-      return true;
+      return verifyBytes(bytes, sha256);
     } finally {
       await handle?.close().catch(() => undefined);
     }

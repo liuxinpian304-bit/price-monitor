@@ -15,6 +15,10 @@ export interface ApiRequestOptions extends RequestInit {
   role?: "ADMIN" | "OPERATOR";
 }
 
+export interface UseApiDataOptions {
+  role?: "ADMIN" | "OPERATOR";
+}
+
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const { role = "OPERATOR", ...requestOptions } = options;
   const headers = new Headers(options.headers);
@@ -45,22 +49,23 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   return body as T;
 }
 
-export function useApiData<T>(path: string, initialValue: T) {
+export function useApiData<T>(path: string, initialValue: T, options: UseApiDataOptions = {}) {
   const [data, setData] = useState<T>(initialValue);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const role = options.role ?? "OPERATOR";
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await apiRequest<T>(path));
+      setData(await apiRequest<T>(path, { role }));
       setError(null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "无法连接后台接口");
     } finally {
       setLoading(false);
     }
-  }, [path]);
+  }, [path, role]);
 
   useEffect(() => {
     void refresh();

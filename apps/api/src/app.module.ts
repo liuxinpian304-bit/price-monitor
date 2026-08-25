@@ -12,6 +12,11 @@ import {
 } from "./http/collector-agent-http.controller.ts";
 import { HealthHttpController } from "./http/health-http.controller.ts";
 import { OperationsHttpController } from "./http/operations-http.controller.ts";
+import {
+  COLLECTION_EVIDENCE_STORE,
+  COLLECTION_REPORT_QUERY_SERVICE,
+  OperationsCollectionRunsHttpController
+} from "./http/operations-collection-runs-http.controller.ts";
 import { SettingsHttpController } from "./http/settings-http.controller.ts";
 import {
   COLLECTION_RUN_QUEUE_SERVICE,
@@ -19,6 +24,8 @@ import {
 } from "./http/collection-runs-http.controller.ts";
 import {
   collectionRunQueueService,
+  collectionEvidenceStore,
+  collectionReportQuery,
   collectorAgentService,
   desktopReportIngestionService
 } from "./runtime.ts";
@@ -29,6 +36,7 @@ import {
     CatalogHttpController,
     AlertsHttpController,
     OperationsHttpController,
+    OperationsCollectionRunsHttpController,
     SettingsHttpController,
     CollectionRunsHttpController,
     CollectorAgentHttpController
@@ -37,6 +45,8 @@ import {
     { provide: COLLECTOR_AGENT_SERVICE, useValue: collectorAgentService },
     { provide: DESKTOP_REPORT_INGESTION_SERVICE, useValue: desktopReportIngestionService },
     { provide: COLLECTION_RUN_QUEUE_SERVICE, useValue: collectionRunQueueService },
+    { provide: COLLECTION_REPORT_QUERY_SERVICE, useValue: collectionReportQuery },
+    { provide: COLLECTION_EVIDENCE_STORE, useValue: collectionEvidenceStore },
     CollectorEvidenceAuthenticationGuard,
     {
       provide: APP_GUARD,
