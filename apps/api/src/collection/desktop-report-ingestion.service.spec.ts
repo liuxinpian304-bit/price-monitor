@@ -1,0 +1,329 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import type { CollectorReport } from "../../../../packages/contracts/src/index.ts";
+import type { CollectorAgentService } from "../collector-agent/collector-agent.service.ts";
+import type { CollectionEvidenceStore } from "./collection-evidence-store.ts";
+import {
+  DesktopReportConflictError,
+  DesktopReportIngestionError,
+  DesktopReportIngestionService,
+  DesktopReportValidationError,
+  type ClaimedDesktopRun,
+  type DesktopReportRepository,
+  type IngestionSummary
+} from "./desktop-report-ingestion.service.ts";
+
+const evidenceKey = `sha256:${"a".repeat(64)}`;
+
+function reportFixture(): CollectorReport {
+  return {
+    schemaVersion: 1,
+    runId: "run-1",
+    collectorId: "agent-1",
+    appVersion: "2.4.5",
+    startedAt: "2026-08-24T01:30:00.000Z",
+    completedAt: "2026-08-24T01:31:00.000Z",
+    status: "SUCCEEDED",
+    searchLimit: 2,
+    positions: [
+      {
+        rank: 1,
+        platformItemId: "1001",
+        url: "https://item.taobao.com/item.htm?id=1001",
+        shopName: "Own Shop",
+        title: "Own listing",
+        displayPriceMinFen: 1_000,
+        displayPriceMaxFen: 1_000,
+        sponsored: false,
+        capturedAt: "2026-08-24T01:30:05.000Z"
+      },
+      {
+        rank: 2,
+        platformItemId: "2002",
+        url: "https://detail.tmall.com/item.htm?id=2002",
+        shopName: "Competitor Shop",
+        title: "Competitor listing",
+        displayPriceMinFen: 1_100,
+        displayPriceMaxFen: 1_100,
+        sponsored: false,
+        capturedAt: "2026-08-24T01:30:06.000Z"
+      }
+    ],
+    ownItems: [{
+      ownListingId: "own-1",
+      platformItemId: "1001",
+      url: "https://item.taobao.com/item.htm?id=1001",
+      shopName: "Own Shop",
+      title: "Own listing",
+      searchRanks: [1],
+      skus: [{
+        skuId: "own-black",
+        label: "Black",
+        attributes: { color: "Black" },
+        stockState: "IN_STOCK",
+        listPriceFen: 1_200,
+        activityPriceFen: 1_000,
+        couponDiscountFen: 100,
+        fullReductionFen: 0,
+        directDiscountFen: 0,
+        promotions: [],
+        mandatoryFeeFen: 0,
+        priceConfidence: "CONFIRMED",
+        payableFen: 900,
+        capturedAt: "2026-08-24T01:30:20.000Z",
+        evidenceKey
+      }]
+    }],
+    competitorItems: [{
+      platformItemId: "2002",
+      url: "https://detail.tmall.com/item.htm?id=2002",
+      shopName: "Competitor Shop",
+      title: "Competitor listing",
+      searchRanks: [2],
+      skus: [{
+        skuId: "competitor-black",
+        label: "Black",
+        attributes: { color: "Black" },
+        stockState: "IN_STOCK",
+        listPriceFen: 1_300,
+        activityPriceFen: 1_100,
+        couponDiscountFen: 0,
+        fullReductionFen: 0,
+        directDiscountFen: 0,
+        promotions: [],
+        mandatoryFeeFen: 0,
+        priceConfidence: "CONFIRMED",
+        payableFen: 1_100,
+        capturedAt: "2026-08-24T01:30:30.000Z",
+        evidenceKey: null
+      }]
+    }],
+    issues: []
+  };
+}
+
+function runFixture(overrides: Partial<ClaimedDesktopRun> = {}): ClaimedDesktopRun {
+  return {
+    runId: "run-1",
+    agentId: "agent-1",
+    monitoredModelId: "model-1",
+    providerKey: "taobao-desktop",
+    searchLimit: 2,
+    status: "RUNNING",
+    ownListingIds: ["own-1"],
+    ...overrides
+  };
+}
+
+const summary: IngestionSummary = {
+  runId: "run-1",
+  status: "SUCCEEDED",
+  positionCount: 2,
+  uniqueItemCount: 2,
+  skuCount: 2,
+  issueCount: 0,
+  ownSnapshotIds: ["own-snapshot-1"],
+  competitorSnapshotIds: ["competitor-snapshot-1"]
+};
+
+class FakeIdentityService {
+  invalidToken = false;
+  wrongOwner = false;
+
+  async assertRunOwnership(_token: string, runId: string) {
+    if (this.invalidToken) throw new Error("authentication is handled by the real agent service");
+    if (this.wrongOwner) throw new Error("ownership is handled by the real agent service");
+    return { agentId: "agent-1", runId };
+  }
+}
+
+class FakeRepository implements DesktopReportRepository {
+  run: ClaimedDesktopRun | null = runFixture();
+  persisted: CollectorReport[] = [];
+  failure: unknown;
+  systemErrors: Array<{ agentId: string; runId: string; code: string; message: string }> = [];
+
+  async inspectRun(_agentId: string, _runId: string) {
+    return this.run;
+  }
+
+  async ingest(_agentId: string, report: CollectorReport) {
+    if (this.failure) throw this.failure;
+    this.persisted.push(report);
+    return {
+      summary: { ...summary, status: report.status as IngestionSummary["status"] },
+      newlyAccepted: true
+    };
+  }
+
+  async recordSystemError(agentId: string, runId: string, code: string, message: string) {
+    this.systemErrors.push({ agentId, runId, code, message });
+  }
+}
+
+class FakeEvidenceStore {
+  available = new Set([evidenceKey]);
+
+  async has(_runId: string, key: string) {
+    return this.available.has(key);
+  }
+}
+
+function createService() {
+  const identity = new FakeIdentityService();
+  const repository = new FakeRepository();
+  const evidence = new FakeEvidenceStore();
+  const service = new DesktopReportIngestionService(
+    identity as unknown as CollectorAgentService,
+    repository,
+    evidence as unknown as CollectionEvidenceStore
+  );
+  return { service, identity, repository, evidence };
+}
+
+test("accepts each non-paused terminal report status", async () => {
+  for (const status of ["SUCCEEDED", "PARTIAL_FAILED", "FAILED"] as const) {
+    const { service } = createService();
+    const report = reportFixture();
+    report.status = status;
+
+    assert.equal((await service.ingest("pmc_token", report)).status, status);
+  }
+});
+
+test("binds collector identity, claimed own listings, run state, and the claimed rank limit", async () => {
+  const cases: Array<{
+    name: string;
+    mutateReport?: (report: CollectorReport) => void;
+    mutateRun?: (run: ClaimedDesktopRun) => void;
+  }> = [
+    { name: "collector", mutateReport: (report) => { report.collectorId = "agent-other"; } },
+    { name: "own listing", mutateReport: (report) => { report.ownItems[0]!.ownListingId = "own-other"; } },
+    { name: "rank limit", mutateRun: (run) => { run.searchLimit = 1; } },
+    { name: "running state", mutateRun: (run) => { run.status = "PAUSED_LOGIN"; } }
+  ];
+
+  for (const entry of cases) {
+    const { service, repository } = createService();
+    const report = reportFixture();
+    entry.mutateReport?.(report);
+    entry.mutateRun?.(repository.run!);
+
+    await assert.rejects(
+      () => service.ingest("pmc_token", report),
+      (error) => error instanceof DesktopReportConflictError,
+      entry.name
+    );
+    assert.equal(repository.persisted.length, 0);
+  }
+});
+
+test("rejects URL identity disagreement, reversed completion time, and incomplete success", async () => {
+  const cases: Array<{ name: string; mutate: (report: CollectorReport) => void }> = [
+    {
+      name: "URL identity",
+      mutate: (report) => { report.competitorItems[0]!.url = "https://detail.tmall.com/item.htm?id=9999"; }
+    },
+    {
+      name: "completion time",
+      mutate: (report) => { report.completedAt = "2026-08-24T01:29:59.000Z"; }
+    },
+    {
+      name: "incomplete success",
+      mutate: (report) => {
+        report.issues.push({
+          code: "SKU_ENUMERATION_INCOMPLETE",
+          message: "Enumeration stopped",
+          platformItemId: "2002",
+          capturedAt: "2026-08-24T01:30:40.000Z"
+        });
+      }
+    }
+  ];
+
+  for (const entry of cases) {
+    const { service, repository } = createService();
+    const report = reportFixture();
+    entry.mutate(report);
+
+    await assert.rejects(
+      () => service.ingest("pmc_token", report),
+      (error) => error instanceof DesktopReportValidationError,
+      entry.name
+    );
+    assert.equal(repository.persisted.length, 0);
+  }
+});
+
+test("rejects every collector partial-failure issue on a successful report", async () => {
+  for (const code of [
+    "ITEM_UNAVAILABLE",
+    "SKU_ENUMERATION_INCOMPLETE",
+    "SKU_SELECTION_MISMATCH",
+    "PRICE_UNSTABLE",
+    "UI_CONTRACT_CHANGED"
+  ] as const) {
+    const { service, repository } = createService();
+    const report = reportFixture();
+    report.issues.push({
+      code,
+      message: "Collection was not complete",
+      platformItemId: "2002",
+      capturedAt: "2026-08-24T01:30:40.000Z"
+    });
+
+    await assert.rejects(
+      () => service.ingest("pmc_token", report),
+      (error) => error instanceof DesktopReportValidationError,
+      code
+    );
+    assert.equal(repository.persisted.length, 0);
+  }
+});
+
+test("requires pause reports to use the pause endpoint", async () => {
+  for (const status of ["PAUSED_LOGIN", "PAUSED_CHALLENGE"] as const) {
+    const { service, repository } = createService();
+    const report = reportFixture();
+    report.status = status;
+
+    await assert.rejects(
+      () => service.ingest("pmc_token", report),
+      (error) => error instanceof DesktopReportValidationError
+    );
+    assert.equal(repository.persisted.length, 0);
+  }
+});
+
+test("requires every report evidence key to exist beneath the same run", async () => {
+  const { service, repository, evidence } = createService();
+  evidence.available.clear();
+
+  await assert.rejects(
+    () => service.ingest("pmc_token", reportFixture()),
+    (error) => error instanceof DesktopReportValidationError
+  );
+  assert.equal(repository.persisted.length, 0);
+});
+
+test("records only a sanitized retryable system error when transactional persistence fails", async () => {
+  const { service, repository } = createService();
+  const unsafe = "account-title /private/operator/evidence.png";
+  repository.failure = new Error(unsafe);
+
+  const error = await service.ingest("pmc_token", reportFixture()).then(
+    () => null,
+    (caught: unknown) => caught
+  );
+
+  assert.ok(error instanceof DesktopReportIngestionError);
+  assert.equal(String(error).includes(unsafe), false);
+  assert.equal(String(error.stack).includes(unsafe), false);
+  assert.deepEqual(repository.systemErrors, [{
+    agentId: "agent-1",
+    runId: "run-1",
+    code: "DESKTOP_REPORT_INGESTION_FAILED",
+    message: "Desktop report ingestion failed"
+  }]);
+});

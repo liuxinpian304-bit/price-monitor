@@ -1,5 +1,7 @@
 import "dotenv/config";
 import { Redis } from "ioredis";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 
 import { AlertActionService } from "./alerts/alert-action.service.ts";
 import { AlertController } from "./alerts/alert.controller.ts";
@@ -15,6 +17,9 @@ import { PrismaCatalogImportWriter } from "./catalog/import/prisma-catalog-impor
 import { PrismaCatalogRepository } from "./catalog/prisma-catalog.repository.ts";
 import { CollectorAgentService } from "./collector-agent/collector-agent.service.ts";
 import { PrismaCollectorAgentRepository } from "./collector-agent/prisma-collector-agent.repository.ts";
+import { CollectionEvidenceStore } from "./collection/collection-evidence-store.ts";
+import { DesktopReportIngestionService } from "./collection/desktop-report-ingestion.service.ts";
+import { PrismaDesktopReportRepository } from "./collection/prisma-desktop-report.repository.ts";
 import { createPrismaClient } from "./database/prisma.service.ts";
 import { HealthService } from "./health/health.service.ts";
 import {
@@ -76,6 +81,15 @@ export const manualClassificationService = new ManualClassificationService(
 );
 export const collectorAgentService = new CollectorAgentService(
   new PrismaCollectorAgentRepository(prisma)
+);
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+export const collectionEvidenceStore = new CollectionEvidenceStore(
+  resolve(repositoryRoot, "work/collector-evidence")
+);
+export const desktopReportIngestionService = new DesktopReportIngestionService(
+  collectorAgentService,
+  new PrismaDesktopReportRepository(prisma),
+  collectionEvidenceStore
 );
 
 export async function closeRuntime(): Promise<void> {

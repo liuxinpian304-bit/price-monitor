@@ -186,6 +186,13 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
         }
       });
 
+      await transaction.collectionRun.update({
+        where: { id: run.id },
+        data: {
+          claimedOwnListingIds: run.monitoredModel.ownListings.map((listing) => listing.id)
+        }
+      });
+
       return collectorJobSchema.parse({
         schemaVersion: 1,
         runId: run.id,

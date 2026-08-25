@@ -188,6 +188,7 @@ model CollectionRun {
   finishedAt         DateTime?
   collectorAgentId   String?
   claimedAt          DateTime?
+  claimedOwnListingIds String[]                   @default([])
   heartbeatAt        DateTime?
   searchLimit        Int                        @default(50)
   coalescedIntoRunId String?
