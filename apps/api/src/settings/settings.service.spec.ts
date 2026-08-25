@@ -88,3 +88,11 @@ test("admin schedule changes are validated, stored and audited without secrets",
   assert.equal(auditRepository.entries[0]?.action, "settings.schedule.updated");
   assert.equal(JSON.stringify(auditRepository.entries).includes("secret"), false);
 });
+
+test("desktop is a selectable provider while fresh settings remain manual", async () => {
+  const { service } = createService();
+
+  assert.equal((await service.getPublicSettings("ADMIN")).provider, "manual");
+  await service.updateProvider("desktop", "admin-1", "ADMIN");
+  assert.equal((await service.getPublicSettings("ADMIN")).provider, "desktop");
+});

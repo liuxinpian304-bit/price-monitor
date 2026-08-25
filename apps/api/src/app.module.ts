@@ -13,7 +13,15 @@ import {
 import { HealthHttpController } from "./http/health-http.controller.ts";
 import { OperationsHttpController } from "./http/operations-http.controller.ts";
 import { SettingsHttpController } from "./http/settings-http.controller.ts";
-import { collectorAgentService, desktopReportIngestionService } from "./runtime.ts";
+import {
+  COLLECTION_RUN_QUEUE_SERVICE,
+  CollectionRunsHttpController
+} from "./http/collection-runs-http.controller.ts";
+import {
+  collectionRunQueueService,
+  collectorAgentService,
+  desktopReportIngestionService
+} from "./runtime.ts";
 
 @Module({
   controllers: [
@@ -22,11 +30,13 @@ import { collectorAgentService, desktopReportIngestionService } from "./runtime.
     AlertsHttpController,
     OperationsHttpController,
     SettingsHttpController,
+    CollectionRunsHttpController,
     CollectorAgentHttpController
   ],
   providers: [
     { provide: COLLECTOR_AGENT_SERVICE, useValue: collectorAgentService },
     { provide: DESKTOP_REPORT_INGESTION_SERVICE, useValue: desktopReportIngestionService },
+    { provide: COLLECTION_RUN_QUEUE_SERVICE, useValue: collectionRunQueueService },
     CollectorEvidenceAuthenticationGuard,
     {
       provide: APP_GUARD,

@@ -4,6 +4,7 @@ import type { Redis } from "ioredis";
 
 import type { CollectionLock } from "./collection.service.ts";
 import type { CollectionSchedule, CollectionScheduleQueue } from "./collection.scheduler.ts";
+import type { CollectionRunQueueService } from "./collection-run-queue.service.ts";
 
 export interface ScheduledCollectionJob {
   scheduledLocalTime: string;
@@ -28,13 +29,28 @@ export class BullMqCollectionScheduleQueue implements CollectionScheduleQueue {
           timeZone: schedule.timeZone
         },
         opts: {
-          attempts: 3,
-          backoff: { type: "exponential", delay: 60_000 },
+          attempts: 1,
           removeOnComplete: 100,
           removeOnFail: 500
         }
       }
     );
+  }
+}
+
+export interface ScheduledClockJob {
+  timestamp: number;
+}
+
+export class CollectionScheduleProcessor {
+  private readonly collectionRuns: Pick<CollectionRunQueueService, "enqueueEnabledModels">;
+
+  constructor(collectionRuns: Pick<CollectionRunQueueService, "enqueueEnabledModels">) {
+    this.collectionRuns = collectionRuns;
+  }
+
+  async process(job: ScheduledClockJob): Promise<void> {
+    await this.collectionRuns.enqueueEnabledModels(new Date(job.timestamp));
   }
 }
 

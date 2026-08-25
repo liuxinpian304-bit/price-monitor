@@ -1,7 +1,9 @@
 import "dotenv/config";
+import { Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
 
 import { AlertActionService } from "./alerts/alert-action.service.ts";
 import { AlertController } from "./alerts/alert.controller.ts";
@@ -21,6 +23,12 @@ import { PrismaCatalogRepository } from "./catalog/prisma-catalog.repository.ts"
 import { CollectorAgentService } from "./collector-agent/collector-agent.service.ts";
 import { PrismaCollectorAgentRepository } from "./collector-agent/prisma-collector-agent.repository.ts";
 import { CollectionEvidenceStore } from "./collection/collection-evidence-store.ts";
+import { CollectionScheduleProcessor, BullMqCollectionScheduleQueue } from "./collection/collection.processor.ts";
+import {
+  CollectionRunQueueService,
+  PrismaCollectionRunQueueRepository
+} from "./collection/collection-run-queue.service.ts";
+import { CollectionScheduler } from "./collection/collection.scheduler.ts";
 import { DesktopReportIngestionService } from "./collection/desktop-report-ingestion.service.ts";
 import { PrismaDesktopReportRepository } from "./collection/prisma-desktop-report.repository.ts";
 import { PrismaRunAlertRepository } from "./collection/prisma-run-alert.repository.ts";
@@ -29,6 +37,7 @@ import { createPrismaClient } from "./database/prisma.service.ts";
 import { HealthService } from "./health/health.service.ts";
 import {
   PrismaCollectionHealthRepository,
+  PrismaCollectorAgentHealthProbe,
   PrismaDatabaseProbe,
   RedisHealthProbe
 } from "./health/prisma-health.ts";
@@ -54,9 +63,12 @@ export const prisma = createPrismaClient();
 export const redis = new Redis({
   host: process.env.REDIS_HOST ?? "127.0.0.1",
   port: Number(process.env.REDIS_PORT ?? 6380),
-  maxRetriesPerRequest: 1,
+  maxRetriesPerRequest: null,
   lazyConnect: true
 });
+let runtimeLifecycle: ReturnType<typeof createRuntimeLifecycle> | null = null;
+let runtimeStarted = false;
+
 
 const audit = new AuditService(new PrismaAuditRepository(prisma));
 export const catalogController = new CatalogController(
@@ -76,8 +88,10 @@ export const settingsService = new SettingsService(
 );
 export const healthService = new HealthService(
   new PrismaDatabaseProbe(prisma),
+  { ping: async () => runtimeStarted },
+  new PrismaCollectionHealthRepository(prisma),
   new RedisHealthProbe(redis),
-  new PrismaCollectionHealthRepository(prisma)
+  new PrismaCollectorAgentHealthProbe(prisma)
 );
 export const operationsQuery = new OperationsQueryService(prisma);
 export const manualClassificationService = new ManualClassificationService(
@@ -87,6 +101,9 @@ export const manualClassificationService = new ManualClassificationService(
 export const collectorAgentService = new CollectorAgentService(
   new PrismaCollectorAgentRepository(prisma)
 );
+export const collectionRunQueueService = new CollectionRunQueueService(
+  new PrismaCollectionRunQueueRepository(prisma)
+);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 export const collectionEvidenceStore = new CollectionEvidenceStore(
   resolve(repositoryRoot, "work/collector-evidence")
@@ -95,8 +112,10 @@ function reportUrlForRun(runId: string): string {
   const configured = process.env.PUBLIC_BASE_URL?.trim();
   const base = configured || `http://127.0.0.1:${process.env.API_PORT ?? "4100"}`;
   const url = new URL(base);
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1";
   if (
     (url.protocol !== "https:" && url.protocol !== "http:")
+    || (!loopback && url.protocol !== "https:")
     || url.username !== ""
     || url.password !== ""
     || url.search !== ""
@@ -126,9 +145,42 @@ export const desktopReportIngestionService = new DesktopReportIngestionService(
   runAlertNotifier
 );
 
+function createDesktopScheduleRuntime() {
+  const scheduleQueue = new Queue("desktop-collection-schedule", { connection: redis });
+  const scheduleProcessor = new CollectionScheduleProcessor(collectionRunQueueService);
+  const scheduleWorker = new Worker(
+    "desktop-collection-schedule",
+    async (job) => scheduleProcessor.process({ timestamp: job.timestamp }),
+    { connection: redis, concurrency: 1 }
+  );
+  const collectionScheduler = new CollectionScheduler(
+    new BullMqCollectionScheduleQueue(scheduleQueue),
+    async () => {
+      const settings = await settingsService.getPublicSettings("ADMIN");
+      return { enabled: settings.schedulerEnabled, provider: settings.provider };
+    }
+  );
+  return createRuntimeLifecycle({
+    scheduler: collectionScheduler,
+    worker: scheduleWorker,
+    queue: scheduleQueue,
+    redis,
+    prisma
+  });
+}
+
+export async function startRuntime(): Promise<void> {
+  runtimeLifecycle ??= createDesktopScheduleRuntime();
+  await runtimeLifecycle.start();
+  runtimeStarted = true;
+}
+
 export async function closeRuntime(): Promise<void> {
-  await prisma.$disconnect();
-  if (redis.status !== "end") {
-    redis.disconnect();
+  if (runtimeLifecycle) {
+    await runtimeLifecycle.close();
+    runtimeStarted = false;
+    return;
   }
+  if (redis.status !== "end") redis.disconnect();
+  await prisma.$disconnect();
 }

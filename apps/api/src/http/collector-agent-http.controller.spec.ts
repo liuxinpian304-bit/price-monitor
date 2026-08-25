@@ -34,7 +34,7 @@ import {
   CollectorEvidenceAuthenticationGuard,
   CollectorAgentHttpController
 } from "./collector-agent-http.controller.ts";
-import { configureApiBodyParsing } from "./api-body-parsing.ts";
+import { configureApiBodyParsing, parseCollectorReportJsonLimit } from "./api-body-parsing.ts";
 
 const claimedJob = {
   schemaVersion: 1,
@@ -486,6 +486,14 @@ test("report HTTP authentication runs before JSON buffering and parsing", async 
     assert.equal(ingestion.reportCalls, 0);
   } finally {
     await app.close();
+  }
+});
+
+test("report JSON body limit defaults to 8 MiB and rejects unsafe configuration", () => {
+  assert.equal(parseCollectorReportJsonLimit(undefined), 8 * 1024 * 1024);
+  assert.equal(parseCollectorReportJsonLimit("2mb"), 2 * 1024 * 1024);
+  for (const invalid of ["0", "-1", "9gb", "nonsense", "1.5mb"]) {
+    assert.throws(() => parseCollectorReportJsonLimit(invalid));
   }
 });
 

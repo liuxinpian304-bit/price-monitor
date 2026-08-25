@@ -30,3 +30,19 @@ test("health becomes degraded when a dependency is unavailable", async () => {
   assert.equal(result.status, "degraded");
   assert.equal(result.database, "down");
 });
+
+test("health includes the queue and collector agent availability", async () => {
+  const service = new HealthService(
+    { ping: async () => true },
+    { ping: async () => true },
+    { latest: async () => null },
+    { ping: async () => true },
+    { ping: async () => false }
+  );
+
+  const result = await service.getHealth();
+
+  assert.equal(result.queue, "up");
+  assert.equal(result.collectorAgent, "down");
+  assert.equal(result.status, "degraded");
+});
