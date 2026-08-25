@@ -193,6 +193,13 @@ export class CollectorApiClient {
     this.requireNoContent(response, "POST", route);
   }
 
+  async release(runId: string): Promise<void> {
+    const route = "/api/collector-agent/jobs/:runId/release";
+    const path = `/api/collector-agent/jobs/${encodeURIComponent(runId)}/release`;
+    const { response } = await this.request("POST", route, path, {});
+    this.requireNoContent(response, "POST", route);
+  }
+
   async uploadEvidence(
     runId: string,
     inputEvidenceKey: string,

@@ -4,6 +4,7 @@ import test from "node:test";
 
 import type { RunAlertSummary } from "../collection/run-alert.service.ts";
 import type { WecomMarkdownSender } from "./wecom/wecom.client.ts";
+import { WecomDeliveryAmbiguousError } from "./wecom/wecom.client.ts";
 import {
   RunAlertNotifier,
   type ClaimedRunAlertBatch,
@@ -54,7 +55,7 @@ function summary(runId = "run-1"): RunAlertSummary {
 interface StoredBatch {
   id: string;
   summary: RunAlertSummary;
-  state: "PENDING" | "SENDING" | "NOTIFIED";
+  state: "PENDING" | "SENDING" | "NOTIFIED" | "AMBIGUOUS";
   token: string | null;
   failures: string[];
 }
@@ -103,6 +104,19 @@ class FakeBatchRepository implements RunAlertNotificationRepository {
     stored.state = "PENDING";
     stored.token = null;
     stored.failures.push(message);
+  }
+
+  async recordBatchNotificationAmbiguous(batch: ClaimedRunAlertBatch, _failedAt: Date) {
+    const stored = this.requireOwned(batch);
+    stored.state = "AMBIGUOUS";
+    stored.token = null;
+    stored.failures.push("WECOM_DELIVERY_AMBIGUOUS");
+  }
+
+  async listRetryableSummaries(): Promise<RunAlertSummary[]> {
+    return [...this.batches.values()]
+      .filter((batch) => batch.state === "PENDING")
+      .map((batch) => structuredClone(batch.summary));
   }
 
   private requireOwned(batch: ClaimedRunAlertBatch): StoredBatch {
@@ -200,4 +214,18 @@ test("records a missing webhook without throwing or exposing configuration", asy
   await notifier.send(summary());
 
   assert.deepEqual(repository.batches.get("run-1")?.failures, ["WECOM_NOT_CONFIGURED"]);
+});
+
+test("records ambiguous delivery and never claims the batch for another POST", async () => {
+  const repository = new FakeBatchRepository();
+  const sender = new RecordingSender();
+  sender.failure = new WecomDeliveryAmbiguousError();
+  const notifier = new RunAlertNotifier(repository, async () => sender);
+
+  await notifier.send(summary());
+  await notifier.send(summary());
+
+  assert.equal(sender.messages.length, 1);
+  assert.equal(repository.batches.get("run-1")?.state, "AMBIGUOUS");
+  assert.deepEqual(repository.batches.get("run-1")?.failures, ["WECOM_DELIVERY_AMBIGUOUS"]);
 });

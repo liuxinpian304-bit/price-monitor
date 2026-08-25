@@ -44,6 +44,7 @@ const report: CollectorReport = {
   completedAt: "2026-08-24T01:01:00.000Z",
   status: "SUCCEEDED",
   searchLimit: 3,
+  searchTerminationReason: "END_MARKER",
   positions: [],
   ownItems: [{
     ownListingId: "own-1",
@@ -157,11 +158,12 @@ test("accepts the assembled runtime health contract without weakening its respon
   await assert.rejects(() => unknownField.checkReachability(), { code: "INVALID_RESPONSE" });
 });
 
-test("sends exact heartbeat and pause payloads to encoded run routes", async () => {
+test("sends exact heartbeat, pause, and graceful release requests to encoded run routes", async () => {
   const { client, requests } = clientWith(() => new Response(null, { status: 204 }));
 
   await client.heartbeat("run/encoded", { discoveredCount: 7, skuCount: 19 });
   await client.pause("run/encoded", "LOGIN_REQUIRED", "Operator login required");
+  await client.release("run/encoded");
 
   assert.equal(
     requests[0]?.url,
@@ -179,6 +181,11 @@ test("sends exact heartbeat and pause payloads to encoded run routes", async () 
     code: "LOGIN_REQUIRED",
     message: "Operator login required"
   });
+  assert.equal(
+    requests[2]?.url,
+    "https://collector.example.test/api/collector-agent/jobs/run%2Fencoded/release"
+  );
+  assert.equal(requests[2]?.init.body, undefined);
 });
 
 test("uploads PNG multipart data by hash and requires the same hash acknowledgement", async () => {

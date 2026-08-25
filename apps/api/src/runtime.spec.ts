@@ -3,11 +3,15 @@ import test from "node:test";
 
 import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
 
-test("runtime starts one schedule worker and closes worker, queue, Redis, then Prisma", async () => {
+test("runtime starts reconciliation once and closes it before worker, queue, Redis, then Prisma", async () => {
   const events: string[] = [];
   let registered = 0;
   const runtime = createRuntimeLifecycle({
     scheduler: { registerSchedules: async () => { registered += 1; } },
+    reconciliation: {
+      start: async () => { events.push("reconciliation-start"); },
+      close: async () => { events.push("reconciliation-close"); }
+    },
     worker: { close: async () => { events.push("worker"); } },
     queue: { close: async () => { events.push("queue"); } },
     redis: { disconnect: () => { events.push("redis"); }, status: "ready" },
@@ -19,7 +23,14 @@ test("runtime starts one schedule worker and closes worker, queue, Redis, then P
   await runtime.close();
 
   assert.equal(registered, 1);
-  assert.deepEqual(events, ["worker", "queue", "redis", "prisma"]);
+  assert.deepEqual(events, [
+    "reconciliation-start",
+    "reconciliation-close",
+    "worker",
+    "queue",
+    "redis",
+    "prisma"
+  ]);
 });
 
 test("runtime attempts every ordered cleanup step after an earlier close failure", async () => {

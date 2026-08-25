@@ -27,6 +27,8 @@ function runFixture(overrides: Partial<CollectionReportRawRun> = {}): Collection
     startedAt: capturedAt,
     finishedAt: new Date("2026-08-25T01:38:00.000Z"),
     searchLimit: 50,
+    searchTerminationReason: null,
+    ownBaselineSnapshotId: "own-snapshot",
     searchedCount: 47,
     fetchedCount: 47,
     matchedCount: 2,
@@ -309,6 +311,43 @@ test("does not present legacy aggregate progress as captured rank evidence", asy
   assert.equal(result.runs[0]?.completion.positionsCaptured, 0);
   assert.equal(result.runs[0]?.completion.complete, false);
   assert.equal(result.runs[0]?.completion.label, "0 / 50，未完成");
+});
+
+test("presents a verified early page end as complete but leaves an interrupted short search incomplete", async () => {
+  const repo = repository();
+  repo.runs[0] = runFixture({
+    status: "SUCCEEDED",
+    searchLimit: 50,
+    searchTerminationReason: "END_MARKER",
+    positionCount: 2,
+    incompleteCount: 0
+  });
+  let result = await new CollectionReportQueryService(repo).listRuns();
+  assert.deepEqual(result.runs[0]?.completion, {
+    positionsCaptured: 2,
+    requestedPositions: 50,
+    discoveredCount: 47,
+    fetchedCount: 47,
+    matchedCount: 2,
+    failedCount: 3,
+    uniqueItemCount: 2,
+    skuCount: 5,
+    incompleteCount: 0,
+    terminationReason: "END_MARKER",
+    complete: true,
+    label: "2 项，已验证到底"
+  });
+
+  repo.runs[0] = runFixture({
+    status: "PARTIAL_FAILED",
+    searchLimit: 50,
+    searchTerminationReason: null,
+    positionCount: 2,
+    incompleteCount: 1
+  });
+  result = await new CollectionReportQueryService(repo).listRuns();
+  assert.equal(result.runs[0]?.completion.complete, false);
+  assert.equal(result.runs[0]?.completion.terminationReason, null);
 });
 
 test("bounds every detail collection and reports independent totals", async () => {

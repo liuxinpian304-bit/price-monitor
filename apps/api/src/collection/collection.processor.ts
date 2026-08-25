@@ -40,6 +40,11 @@ export class BullMqCollectionScheduleQueue implements CollectionScheduleQueue {
   async removeSchedule(id: string): Promise<void> {
     await this.queue.removeJobScheduler(id);
   }
+
+  async listScheduleIds(): Promise<string[]> {
+    const schedulers = await this.queue.getJobSchedulers(0, -1, true);
+    return schedulers.map((scheduler) => scheduler.key);
+  }
 }
 
 export interface ScheduledClockJob {

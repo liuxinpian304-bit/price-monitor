@@ -7,7 +7,6 @@ import { z } from "zod";
 
 import type { CollectorAgentService } from "../collector-agent/collector-agent.service.ts";
 import type { CollectionEvidenceStore } from "./collection-evidence-store.ts";
-import type { RunAlertSummary } from "./run-alert.service.ts";
 
 export type TerminalCollectionStatus = "SUCCEEDED" | "PARTIAL_FAILED" | "FAILED";
 export type ClaimedCollectionStatus =
@@ -65,12 +64,8 @@ export interface DesktopReportRepository {
   recordSystemError(agentId: string, runId: string, code: string, message: string): Promise<void>;
 }
 
-export interface RunAlertEvaluator {
-  evaluateRun(runId: string): Promise<RunAlertSummary>;
-}
-
-export interface RunAlertSummaryNotifier {
-  send(summary: RunAlertSummary): Promise<void>;
+export interface RunAlertReconciliationTrigger {
+  reconcileRun(runId: string): Promise<void>;
 }
 
 export const INGESTION_DISPOSITION = Symbol("desktop-report-ingestion-disposition");
@@ -115,6 +110,9 @@ const partialFailureIssueCodes = new Set([
 
 const fatalFailureIssueCodes = new Set([
   "MISSING_ITEM_ID",
+  "TAOBAO_NOT_INSTALLED",
+  "TAOBAO_NOT_RUNNING",
+  "ACCESSIBILITY_PERMISSION_REQUIRED",
   "APP_VERSION_UNSUPPORTED",
   "UI_CONTRACT_CHANGED",
   "SCREEN_RECORDING_PERMISSION_REQUIRED"
@@ -260,21 +258,18 @@ export class DesktopReportIngestionService {
   private readonly collectorAgentService: CollectorAgentService;
   private readonly repository: DesktopReportRepository;
   private readonly evidenceStore: CollectionEvidenceStore;
-  private readonly runAlertEvaluator: RunAlertEvaluator | null;
-  private readonly runAlertNotifier: RunAlertSummaryNotifier | null;
+  private readonly runAlertReconciler: RunAlertReconciliationTrigger | null;
 
   constructor(
     collectorAgentService: CollectorAgentService,
     repository: DesktopReportRepository,
     evidenceStore: CollectionEvidenceStore,
-    runAlertEvaluator: RunAlertEvaluator | null = null,
-    runAlertNotifier: RunAlertSummaryNotifier | null = null
+    runAlertReconciler: RunAlertReconciliationTrigger | null = null
   ) {
     this.collectorAgentService = collectorAgentService;
     this.repository = repository;
     this.evidenceStore = evidenceStore;
-    this.runAlertEvaluator = runAlertEvaluator;
-    this.runAlertNotifier = runAlertNotifier;
+    this.runAlertReconciler = runAlertReconciler;
   }
 
   async ingest(agentToken: string, input: CollectorReport): Promise<IngestionSummary> {
@@ -309,14 +304,7 @@ export class DesktopReportIngestionService {
       value: result.newlyAccepted ? "created" : "existing",
       enumerable: false
     });
-    if (this.runAlertEvaluator && this.runAlertNotifier) {
-      try {
-        const alertSummary = await this.runAlertEvaluator.evaluateRun(report.runId);
-        await this.runAlertNotifier.send(alertSummary);
-      } catch {
-        // Ingestion is already committed; downstream alert delivery must not alter its receipt.
-      }
-    }
+    await this.runAlertReconciler?.reconcileRun(report.runId).catch(() => undefined);
     return result.summary;
   }
 

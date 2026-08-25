@@ -9,6 +9,7 @@ import {
   type ScheduledCollectionJob
 } from "./collection.processor.ts";
 import { CollectionScheduler } from "./collection.scheduler.ts";
+import { CHECK_TIMES } from "../../../../packages/config/src/schedule.ts";
 
 const redis = new Redis({ host: "127.0.0.1", port: 6380, maxRetriesPerRequest: null });
 const queue = new Queue<ScheduledCollectionJob>("tmall-price-monitor-schedule-test", {
@@ -39,21 +40,29 @@ test("registers twelve BullMQ job schedulers with Shanghai timezone", async () =
 
 test("reconcile removes all persisted desktop schedulers after disable or provider change", async () => {
   const adapter = new BullMqCollectionScheduleQueue(queue);
-  let settings: { enabled: boolean; provider: "desktop" | "manual" } = {
+  let settings: { enabled: boolean; provider: "desktop" | "manual"; checkTimes: string[] } = {
     enabled: true,
-    provider: "desktop"
+    provider: "desktop",
+    checkTimes: [...CHECK_TIMES]
   };
   const scheduler = new CollectionScheduler(adapter, async () => settings);
   await scheduler.registerSchedules();
   assert.equal((await queue.getJobSchedulers(0, -1, true)).length, 12);
 
-  settings = { enabled: false, provider: "desktop" };
+  settings = { enabled: true, provider: "desktop", checkTimes: ["09:30", "11:45"] };
+  await scheduler.registerSchedules();
+  assert.deepEqual(
+    (await queue.getJobSchedulers(0, -1, true)).map((entry) => entry.key).sort(),
+    ["tmall-collection-0930", "tmall-collection-1145"]
+  );
+
+  settings = { enabled: false, provider: "desktop", checkTimes: ["09:30"] };
   await scheduler.registerSchedules();
   assert.equal((await queue.getJobSchedulers(0, -1, true)).length, 0);
 
-  settings = { enabled: true, provider: "desktop" };
+  settings = { enabled: true, provider: "desktop", checkTimes: [...CHECK_TIMES] };
   await scheduler.registerSchedules();
-  settings = { enabled: true, provider: "manual" };
+  settings = { enabled: true, provider: "manual", checkTimes: [...CHECK_TIMES] };
   await scheduler.registerSchedules();
   assert.equal((await queue.getJobSchedulers(0, -1, true)).length, 0);
 });

@@ -21,7 +21,9 @@ const environment = {
 };
 
 const diagnostic: DriverDiagnostic = {
+  appInstalled: true,
   accessibilityTrusted: true,
+  screenRecordingTrusted: true,
   appRunning: true,
   processId: 123,
   bundleId: "com.taobao.pcdesktop",
@@ -143,6 +145,49 @@ test("diagnose independently enforces the approved Taobao version and build", as
       }),
       (error: unknown) => error instanceof CollectorCliError
         && error.code === "TAOBAO_VERSION_UNSUPPORTED"
+    );
+  }
+});
+
+test("diagnose reports app and permission recovery codes in deterministic order", async () => {
+  const cases: Array<{ changed: Partial<DriverDiagnostic>; expected: string }> = [
+    {
+      changed: {
+        appInstalled: false,
+        appRunning: false,
+        accessibilityTrusted: false,
+        screenRecordingTrusted: false
+      },
+      expected: "TAOBAO_NOT_INSTALLED"
+    },
+    {
+      changed: { appRunning: false, accessibilityTrusted: false, screenRecordingTrusted: false },
+      expected: "TAOBAO_NOT_RUNNING"
+    },
+    {
+      changed: { accessibilityTrusted: false, screenRecordingTrusted: false },
+      expected: "ACCESSIBILITY_PERMISSION_REQUIRED"
+    },
+    {
+      changed: { screenRecordingTrusted: false },
+      expected: "SCREEN_RECORDING_PERMISSION_REQUIRED"
+    }
+  ];
+
+  for (const testCase of cases) {
+    await assert.rejects(
+      () => runCollectorCli(["diagnose"], environment, {
+        platform: "darwin",
+        access: async () => undefined,
+        createApi: () => new FakeCliApi(),
+        createDiagnosticDriver: () => ({
+          diagnose: async () => ({ ...diagnostic, ...testCase.changed }),
+          close: () => undefined
+        }),
+        log: () => undefined
+      }),
+      (error: unknown) => error instanceof CollectorCliError && error.code === testCase.expected,
+      testCase.expected
     );
   }
 });

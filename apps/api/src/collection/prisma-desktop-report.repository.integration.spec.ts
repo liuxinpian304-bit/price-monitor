@@ -13,6 +13,8 @@ import { CollectorAgentService } from "../collector-agent/collector-agent.servic
 import { PrismaCollectorAgentRepository } from "../collector-agent/prisma-collector-agent.repository.ts";
 import { createCollectorToken } from "../collector-agent/collector-token.ts";
 import { PrismaRunAlertNotificationRepository } from "../alerts/prisma-run-alert-notification.repository.ts";
+import { PrismaRunAlertEvaluationRepository } from "../alerts/prisma-run-alert-evaluation.repository.ts";
+import { RunAlertReconciler } from "../alerts/run-alert-reconciler.ts";
 import { RunAlertNotifier } from "../alerts/run-alert-notifier.ts";
 import type { WecomMarkdownSender } from "../alerts/wecom/wecom.client.ts";
 import { createPrismaClient } from "../database/prisma.service.ts";
@@ -445,22 +447,33 @@ test("transactionally ingests one concurrent report history and returns its orig
       alerts: []
     };
     const failingSender = new AlwaysFailingSender();
+    const notificationRepository = new PrismaRunAlertNotificationRepository(prisma);
+    const notifier = new RunAlertNotifier(
+      notificationRepository,
+      async () => failingSender
+    );
+    const evaluator = { async evaluateRun() { return structuredClone(immutableSummary); } };
+    const reconciler = new RunAlertReconciler(
+      new PrismaRunAlertEvaluationRepository(prisma),
+      evaluator,
+      notifier,
+      notificationRepository
+    );
     const replayService = new DesktopReportIngestionService(
       new CollectorAgentService(new PrismaCollectorAgentRepository(prisma)),
       repository,
       evidenceStore,
-      { async evaluateRun() { return structuredClone(immutableSummary); } },
-      new RunAlertNotifier(
-        new PrismaRunAlertNotificationRepository(prisma),
-        async () => failingSender
-      )
+      reconciler
     );
-    for (let replay = 0; replay < 3; replay += 1) {
-      assert.deepEqual(
-        await replayService.ingest(token.plaintext, structuredClone(report)),
-        first
-      );
-    }
+    assert.deepEqual(await replayService.ingest(token.plaintext, structuredClone(report)), first);
+    const restartedReconciler = new RunAlertReconciler(
+      new PrismaRunAlertEvaluationRepository(prisma),
+      evaluator,
+      notifier,
+      notificationRepository
+    );
+    await restartedReconciler.reconcilePending();
+    assert.deepEqual(await replayService.ingest(token.plaintext, structuredClone(report)), first);
     assert.equal(failingSender.messages.length, 2);
     assert.equal(failingSender.messages[0], failingSender.messages[1]);
     const exhaustedBatch = await prisma.runAlertNotificationBatch.findUniqueOrThrow({

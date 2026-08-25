@@ -206,6 +206,31 @@ test("rejects missing ranks, unsafe money, invalid confidence, and excess positi
   }));
 });
 
+test("requires explicit verified termination for a successful short search", () => {
+  const shortReport = {
+    ...report,
+    positions: report.positions.slice(0, 2)
+  };
+
+  assert.throws(() => collectorReportSchema.parse(shortReport));
+  assert.doesNotThrow(() => collectorReportSchema.parse({
+    ...shortReport,
+    searchTerminationReason: "END_MARKER"
+  }));
+  assert.throws(() => collectorReportSchema.parse({
+    ...shortReport,
+    searchTerminationReason: "LIMIT_REACHED"
+  }));
+  assert.throws(() => collectorReportSchema.parse({
+    ...report,
+    searchTerminationReason: "END_MARKER"
+  }));
+  assert.doesNotThrow(() => collectorReportSchema.parse({
+    ...report,
+    searchTerminationReason: "LIMIT_REACHED"
+  }));
+});
+
 test("rejects unknown fields at every contract boundary", () => {
   assert.throws(() => collectorJobSchema.parse({ ...job, unexpected: true }));
   assert.throws(() => collectorReportSchema.parse({ ...report, unexpected: true }));

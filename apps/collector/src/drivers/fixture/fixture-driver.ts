@@ -10,6 +10,7 @@ import {
   PlatformChallengeError,
   type DriverDiagnostic,
   type DriverItemPage,
+  type DriverSearchResult,
   type DriverSearchPosition,
   type DriverSkuSelectionResult,
   type DriverSkuView,
@@ -124,7 +125,9 @@ export class FixtureDriver implements TaobaoDesktopDriver {
   async diagnose(): Promise<DriverDiagnostic> {
     const capturedAt = this.fixture.diagnostic.capturedAt;
     return {
+      appInstalled: true,
       accessibilityTrusted: true,
+      screenRecordingTrusted: true,
       appRunning: true,
       processId: null,
       bundleId: "fixture.taobao.desktop",
@@ -144,15 +147,19 @@ export class FixtureDriver implements TaobaoDesktopDriver {
     return this.itemPage(listing.item, "fixture:own-item");
   }
 
-  async search(query: string, limit: number): Promise<DriverSearchPosition[]> {
+  async search(query: string, limit: number): Promise<DriverSearchResult> {
     if (query !== this.fixture.search.query) {
       throw new TypeError(`Search query is absent from fixture: ${query}`);
     }
     this.events.push({ type: "SEARCH", query, limit });
-    return this.fixture.search.positions.slice(0, limit).map((position) => ({
+    const positions = this.fixture.search.positions.slice(0, limit).map((position) => ({
       ...position,
       rawEvidence: rawEvidence("fixture:search-position", position.capturedAt, { rank: position.rank })
     }));
+    return {
+      positions,
+      terminationReason: positions.length === limit ? "LIMIT_REACHED" : "END_MARKER"
+    };
   }
 
   async openSearchPosition(position: DriverSearchPosition): Promise<DriverItemPage> {

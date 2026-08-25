@@ -102,7 +102,15 @@ export function calculatePublicPrice(input: PublicPriceInput): PublicPriceResult
   const reviewReasons: string[] = [];
 
   for (const promotion of input.promotions) {
-    if (!isPublicPromotion(promotion) || promotion.includedInActivityPrice) {
+    if (!isPublicPromotion(promotion)) {
+      continue;
+    }
+
+    const inclusion = promotion.activityPriceInclusion
+      ?? (promotion.includedInActivityPrice ? "INCLUDED" : "EXCLUDED");
+    if (inclusion === "INCLUDED") continue;
+    if (inclusion === "UNKNOWN") {
+      reviewReasons.push(promotion.label);
       continue;
     }
 

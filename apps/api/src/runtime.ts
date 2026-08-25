@@ -9,6 +9,8 @@ import { AlertActionService } from "./alerts/alert-action.service.ts";
 import { AlertController } from "./alerts/alert.controller.ts";
 import { PrismaAlertActionRepository } from "./alerts/prisma-alert-action.repository.ts";
 import { PrismaRunAlertNotificationRepository } from "./alerts/prisma-run-alert-notification.repository.ts";
+import { PrismaRunAlertEvaluationRepository } from "./alerts/prisma-run-alert-evaluation.repository.ts";
+import { RunAlertReconciler, RunAlertReconciliationLoop } from "./alerts/run-alert-reconciler.ts";
 import { RunAlertNotifier } from "./alerts/run-alert-notifier.ts";
 import { WecomClient } from "./alerts/wecom/wecom.client.ts";
 import { AuditService } from "./audit/audit.service.ts";
@@ -73,7 +75,11 @@ let collectionScheduler: CollectionScheduler | null = null;
 
 async function currentScheduleSettings() {
   const settings = await settingsService.getPublicSettings("ADMIN");
-  return { enabled: settings.schedulerEnabled, provider: settings.provider };
+  return {
+    enabled: settings.schedulerEnabled,
+    provider: settings.provider,
+    checkTimes: settings.checkTimes
+  };
 }
 
 async function reconcileCollectionSchedules(): Promise<void> {
@@ -130,19 +136,26 @@ export const runAlertService = new RunAlertService(
   new PrismaRunAlertRepository(prisma),
   (runId) => reportUrlForRun(publicBaseUrl, runId)
 );
+const runAlertNotificationRepository = new PrismaRunAlertNotificationRepository(prisma);
 export const runAlertNotifier = new RunAlertNotifier(
-  new PrismaRunAlertNotificationRepository(prisma),
+  runAlertNotificationRepository,
   async () => {
     const webhookUrl = await settingsService.readSecretForInternalUse("WECOM_WEBHOOK");
     return webhookUrl ? new WecomClient({ webhookUrl }) : null;
   }
 );
+export const runAlertReconciler = new RunAlertReconciler(
+  new PrismaRunAlertEvaluationRepository(prisma),
+  runAlertService,
+  runAlertNotifier,
+  runAlertNotificationRepository
+);
+const runAlertReconciliationLoop = new RunAlertReconciliationLoop(runAlertReconciler);
 export const desktopReportIngestionService = new DesktopReportIngestionService(
   collectorAgentService,
   new PrismaDesktopReportRepository(prisma),
   collectionEvidenceStore,
-  runAlertService,
-  runAlertNotifier
+  runAlertReconciler
 );
 
 function createDesktopScheduleRuntime() {
@@ -159,6 +172,7 @@ function createDesktopScheduleRuntime() {
   );
   return createRuntimeLifecycle({
     scheduler: collectionScheduler,
+    reconciliation: runAlertReconciliationLoop,
     worker: scheduleWorker,
     queue: scheduleQueue,
     redis,

@@ -28,7 +28,9 @@ export interface AxHelperCommandFields {
 }
 
 export interface AxHelperDiagnosticPayload {
+  appInstalled: boolean;
   trusted: boolean;
+  screenRecordingTrusted: boolean;
   appRunning: boolean;
   pid: number | null;
   bundleId: string | null;

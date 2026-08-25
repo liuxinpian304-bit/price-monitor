@@ -370,7 +370,9 @@ export class CollectionRunner {
   }
 
   private async collectSearch(job: CollectorJob, checkpoint: CollectorCheckpoint): Promise<void> {
-    const positions = await this.driver.search(job.searchQuery, job.searchLimit);
+    const searchResult = await this.driver.search(job.searchQuery, job.searchLimit);
+    const positions = searchResult.positions;
+    checkpoint.report.searchTerminationReason = searchResult.terminationReason;
     checkpoint.report.positions = positions.map((position) => ({
       rank: position.rank,
       platformItemId: position.platformItemId ?? unresolvedSearchIdentity(position.rank, position.url),

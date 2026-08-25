@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useApiData } from "../api/client.ts";
-import { requeueCollectionRun } from "../api/collection-runs.ts";
+import { fetchCollectionEvidence, requeueCollectionRun } from "../api/collection-runs.ts";
 import { CollectionRunDetailPage } from "./CollectionRunDetailPage.tsx";
 
 vi.mock("../api/client.ts", () => ({ useApiData: vi.fn() }));
@@ -23,7 +23,7 @@ function report(status: string) {
     finishedAt: null,
     model: { id: "model-1", monitorCode: "SONY-7506", label: "Sony MDR-7506", comparisonType: "BARE", owner: "运营A" },
     collector: { id: "agent-1", name: "mac-studio-1", platform: "MACOS", appVersion: "2.4.5" },
-    completion: { positionsCaptured: 47, requestedPositions: 50, discoveredCount: 47, fetchedCount: 47, matchedCount: 2, failedCount: 3, uniqueItemCount: 47, skuCount: 2, incompleteCount: 3, complete: false, label: "47 / 50，未完成" },
+    completion: { positionsCaptured: 47, requestedPositions: 50, discoveredCount: 47, fetchedCount: 47, matchedCount: 2, failedCount: 3, uniqueItemCount: 47, skuCount: 2, incompleteCount: 3, terminationReason: null, complete: false, label: "47 / 50，未完成" },
     notification: { state: "FAILED", attempts: 2, notifiedAt: null, lastError: "WECOM_DELIVERY_FAILED" },
     error: { code: "LOGIN_REQUIRED", message: "淘宝登录已失效" },
     positions: [{ rank: 1, platformItemId: "item-1", url: "https://item.taobao.com/item.htm?id=1", shopName: "同行店", title: "Sony MDR-7506", displayPriceMinFen: 65_800, displayPriceMaxFen: 65_800, sponsored: false, capturedAt: "2026-08-25T01:30:00.000Z" }],
@@ -56,8 +56,35 @@ function renderPage() {
 
 describe("CollectionRunDetailPage", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(fetchCollectionEvidence).mockReset();
     vi.mocked(requeueCollectionRun).mockReset();
     vi.mocked(requeueCollectionRun).mockResolvedValue({ runId: "run-1" });
+  });
+
+  it("opens the evidence window synchronously before awaiting protected evidence bytes", async () => {
+    vi.mocked(useApiData).mockReturnValue({ data: report("SUCCEEDED"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
+    const events: string[] = [];
+    let resolveEvidence!: (blob: Blob) => void;
+    vi.mocked(fetchCollectionEvidence).mockImplementation(() => {
+      events.push("fetch");
+      return new Promise<Blob>((resolve) => { resolveEvidence = resolve; });
+    });
+    const popup = { close: vi.fn(), location: { href: "about:blank" }, opener: window };
+    vi.spyOn(window, "open").mockImplementation(() => {
+      events.push("open");
+      return popup as unknown as Window;
+    });
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:fixture-evidence");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+
+    renderPage();
+    fireEvent.click(screen.getAllByRole("button", { name: "查看证据" })[0]!);
+    expect(events).toEqual(["open", "fetch"]);
+
+    resolveEvidence(new Blob(["fixture"], { type: "image/png" }));
+    await vi.waitFor(() => expect(popup.location.href).toBe("blob:fixture-evidence"));
+    expect(popup.opener).toBeNull();
   });
 
   it("shows all SKU price components and gives a paused login run an operator-only recovery action", async () => {

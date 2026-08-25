@@ -138,6 +138,7 @@ class FakeRunAlertRepository implements RunAlertRepository, RunAlertUnitOfWork {
   readonly snapshotDecisions = new Map<string, SnapshotMatchPersistence>();
   readonly candidateDecisions = new Map<string, CandidateMatchPersistence>();
   readonly issues = new Set<"OWN_BASELINE_MISSING" | "OWN_BASELINE_AMBIGUOUS">();
+  ownBaselineSnapshotId: string | null = null;
   data: RunAlertData;
 
   constructor(data: RunAlertData) {
@@ -158,6 +159,10 @@ class FakeRunAlertRepository implements RunAlertRepository, RunAlertUnitOfWork {
 
   async saveCandidateDecisions(decisions: CandidateMatchPersistence[]) {
     for (const decision of decisions) this.candidateDecisions.set(decision.candidateId, decision);
+  }
+
+  async saveOwnBaselineSnapshot(snapshotId: string | null) {
+    this.ownBaselineSnapshotId = snapshotId;
   }
 
   async ensureBaselineIssue(code: "OWN_BASELINE_MISSING" | "OWN_BASELINE_AMBIGUOUS") {
@@ -205,11 +210,25 @@ test("creates confirmed lows only for the exact in-stock confirmed 69799 and 658
   assert.equal(summary.searchLimit, 6);
   assert.equal(summary.systemIssue, null);
   assert.equal(repository.alerts.alerts.length, 2);
+  assert.equal(repository.ownBaselineSnapshotId, "own-snapshot");
 
   assert.equal(repository.snapshotDecisions.size, 7);
   assert.equal(repository.snapshotDecisions.get("snapshot-2")?.decision, "BARE");
   assert.equal(repository.snapshotDecisions.get("snapshot-6")?.decision, "REJECTED");
   assert.equal(repository.snapshotDecisions.get("snapshot-6")?.comparable, false);
+});
+
+test("persists an attribute-only punctuation-normalized own baseline for report comparison", async () => {
+  const data = bareRun();
+  data.snapshots[0]!.ownListingSkuText = "MDR-7506 / 单机";
+  data.snapshots[0]!.skuText = "请选择规格";
+  data.snapshots[0]!.attributes = { 型号配置: "MDR 7506 单机" };
+  const { repository, service } = context(data);
+
+  const result = await service.evaluateRun(data.runId);
+
+  assert.equal(result.baseline?.snapshotId, "own-snapshot");
+  assert.equal(repository.ownBaselineSnapshotId, "own-snapshot");
 });
 
 test("derives one candidate decision from all of its SKU snapshots", async () => {
@@ -301,6 +320,7 @@ for (const fixture of [
     assert.equal(repeated.systemIssue, fixture.code);
     assert.equal(repository.issues.size, 1);
     assert.equal(repository.alerts.alerts.length, 0);
+    assert.equal(repository.ownBaselineSnapshotId, null);
   });
 }
 

@@ -8,6 +8,7 @@ export const COLLECTOR_ISSUE_CODES = [
   "MISSING_ITEM_ID", "ITEM_UNAVAILABLE", "SKU_ENUMERATION_INCOMPLETE",
   "SKU_SELECTION_MISMATCH", "PRICE_UNSTABLE", "LOGIN_REQUIRED",
   "PLATFORM_CHALLENGE", "APP_VERSION_UNSUPPORTED", "UI_CONTRACT_CHANGED",
+  "TAOBAO_NOT_INSTALLED", "TAOBAO_NOT_RUNNING", "ACCESSIBILITY_PERMISSION_REQUIRED",
   "SCREEN_RECORDING_PERMISSION_REQUIRED", "OWN_BASELINE_MISSING",
   "OWN_BASELINE_AMBIGUOUS"
 ] as const;
@@ -19,6 +20,7 @@ const moneyFenSchema = z.number().int().nonnegative().max(POSTGRES_INT_MAX);
 const positiveCountSchema = z.number().int().positive().max(POSTGRES_INT_MAX);
 const nonNegativeCountSchema = z.number().int().nonnegative().max(POSTGRES_INT_MAX);
 const searchLimitSchema = positiveCountSchema.max(50);
+export const searchTerminationReasonSchema = z.enum(["LIMIT_REACHED", "END_MARKER"]);
 const identifierSchema = z.string().min(1);
 const reportIdentifierSchema = identifierSchema.max(160);
 const urlSchema = z.url();
@@ -68,7 +70,8 @@ const promotionEvidenceSchema = z.object({
   thresholdFen: moneyFenSchema.nullable(),
   audience: z.string().min(1).max(120),
   stackGroup: z.string().min(1).max(120).nullable(),
-  includedInActivityPrice: z.boolean()
+  includedInActivityPrice: z.boolean(),
+  activityPriceInclusion: z.enum(["INCLUDED", "EXCLUDED", "UNKNOWN"]).optional()
 }).strict();
 
 const collectedSkuComponentSchema = z.object({
@@ -143,6 +146,7 @@ const reportBodySchema = z.object({
   completedAt: timestampSchema,
   status: reportStatusSchema,
   searchLimit: searchLimitSchema,
+  searchTerminationReason: searchTerminationReasonSchema.optional(),
   positions: z.array(searchPositionSchema),
   ownItems: z.array(ownItemSchema),
   competitorItems: z.array(competitorItemSchema),
@@ -171,6 +175,40 @@ export const collectorReportSchema = reportBodySchema.superRefine((report, conte
       code: "custom",
       path: ["positions"],
       message: "positions cannot exceed searchLimit"
+    });
+  }
+
+  if (
+    report.searchTerminationReason === "LIMIT_REACHED"
+    && report.status === "SUCCEEDED"
+    && report.positions.length !== report.searchLimit
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["searchTerminationReason"],
+      message: "LIMIT_REACHED requires positions to equal searchLimit"
+    });
+  }
+  if (
+    report.searchTerminationReason === "END_MARKER"
+    && report.status === "SUCCEEDED"
+    && report.positions.length >= report.searchLimit
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["searchTerminationReason"],
+      message: "END_MARKER requires fewer positions than searchLimit"
+    });
+  }
+  if (
+    report.status === "SUCCEEDED"
+    && report.positions.length < report.searchLimit
+    && report.searchTerminationReason !== "END_MARKER"
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["searchTerminationReason"],
+      message: "short terminal searches require a verified END_MARKER"
     });
   }
 
@@ -331,4 +369,5 @@ export type CollectedSku = z.infer<typeof collectedSkuSchema>;
 export type CollectedItem = z.infer<typeof ownItemSchema> | z.infer<typeof competitorItemSchema>;
 export type CollectorIssue = z.infer<typeof collectorIssueSchema>;
 export type CollectorReport = z.infer<typeof collectorReportSchema>;
+export type SearchTerminationReason = z.infer<typeof searchTerminationReasonSchema>;
 export type CollectorHeartbeat = z.infer<typeof collectorHeartbeatSchema>;

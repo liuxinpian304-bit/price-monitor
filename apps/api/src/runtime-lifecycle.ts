@@ -5,6 +5,7 @@ export interface RuntimeLifecycle {
 
 export function createRuntimeLifecycle(input: {
   scheduler: { registerSchedules(): Promise<void> };
+  reconciliation?: { start(): Promise<void>; close(): Promise<void> };
   worker: { close(): Promise<void> };
   queue: { close(): Promise<void> };
   redis: { disconnect(): void; status: string };
@@ -16,6 +17,7 @@ export function createRuntimeLifecycle(input: {
     async start() {
       if (started) return;
       await input.scheduler.registerSchedules();
+      await input.reconciliation?.start();
       started = true;
     },
     async close() {
@@ -30,6 +32,7 @@ export function createRuntimeLifecycle(input: {
         }
       };
 
+      if (input.reconciliation) await closeStep(() => input.reconciliation!.close());
       await closeStep(() => input.worker.close());
       await closeStep(() => input.queue.close());
       await closeStep(() => {

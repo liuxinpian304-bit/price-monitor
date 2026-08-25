@@ -112,13 +112,40 @@ export class PrismaRunAlertNotificationRepository implements RunAlertNotificatio
           where: { collectionRunId: summary.runId }
         });
       }
+      const lockedBatch = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id"
+        FROM "RunAlertNotificationBatch"
+        WHERE "id" = ${batch.id}
+        FOR UPDATE
+      `);
+      if (lockedBatch.length !== 1) throw new RunAlertNotificationPersistenceError();
+      batch = await transaction.runAlertNotificationBatch.findUniqueOrThrow({
+        where: { id: batch.id }
+      });
 
-      if (batch.state === "NOTIFIED" || batch.state === "FAILED") return null;
       if (
-        batch.state === "SENDING"
-        && batch.attemptStartedAt
-        && batch.attemptStartedAt.getTime() > attemptedAt.getTime() - CLAIM_LEASE_MILLISECONDS
-      ) {
+        batch.state === "NOTIFIED"
+        || batch.state === "AMBIGUOUS"
+        || batch.state === "FAILED"
+      ) return null;
+      if (batch.state === "SENDING") {
+        if (
+          batch.attemptStartedAt
+          && batch.attemptStartedAt.getTime() > attemptedAt.getTime() - CLAIM_LEASE_MILLISECONDS
+        ) return null;
+        await new PrismaAlertRepository(transaction).recordBatchNotificationFailure(
+          batch.alertIds,
+          "WECOM_DELIVERY_AMBIGUOUS"
+        );
+        await transaction.runAlertNotificationBatch.update({
+          where: { id: batch.id },
+          data: {
+            state: "AMBIGUOUS",
+            attemptToken: null,
+            attemptStartedAt: null,
+            lastNotificationError: "WECOM_DELIVERY_AMBIGUOUS"
+          }
+        });
         return null;
       }
       if (batch.notificationAttempts >= MAX_BATCH_DELIVERY_ATTEMPTS) {
@@ -193,6 +220,85 @@ export class PrismaRunAlertNotificationRepository implements RunAlertNotificatio
         }
       });
     });
+  }
+
+  async recordBatchNotificationAmbiguous(
+    batch: ClaimedRunAlertBatch,
+    failedAt: Date
+  ): Promise<void> {
+    await this.completeAttempt(batch, async (transaction) => {
+      await new PrismaAlertRepository(transaction).recordBatchNotificationFailure(
+        batch.alertIds,
+        "WECOM_DELIVERY_AMBIGUOUS"
+      );
+      await transaction.runAlertNotificationBatch.update({
+        where: { id: batch.batchId },
+        data: {
+          state: "AMBIGUOUS",
+          attemptToken: null,
+          attemptStartedAt: null,
+          lastNotificationError: "WECOM_DELIVERY_AMBIGUOUS",
+          lastNotificationAttemptAt: failedAt
+        }
+      });
+    });
+  }
+
+  async listRetryableSummaries(attemptedAt: Date, limit: number): Promise<RunAlertSummary[]> {
+    const staleBefore = new Date(attemptedAt.getTime() - CLAIM_LEASE_MILLISECONDS);
+    await this.markAbandonedAttemptsAmbiguous(staleBefore, limit);
+    const batches = await this.prisma.runAlertNotificationBatch.findMany({
+      where: {
+        notificationAttempts: { lt: MAX_BATCH_DELIVERY_ATTEMPTS },
+        state: "PENDING"
+      },
+      orderBy: [{ createdAt: "asc" }],
+      take: limit,
+      select: { summary: true }
+    });
+    return batches.map((batch) => fromJson(batch.summary));
+  }
+
+  private async markAbandonedAttemptsAmbiguous(staleBefore: Date, limit: number): Promise<void> {
+    const abandoned = await this.prisma.runAlertNotificationBatch.findMany({
+      where: { state: "SENDING", attemptStartedAt: { lte: staleBefore } },
+      orderBy: [{ attemptStartedAt: "asc" }, { createdAt: "asc" }],
+      take: limit,
+      select: { id: true }
+    });
+    for (const batch of abandoned) {
+      await this.prisma.$transaction(async (transaction) => {
+        const locked = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id"
+          FROM "RunAlertNotificationBatch"
+          WHERE "id" = ${batch.id}
+          FOR UPDATE
+        `);
+        if (locked.length !== 1) throw new RunAlertNotificationPersistenceError();
+        const stored = await transaction.runAlertNotificationBatch.findUniqueOrThrow({
+          where: { id: batch.id }
+        });
+        if (
+          stored.state !== "SENDING"
+          || stored.attemptStartedAt === null
+          || stored.attemptStartedAt.getTime() > staleBefore.getTime()
+        ) return;
+
+        await new PrismaAlertRepository(transaction).recordBatchNotificationFailure(
+          stored.alertIds,
+          "WECOM_DELIVERY_AMBIGUOUS"
+        );
+        await transaction.runAlertNotificationBatch.update({
+          where: { id: stored.id },
+          data: {
+            state: "AMBIGUOUS",
+            attemptToken: null,
+            attemptStartedAt: null,
+            lastNotificationError: "WECOM_DELIVERY_AMBIGUOUS"
+          }
+        });
+      }, { isolationLevel: "ReadCommitted", maxWait: 10_000, timeout: 30_000 });
+    }
   }
 
   private async completeAttempt(

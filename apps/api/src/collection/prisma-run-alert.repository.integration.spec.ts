@@ -7,7 +7,10 @@ import { after, before, test } from "node:test";
 import { Prisma } from "../../../../generated/prisma/client.ts";
 import { createPrismaClient } from "../database/prisma.service.ts";
 import { RunAlertNotifier } from "../alerts/run-alert-notifier.ts";
-import type { WecomMarkdownSender } from "../alerts/wecom/wecom.client.ts";
+import {
+  WecomDeliveryAmbiguousError,
+  type WecomMarkdownSender
+} from "../alerts/wecom/wecom.client.ts";
 import { PrismaRunAlertNotificationRepository } from "../alerts/prisma-run-alert-notification.repository.ts";
 import { PrismaRunAlertRepository } from "./prisma-run-alert.repository.ts";
 import { RunAlertService } from "./run-alert.service.ts";
@@ -155,6 +158,15 @@ class RecordingSender implements WecomMarkdownSender {
   }
 }
 
+class AmbiguousSender implements WecomMarkdownSender {
+  calls = 0;
+
+  async sendMarkdown() {
+    this.calls += 1;
+    throw new WecomDeliveryAmbiguousError();
+  }
+}
+
 before(async () => {
   await prisma.$connect();
 });
@@ -237,10 +249,31 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
       index: 3,
       prices: [{ key: "low", payableFen: 65_799 }]
     });
-    assert.equal((await service.evaluateRun(lowerRun.id)).alerts.length, 1);
+    const lowerSummary = await service.evaluateRun(lowerRun.id);
+    assert.equal(lowerSummary.alerts.length, 1);
     assert.equal(await prisma.priceAlert.count({ where: { monitoredModelId: model.id } }), 3);
 
     const summaryWithAlerts = concurrent.find((item) => item.alerts.length === 2)!;
+    const evaluatedRun = await prisma.collectionRun.findUniqueOrThrow({
+      where: { id: firstRun.id },
+      select: { ownBaselineSnapshotId: true }
+    });
+    assert.equal(evaluatedRun.ownBaselineSnapshotId, summaryWithAlerts.baseline?.snapshotId);
+
+    const ambiguousSender = new AmbiguousSender();
+    const ambiguousNotifier = new RunAlertNotifier(
+      new PrismaRunAlertNotificationRepository(prisma),
+      async () => ambiguousSender
+    );
+    await ambiguousNotifier.send(lowerSummary);
+    await ambiguousNotifier.send(lowerSummary);
+    assert.equal(ambiguousSender.calls, 1);
+    const ambiguousBatch = await prisma.runAlertNotificationBatch.findUniqueOrThrow({
+      where: { collectionRunId: lowerRun.id }
+    });
+    assert.equal(ambiguousBatch.state, "AMBIGUOUS");
+    assert.equal(ambiguousBatch.lastNotificationError, "WECOM_DELIVERY_AMBIGUOUS");
+
     const sender = new RecordingSender();
     const notifier = new RunAlertNotifier(
       new PrismaRunAlertNotificationRepository(prisma),
@@ -255,6 +288,45 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     assert.equal(failedBatch.notificationAttempts, 1);
     assert.equal(failedBatch.lastNotificationError, "WECOM_DELIVERY_FAILED");
     assert.equal(JSON.stringify(failedBatch).includes("secret webhook"), false);
+
+    const abandonedRun = await seedRun({
+      modelId: model.id,
+      ownListingId: ownListing.id,
+      index: 4,
+      prices: [{ key: "abandoned", payableFen: 69_800 }]
+    });
+    const abandonedSummary = {
+      ...summaryWithAlerts,
+      runId: abandonedRun.id,
+      systemIssue: "OWN_BASELINE_MISSING" as const,
+      alerts: []
+    };
+    await prisma.runAlertNotificationBatch.create({
+      data: {
+        collectionRunId: abandonedRun.id,
+        summary: JSON.parse(JSON.stringify(abandonedSummary)) as Prisma.InputJsonValue,
+        alertIds: [],
+        state: "SENDING",
+        attemptToken: randomUUID(),
+        attemptStartedAt: new Date("2026-08-25T00:00:00.000Z"),
+        notificationAttempts: 1
+      }
+    });
+    const abandonedSender = new RecordingSender();
+    abandonedSender.fail = false;
+    await new RunAlertNotifier(
+      new PrismaRunAlertNotificationRepository(prisma),
+      async () => abandonedSender
+    ).send(abandonedSummary);
+    assert.equal(abandonedSender.messages.length, 0);
+    const retryable = await new PrismaRunAlertNotificationRepository(prisma)
+      .listRetryableSummaries(new Date("2026-08-25T01:00:00.000Z"), 25);
+    assert.equal(retryable.some((summary) => summary.runId === abandonedRun.id), false);
+    const abandonedBatch = await prisma.runAlertNotificationBatch.findUniqueOrThrow({
+      where: { collectionRunId: abandonedRun.id }
+    });
+    assert.equal(abandonedBatch.state, "AMBIGUOUS");
+    assert.equal(abandonedBatch.lastNotificationError, "WECOM_DELIVERY_AMBIGUOUS");
 
     sender.fail = false;
     await notifier.send({ ...summaryWithAlerts, brand: "changed", alerts: [] });

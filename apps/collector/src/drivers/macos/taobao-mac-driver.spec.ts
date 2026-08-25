@@ -32,7 +32,9 @@ class FakeClient implements TaobaoAxClient {
   readonly commands: CommandRecord[] = [];
   readonly snapshotQueue: AxNode[] = [];
   diagnostic: AxHelperDiagnosticPayload = {
+    appInstalled: true,
     trusted: true,
+    screenRecordingTrusted: true,
     appRunning: true,
     pid: 321,
     bundleId: "com.taobao.pcdesktop",
@@ -161,6 +163,49 @@ test("rejects every version/build mismatch before any UI mutation", async () => 
   assert.deepEqual(client.commands, []);
 });
 
+test("gates app presence and permissions before version without UI mutation", async () => {
+  const cases: Array<{ changed: Partial<AxHelperDiagnosticPayload>; expected: string }> = [
+    {
+      changed: {
+        appInstalled: false,
+        appRunning: false,
+        trusted: false,
+        screenRecordingTrusted: false,
+        shortVersion: null,
+        build: null
+      },
+      expected: "TAOBAO_NOT_INSTALLED"
+    },
+    {
+      changed: { appRunning: false, trusted: false, screenRecordingTrusted: false },
+      expected: "TAOBAO_NOT_RUNNING"
+    },
+    {
+      changed: { trusted: false, screenRecordingTrusted: false },
+      expected: "ACCESSIBILITY_PERMISSION_REQUIRED"
+    },
+    {
+      changed: { screenRecordingTrusted: false },
+      expected: "SCREEN_RECORDING_PERMISSION_REQUIRED"
+    }
+  ];
+
+  for (const testCase of cases) {
+    const client = new FakeClient();
+    Object.assign(client.diagnostic, testCase.changed);
+    const driver = new TaobaoMacDriver({ client });
+    await assert.rejects(
+      driver.search("索尼 7506", 3),
+      (error: unknown) => typeof error === "object"
+        && error !== null
+        && Reflect.get(error, "code") === testCase.expected,
+      testCase.expected
+    );
+    assert.deepEqual(client.commands, []);
+    assert.equal(client.snapshotQueue.length, 0);
+  }
+});
+
 test("searches semantically and preserves duplicate result positions", async () => {
   const client = new FakeClient();
   const search = await fixture("search-results.json");
@@ -168,12 +213,25 @@ test("searches semantically and preserves duplicate result positions", async () 
   const driver = new TaobaoMacDriver({ client, capturedAt: () => "2026-08-24T00:00:00.000Z" });
 
   const results = await driver.search("索尼 7506", 3);
-  assert.deepEqual(results.map((entry) => [entry.rank, entry.platformItemId]), [
+  assert.equal(results.terminationReason, "LIMIT_REACHED");
+  assert.deepEqual(results.positions.map((entry) => [entry.rank, entry.platformItemId]), [
     [1, "example-7506"], [2, "example-7506"], [3, null]
   ]);
   assert.deepEqual(client.commands.map((entry) => entry.command), ["setValue", "keyPress"]);
   assert.equal(client.commands[0]?.fields.value, "索尼 7506");
   assert.equal(client.commands[1]?.fields.keyCode, 36);
+});
+
+test("reports a verified early end separately from reaching the requested limit", async () => {
+  const client = new FakeClient();
+  const search = await fixture("search-results.json");
+  client.snapshotQueue.push(withResultQuery(search, "旧查询"), search, search, search);
+  const driver = new TaobaoMacDriver({ client });
+
+  const result = await driver.search("索尼 7506", 5);
+
+  assert.equal(result.positions.length, 3);
+  assert.equal(result.terminationReason, "END_MARKER");
 });
 
 test("rejects the pre-submit stale list until the result query context transitions and stabilizes", async () => {
@@ -195,7 +253,7 @@ test("rejects the pre-submit stale list until the result query context transitio
   });
 
   const results = await driver.search("索尼 7506", 1);
-  assert.equal(results[0]?.title, "Sony MDR-7506 监听耳机");
+  assert.equal(results.positions[0]?.title, "Sony MDR-7506 监听耳机");
   assert.deepEqual(sleeps, [250, 250, 250]);
 });
 
@@ -218,7 +276,7 @@ test("accepts repeated-query results after a loading miss latches the submit tra
   });
 
   const results = await driver.search("索尼 7506", 3);
-  assert.equal(results.length, 3);
+  assert.equal(results.positions.length, 3);
   assert.deepEqual(sleeps, [250, 250, 250]);
 });
 
@@ -235,7 +293,7 @@ test("starts a search from a blank page without a pre-submit result context", as
   });
 
   const results = await driver.search("索尼 7506", 3);
-  assert.equal(results.length, 3);
+  assert.equal(results.positions.length, 3);
   assert.deepEqual(sleeps, [250, 250]);
 });
 
@@ -374,11 +432,11 @@ test("preserves A1,A2 then A2,A3 continuity across a duplicate scroll boundary",
   });
 
   const results = await driver.search("索尼 7506", 3);
-  assert.deepEqual(results.map((entry) => [entry.rank, entry.platformItemId]), [
+  assert.deepEqual(results.positions.map((entry) => [entry.rank, entry.platformItemId]), [
     [1, "example-7506"], [2, "example-7506"], [3, "example-7506"]
   ]);
-  assert.deepEqual(results.map((entry) => evidenceNodePath(entry)[2]), [1, 2, 3]);
-  results.forEach((entry, index) => {
+  assert.deepEqual(results.positions.map((entry) => evidenceNodePath(entry)[2]), [1, 2, 3]);
+  results.positions.forEach((entry, index) => {
     const path = evidenceNodePath(entry);
     const source = index < 2 ? before : boundary;
     assert.equal(resolvePath(source, path).identifier, "item-link");
@@ -478,6 +536,32 @@ test("returns unavailable when a requested option becomes dynamically disabled",
   assert.deepEqual(result, { availability: "UNAVAILABLE", reason: "SKU option 7506 + C口转换线 is disabled" });
   assert.equal(client.commands.some((entry) => entry.command === "perform"), false);
   assert.equal(client.commands.some((entry) => entry.command === "screenshot"), false);
+});
+
+test("retains selected out-of-stock SKU price evidence instead of discarding the row", async () => {
+  const client = new FakeClient();
+  const detail = await fixture("item-7506-default.json");
+  const stock = detail.children[0]?.children
+    .find((node) => node.identifier === "selected-sku-price")?.children
+    .find((node) => node.identifier === "stock-state");
+  assert.ok(stock);
+  stock.value = "无货";
+  client.snapshotQueue.push(detail, detail, detail, detail, detail);
+  let now = 0;
+  const driver = new TaobaoMacDriver({
+    client,
+    now: () => now,
+    sleep: async (milliseconds) => { now += milliseconds; },
+    workDir: "/tmp/collector-work"
+  });
+
+  const result = await driver.selectSku({ 套装: "7506 单机", 转换线型号: "M1" });
+
+  assert.equal(result.availability, "AVAILABLE");
+  if (result.availability !== "AVAILABLE") return;
+  assert.equal(result.view.stockState, "OUT_OF_STOCK");
+  assert.equal(result.view.activityPriceText, "658.00");
+  assert.equal(client.commands.some((entry) => entry.command === "screenshot"), true);
 });
 
 test("waits through unrelated and empty results until the original search context is restored", async () => {

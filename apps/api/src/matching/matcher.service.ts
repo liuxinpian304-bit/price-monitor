@@ -76,12 +76,16 @@ export class MatcherService {
     const skuText = selectedSkuText(offer);
     const searchable = `${offer.title} ${skuText}`;
 
-    const excludedTerm = rule.excludedTerms.find((term) => containsPhrase(searchable, term));
+    const excludedAliasKeys = new Set(rule.excludedAliases.map(compact));
+    const excludedTerm = rule.excludedTerms.find((term) =>
+      containsPhrase(skuText, term)
+      || (!excludedAliasKeys.has(compact(term)) && containsPhrase(offer.title, term))
+    );
     if (excludedTerm) {
       return rejected(`命中排除词“${excludedTerm}”`);
     }
 
-    const excludedAlias = rule.excludedAliases.find((alias) => containsPhrase(searchable, alias));
+    const excludedAlias = rule.excludedAliases.find((alias) => containsPhrase(skuText, alias));
     if (excludedAlias) {
       return rejected(`命中排除别名“${excludedAlias}”`);
     }

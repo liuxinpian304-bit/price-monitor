@@ -1,7 +1,8 @@
 import type {
   CollectedSku,
   CollectedSkuComponent,
-  PromotionEvidence
+  PromotionEvidence,
+  SearchTerminationReason
 } from "@stau-price-monitor/contracts";
 
 export type DriverEvidenceValue =
@@ -19,7 +20,9 @@ export interface DriverRawEvidence {
 }
 
 export interface DriverDiagnostic {
+  appInstalled: boolean;
   accessibilityTrusted: boolean;
+  screenRecordingTrusted: boolean;
   appRunning: boolean;
   processId: number | null;
   bundleId: string;
@@ -41,6 +44,11 @@ export interface DriverSearchPosition {
   sponsored: boolean;
   capturedAt: string;
   rawEvidence: DriverRawEvidence;
+}
+
+export interface DriverSearchResult {
+  positions: DriverSearchPosition[];
+  terminationReason: SearchTerminationReason;
 }
 
 export interface SkuOption {
@@ -87,7 +95,7 @@ export type DriverSkuSelectionResult =
 export interface TaobaoDesktopDriver {
   diagnose(): Promise<DriverDiagnostic>;
   openOwnListing(url: string): Promise<DriverItemPage>;
-  search(query: string, limit: number): Promise<DriverSearchPosition[]>;
+  search(query: string, limit: number): Promise<DriverSearchResult>;
   openSearchPosition(position: DriverSearchPosition): Promise<DriverItemPage>;
   selectSku(selection: SkuSelection): Promise<DriverSkuSelectionResult>;
   returnToSearch(): Promise<void>;
@@ -97,7 +105,13 @@ export class LoginRequiredError extends Error {}
 export class PlatformChallengeError extends Error {}
 export class UiContractChangedError extends Error {}
 
-export type DriverIssueCode = "MISSING_ITEM_ID" | "APP_VERSION_UNSUPPORTED";
+export type DriverIssueCode =
+  | "MISSING_ITEM_ID"
+  | "APP_VERSION_UNSUPPORTED"
+  | "TAOBAO_NOT_INSTALLED"
+  | "TAOBAO_NOT_RUNNING"
+  | "ACCESSIBILITY_PERMISSION_REQUIRED"
+  | "SCREEN_RECORDING_PERMISSION_REQUIRED";
 
 export class DriverIssueError extends Error {
   readonly code: DriverIssueCode;

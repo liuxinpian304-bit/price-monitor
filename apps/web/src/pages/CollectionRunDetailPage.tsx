@@ -63,13 +63,20 @@ function EvidenceButton({ runId, sha256 }: { runId: string; sha256: string | nul
   if (!sha256) return <span>无</span>;
 
   const openEvidence = async () => {
+    const popup = window.open("about:blank", "_blank");
+    if (!popup) {
+      messageApi.error("浏览器阻止了证据窗口");
+      return;
+    }
+    popup.opener = null;
     setOpening(true);
     try {
       const blob = await fetchCollectionEvidence(runId, sha256);
       const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener,noreferrer");
+      popup.location.href = url;
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (error) {
+      popup.close();
       messageApi.error(error instanceof Error ? error.message : "无法打开证据");
     } finally {
       setOpening(false);
@@ -168,6 +175,13 @@ export function CollectionRunDetailPage() {
       <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 4 }}>
         <Descriptions.Item label="运行状态"><Tag>{report.status}</Tag></Descriptions.Item>
         <Descriptions.Item label="完成度"><Tag color={report.completion.complete ? "success" : "warning"}>{report.completion.label}</Tag></Descriptions.Item>
+        <Descriptions.Item label="搜索结束">
+          {report.completion.terminationReason === "END_MARKER"
+            ? "已验证页面到底"
+            : report.completion.terminationReason === "LIMIT_REACHED"
+              ? "已达到采集上限"
+              : "未记录或未验证"}
+        </Descriptions.Item>
         <Descriptions.Item label="SKU"><strong>{report.pagination.skus.total}</strong> / {report.totalSkuCount} 条</Descriptions.Item>
         <Descriptions.Item label="发现 / 抓取">{report.completion.discoveredCount} / {report.completion.fetchedCount}</Descriptions.Item>
         <Descriptions.Item label="匹配 / 失败">{report.completion.matchedCount} / {report.completion.failedCount}</Descriptions.Item>

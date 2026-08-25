@@ -46,7 +46,16 @@ function evidence(
   audience: string,
   stackGroup: string | null
 ): PromotionEvidence {
-  return { kind, label, amountFen, thresholdFen, audience, stackGroup, includedInActivityPrice: false };
+  return {
+    kind,
+    label,
+    amountFen,
+    thresholdFen,
+    audience,
+    stackGroup,
+    includedInActivityPrice: false,
+    activityPriceInclusion: "UNKNOWN"
+  };
 }
 
 function hasExtraNumericText(label: string, matched: string): boolean {
@@ -87,7 +96,7 @@ export function parsePromotionLabel(label: string, explicitStackGroup: string | 
   if (audience !== "PUBLIC") {
     return evidence("NON_PUBLIC_BENEFIT", normalized, null, null, audience, null);
   }
-  return null;
+  return evidence("UNKNOWN_PUBLIC_PROMOTION", normalized, null, null, audience, null);
 }
 
 function directChild(parent: AxNode, identifier: string): AxNode | null {

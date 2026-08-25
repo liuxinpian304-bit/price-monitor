@@ -20,6 +20,7 @@ export interface CollectorWorkerApi {
     code: "LOGIN_REQUIRED" | "PLATFORM_CHALLENGE",
     message: string
   ): Promise<void>;
+  release(runId: string): Promise<void>;
   uploadReport(runId: string, report: CollectorReport): Promise<IngestionSummary>;
 }
 
@@ -300,6 +301,7 @@ export class CollectorWorker {
       runner = this.options.runnerFactory(job.runId);
     } catch {
       this.activeController = null;
+      await this.release(job.runId);
       throw new CollectorWorkerError("RUNNER_INITIALIZATION_FAILED");
     }
     const heartbeat = new HeartbeatLoop({
@@ -326,11 +328,13 @@ export class CollectorWorker {
     }
     if (runnerError !== undefined) {
       this.activeController = null;
+      await this.release(job.runId);
       if (runnerError instanceof CollectionInterruptedError) return "stopped";
       throw new CollectorWorkerError("COLLECTION_FAILED");
     }
     if (inputReport === undefined) {
       this.activeController = null;
+      await this.release(job.runId);
       throw new CollectorWorkerError("INVALID_REPORT");
     }
 
@@ -338,6 +342,7 @@ export class CollectorWorker {
     if (!parsedReport.success || parsedReport.data.runId !== job.runId
       || parsedReport.data.collectorId !== job.collectorId) {
       this.activeController = null;
+      await this.release(job.runId);
       throw new CollectorWorkerError("INVALID_REPORT");
     }
     const report = parsedReport.data;
@@ -365,6 +370,7 @@ export class CollectorWorker {
       checkpoint = await this.options.checkpointStore.load(job.runId);
     } catch {
       this.activeController = null;
+      await this.release(job.runId);
       throw new CollectorWorkerError("CHECKPOINT_FAILED");
     }
     try {
@@ -384,6 +390,7 @@ export class CollectorWorker {
       );
     } catch (error) {
       this.activeController = null;
+      await this.release(job.runId);
       if (error instanceof CollectionInterruptedError) return "stopped";
       throw error;
     }
@@ -449,6 +456,29 @@ export class CollectorWorker {
   private reportSkuCount(report: CollectorReport): number {
     return [...report.ownItems, ...report.competitorItems]
       .reduce((total, item) => total + item.skus.length, 0);
+  }
+
+  private async release(runId: string): Promise<void> {
+    try {
+      await this.options.api.release(runId);
+      this.emit({
+        event: "job_requeued",
+        runId,
+        phase: null,
+        discoveredCount: 0,
+        skuCount: 0,
+        errorCode: null
+      });
+    } catch (error) {
+      this.emit({
+        event: "job_requeue_failed",
+        runId,
+        phase: null,
+        discoveredCount: 0,
+        skuCount: 0,
+        errorCode: safeErrorCode(error)
+      });
+    }
   }
 
   private emit(summary: CollectorLogSummary): void {

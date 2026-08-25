@@ -3,7 +3,6 @@ import test from "node:test";
 
 import type { CollectorReport } from "../../../../packages/contracts/src/index.ts";
 import type { CollectorAgentService } from "../collector-agent/collector-agent.service.ts";
-import type { RunAlertSummary } from "./run-alert.service.ts";
 import type { CollectionEvidenceStore } from "./collection-evidence-store.ts";
 import {
   DesktopReportConflictError,
@@ -245,6 +244,9 @@ test("accepts the exact terminal shapes emitted by the collector runner", async 
 test("accepts every runner fatal code only with failed no-progress data", async () => {
   for (const code of [
     "MISSING_ITEM_ID",
+    "TAOBAO_NOT_INSTALLED",
+    "TAOBAO_NOT_RUNNING",
+    "ACCESSIBILITY_PERMISSION_REQUIRED",
     "APP_VERSION_UNSUPPORTED",
     "UI_CONTRACT_CHANGED",
     "SCREEN_RECORDING_PERMISSION_REQUIRED"
@@ -488,6 +490,9 @@ test("rejects every non-success collector issue on a successful report", async (
     "PRICE_UNSTABLE",
     "LOGIN_REQUIRED",
     "PLATFORM_CHALLENGE",
+    "TAOBAO_NOT_INSTALLED",
+    "TAOBAO_NOT_RUNNING",
+    "ACCESSIBILITY_PERMISSION_REQUIRED",
     "APP_VERSION_UNSUPPORTED",
     "UI_CONTRACT_CHANGED",
     "SCREEN_RECORDING_PERMISSION_REQUIRED",
@@ -653,7 +658,7 @@ test("records only a sanitized retryable system error when transactional persist
   }]);
 });
 
-test("commits ingestion before evaluation and preserves its terminal receipt when notification fails", async () => {
+test("commits ingestion before reconciliation and preserves its terminal receipt when reconciliation fails", async () => {
   const identity = new FakeIdentityService();
   const repository = new FakeRepository();
   const evidence = new FakeEvidenceStore();
@@ -665,19 +670,11 @@ test("commits ingestion before evaluation and preserves its terminal receipt whe
     events.push("ingestion-committed");
     return result;
   };
-  const alertSummary = { runId: "run-1" } as RunAlertSummary;
-  const evaluator = {
-    async evaluateRun(runId: string) {
+  const reconciler = {
+    async reconcileRun(runId: string) {
       assert.equal(runId, "run-1");
       assert.deepEqual(events, ["ingestion-started", "ingestion-committed"]);
-      events.push("evaluated");
-      return alertSummary;
-    }
-  };
-  const notifier = {
-    async send(received: RunAlertSummary) {
-      assert.equal(received, alertSummary);
-      events.push("notification-attempted");
+      events.push("reconciliation-attempted");
       throw new Error("webhook key and request body must stay private");
     }
   };
@@ -685,8 +682,7 @@ test("commits ingestion before evaluation and preserves its terminal receipt whe
     identity as unknown as CollectorAgentService,
     repository,
     evidence as unknown as CollectionEvidenceStore,
-    evaluator,
-    notifier
+    reconciler
   );
 
   const result = await service.ingest("pmc_token", reportFixture());
@@ -695,8 +691,7 @@ test("commits ingestion before evaluation and preserves its terminal receipt whe
   assert.deepEqual(events, [
     "ingestion-started",
     "ingestion-committed",
-    "evaluated",
-    "notification-attempted"
+    "reconciliation-attempted"
   ]);
   assert.equal(repository.persisted.length, 1);
   assert.deepEqual(repository.systemErrors, []);

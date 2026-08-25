@@ -76,6 +76,55 @@ test("does not subtract a public promotion already included in the activity pric
   assert.deepEqual(result.appliedPromotionLabels, []);
 });
 
+test("never confirms a low when promotion inclusion in an activity payable price is unknown", () => {
+  const result = calculatePublicPrice({
+    listPriceFen: 70_000,
+    activityPriceFen: 60_000,
+    promotions: [
+      {
+        kind: "COUPON",
+        label: "店铺券 满500减10",
+        amountFen: 1_000,
+        thresholdFen: 50_000,
+        audience: "PUBLIC",
+        stackGroup: "shop-coupon",
+        includedInActivityPrice: false,
+        activityPriceInclusion: "UNKNOWN"
+      }
+    ],
+    mandatoryFeeFen: 0
+  });
+
+  assert.equal(result.couponDiscountFen, 0);
+  assert.equal(result.payableFen, null);
+  assert.equal(result.confidence, "MANUAL_REVIEW");
+  assert.deepEqual(result.reviewReasons, ["店铺券 满500减10"]);
+});
+
+test("subtracts a promotion only when exclusion from the activity price is explicit", () => {
+  const result = calculatePublicPrice({
+    listPriceFen: 70_000,
+    activityPriceFen: 60_000,
+    promotions: [
+      {
+        kind: "COUPON",
+        label: "店铺券 满500减10",
+        amountFen: 1_000,
+        thresholdFen: 50_000,
+        audience: "PUBLIC",
+        stackGroup: "shop-coupon",
+        includedInActivityPrice: false,
+        activityPriceInclusion: "EXCLUDED"
+      }
+    ],
+    mandatoryFeeFen: 0
+  });
+
+  assert.equal(result.couponDiscountFen, 1_000);
+  assert.equal(result.payableFen, 59_000);
+  assert.equal(result.confidence, "CONFIRMED");
+});
+
 test("ignores member-only and 88VIP promotions without lowering confidence", () => {
   const result = calculatePublicPrice({
     listPriceFen: 70_000,

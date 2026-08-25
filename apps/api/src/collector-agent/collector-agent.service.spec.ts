@@ -28,6 +28,7 @@ interface RunRecord {
   skuCount: number;
   errorCode: string | null;
   errorMessage: string | null;
+  heartbeatAt: number;
 }
 
 const modelJob = {
@@ -75,7 +76,8 @@ class InMemoryCollectorAgentRepository implements CollectorAgentRepository {
       discoveredCount: input.discoveredCount ?? 0,
       skuCount: input.skuCount ?? 0,
       errorCode: input.errorCode ?? null,
-      errorMessage: input.errorMessage ?? null
+      errorMessage: input.errorMessage ?? null,
+      heartbeatAt: input.heartbeatAt ?? Date.now()
     };
     this.runs.push(run);
     return run;
@@ -147,6 +149,14 @@ class InMemoryCollectorAgentRepository implements CollectorAgentRepository {
     run.status = status;
     run.errorCode = code;
     run.errorMessage = message;
+    return true;
+  }
+
+  async release(agentId: string, runId: string): Promise<boolean> {
+    const run = this.runs.find((entry) => entry.id === runId
+      && entry.status === "RUNNING" && entry.collectorAgentId === agentId);
+    if (!run) return false;
+    run.status = "QUEUED";
     return true;
   }
 
@@ -292,4 +302,26 @@ test("pause codes map to paused statuses and require explicit requeue", async ()
       run.id
     );
   }
+});
+
+test("graceful release requeues only the owning agent's running job", async () => {
+  const repository = new InMemoryCollectorAgentRepository();
+  const service = new CollectorAgentService(repository);
+  const owner = await registerAgent(service, "owner-release");
+  const other = await registerAgent(service, "other-release");
+  const run = repository.addRun({ id: "run-release" });
+  await service.claimNext(owner.token, { appVersion: "2.4.5", capabilities: [] });
+
+  await assert.rejects(
+    () => service.release(other.token, run.id),
+    CollectorAgentRunOwnershipError
+  );
+  assert.equal(run.status, "RUNNING");
+
+  await service.release(owner.token, run.id);
+  assert.equal(run.status, "QUEUED");
+  assert.equal(
+    (await service.claimNext(owner.token, { appVersion: "2.4.5", capabilities: [] }))?.runId,
+    run.id
+  );
 });

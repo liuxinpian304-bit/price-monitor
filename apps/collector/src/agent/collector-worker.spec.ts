@@ -53,6 +53,7 @@ function report(status: CollectorReport["status"] = "SUCCEEDED"): CollectorRepor
     completedAt: "2026-08-24T01:01:00.000Z",
     status,
     searchLimit: 3,
+    ...(status === "SUCCEEDED" ? { searchTerminationReason: "END_MARKER" as const } : {}),
     positions: [],
     ownItems: status === "SUCCEEDED" ? [{
       ownListingId: "own-1",
@@ -94,6 +95,7 @@ class FakeApi implements CollectorWorkerApi {
   heartbeatCalls = 0;
   lastHeartbeat: { runId: string; input: { discoveredCount: number; skuCount: number } } | null = null;
   pauseCalls: Array<{ runId: string; code: string; message: string }> = [];
+  releaseCalls: string[] = [];
   reportCalls = 0;
   reportStatuses: CollectorReport["status"][] = [];
   reportFailure: Error | null = null;
@@ -110,6 +112,10 @@ class FakeApi implements CollectorWorkerApi {
 
   async pause(runId: string, code: "LOGIN_REQUIRED" | "PLATFORM_CHALLENGE", message: string) {
     this.pauseCalls.push({ runId, code, message });
+  }
+
+  async release(runId: string) {
+    this.releaseCalls.push(runId);
   }
 
   async uploadReport(_runId: string, inputReport: CollectorReport) {
@@ -602,6 +608,7 @@ test("report body timeout makes exactly three attempts without checkpoint acknow
   assert.equal(uploader.uploadCalls, 1);
   assert.equal(store.removeCalls, 0);
   assert.equal(uploader.clearCalls, 0);
+  assert.deepEqual(api.releaseCalls, ["run-1"]);
 });
 
 test("report retries three attempts and removes the checkpoint only after acknowledgement", async () => {
@@ -705,6 +712,7 @@ test("graceful stop aborts at the runner boundary and preserves unacknowledged p
   assert.equal(scheduler.timers.size, 0);
   assert.equal(uploader.uploadCalls, 0);
   assert.equal(api.reportCalls, 0);
+  assert.deepEqual(api.releaseCalls, ["run-1"]);
   assert.equal(store.removeCalls, 0);
 });
 
@@ -727,4 +735,19 @@ test("a runner-factory failure cannot leave a heartbeat timer behind", async () 
 
   await assert.rejects(() => worker.once());
   assert.equal(scheduler.timers.size, 0);
+  assert.deepEqual(api.releaseCalls, ["run-1"]);
+});
+
+test("collection failure requeues the owned run without deleting its durable checkpoint", async () => {
+  const api = new FakeApi();
+  const store = new FakeStore();
+  const { worker } = createWorker({
+    api,
+    store,
+    runner: { run: async () => { throw new Error("collector failed"); } }
+  });
+
+  await assert.rejects(() => worker.once(), { code: "COLLECTION_FAILED" });
+  assert.deepEqual(api.releaseCalls, ["run-1"]);
+  assert.equal(store.removeCalls, 0);
 });

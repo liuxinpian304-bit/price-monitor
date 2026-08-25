@@ -77,6 +77,26 @@ trace is committed. A first sandboxed portable API attempt failed only because
 loopback binding returned `EPERM`; the same command passed 203 / 203 with local
 loopback permission.
 
+## Independent Post-Fix Browser Verification
+
+The controller restarted the committed API and web source against the isolated
+`task14_browser_qa_20260826` PostgreSQL schema and added one ignored, sanitized
+`demo-run-1001` fixture. A fresh browser tab received the expected initial 403,
+accepted the configured test ADMIN token, and replaced the permission error with
+the successful empty result without a document reload. After the fixture was
+inserted, the list showed `3 / 50，未完成` and the detail showed four independent
+SKU rows: own ¥7010.00, one confirmed equal SKU, one confirmed competitor at
+¥7009.99 (`LOWER ¥0.01`) with coupon and full-reduction components, and one M1
+accessory fixture marked `EXCLUDED` / `MANUAL_REVIEW`.
+
+At 390 x 844, `window.innerWidth`, body scroll width, and document scroll width
+were all 390. The three wide report tables stayed inside 364 px scroll
+containers with `overflow-x: auto`; their content widths were 1050, 1540, and
+900 px. The four filter controls occupied two non-overlapping rows. At the
+default 1280 px viewport, body and document scroll widths both remained 1280.
+Viewport screenshots were inspected in the browser session but were not written
+or committed. No real Taobao page, real shop data, or WeCom endpoint was used.
+
 ## Environment Gaps
 
 - `swift test --package-path apps/collector-macos` remains blocked on this host.

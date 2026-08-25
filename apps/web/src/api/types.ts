@@ -159,6 +159,7 @@ export interface CollectionRunCompletion {
   uniqueItemCount: number;
   skuCount: number;
   incompleteCount: number;
+  terminationReason: "LIMIT_REACHED" | "END_MARKER" | null;
   complete: boolean;
   label: string;
 }
@@ -185,7 +186,7 @@ export interface CollectionRunReportSummary {
   } | null;
   completion: CollectionRunCompletion;
   notification: {
-    state: "NOT_CREATED" | "PENDING" | "SENDING" | "NOTIFIED" | "FAILED";
+    state: "NOT_CREATED" | "PENDING" | "SENDING" | "NOTIFIED" | "AMBIGUOUS" | "FAILED";
     attempts: number;
     notifiedAt: string | null;
     lastError: string | null;

@@ -7,6 +7,7 @@ import {
   UiContractChangedError,
   type DriverDiagnostic,
   type DriverItemPage,
+  type DriverSearchResult,
   type DriverSearchPosition,
   type DriverSkuSelectionResult,
   type DriverSkuView,
@@ -65,6 +66,34 @@ export class AppVersionUnsupportedError extends DriverIssueError {
       `Unsupported Taobao Desktop version ${safeObserved(version)} build ${safeObserved(build)}.`
     );
     this.name = "AppVersionUnsupportedError";
+  }
+}
+
+export class TaobaoNotInstalledError extends DriverIssueError {
+  constructor() {
+    super("TAOBAO_NOT_INSTALLED", "Taobao Desktop is not installed.");
+    this.name = "TaobaoNotInstalledError";
+  }
+}
+
+export class TaobaoNotRunningError extends DriverIssueError {
+  constructor() {
+    super("TAOBAO_NOT_RUNNING", "Taobao Desktop is not running.");
+    this.name = "TaobaoNotRunningError";
+  }
+}
+
+export class AccessibilityPermissionRequiredError extends DriverIssueError {
+  constructor() {
+    super("ACCESSIBILITY_PERMISSION_REQUIRED", "Accessibility permission is required.");
+    this.name = "AccessibilityPermissionRequiredError";
+  }
+}
+
+export class ScreenRecordingPermissionRequiredError extends DriverIssueError {
+  constructor() {
+    super("SCREEN_RECORDING_PERMISSION_REQUIRED", "Screen Recording permission is required.");
+    this.name = "ScreenRecordingPermissionRequiredError";
   }
 }
 
@@ -228,7 +257,9 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     }
     const capturedAt = this.capturedAt();
     return {
+      appInstalled: diagnostic.appInstalled,
       accessibilityTrusted: diagnostic.trusted,
+      screenRecordingTrusted: diagnostic.screenRecordingTrusted,
       appRunning: diagnostic.appRunning,
       processId: diagnostic.pid,
       bundleId: diagnostic.bundleId ?? "com.taobao.pcdesktop",
@@ -241,7 +272,10 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
         capturedAt,
         metadata: {
           approvedProfile: `${SUPPORTED_VERSION}+${SUPPORTED_BUILD}`,
+          appInstalled: diagnostic.appInstalled,
           appRunning: diagnostic.appRunning,
+          accessibilityTrusted: diagnostic.trusted,
+          screenRecordingTrusted: diagnostic.screenRecordingTrusted,
           frontWindowAvailable: diagnostic.frontWindowAvailable
         }
       }
@@ -251,8 +285,8 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
   async openOwnListing(url: string): Promise<DriverItemPage> {
     const expected = canonicalItemIdentity(url);
     if (!expected.platformItemId) throw new MissingItemIdError();
-    const positions = await this.search(url, 1);
-    const first = positions[0];
+    const searchResult = await this.search(url, 1);
+    const first = searchResult.positions[0];
     if (!first) throw new UiContractChangedError("Taobao did not expose the requested own listing.");
     const page = await this.openSearchPosition(first);
     if (page.platformItemId !== expected.platformItemId) {
@@ -261,7 +295,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     return page;
   }
 
-  async search(query: string, limit: number): Promise<DriverSearchPosition[]> {
+  async search(query: string, limit: number): Promise<DriverSearchResult> {
     await this.ensureSupported();
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
       throw new TypeError("Search limit must be an integer from 1 through 50");
@@ -303,11 +337,14 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
       viewportCards = next;
       scrollCount += 1;
     }
+    if (cards.length < limit && !hasSearchEndMarker(root)) {
+      throw new UiContractChangedError("Taobao search did not reach a verified termination state.");
+    }
 
     this.currentSearchQuery = query;
     this.currentSearchContextSignature = readSearchContext(root).signature;
     const capturedAt = this.capturedAt();
-    return cards.slice(0, limit).map((card, index) => ({
+    const positions = cards.slice(0, limit).map((card, index) => ({
       rank: index + 1,
       platformItemId: card.platformItemId,
       url: card.url,
@@ -329,6 +366,10 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
         }
       }
     }));
+    return {
+      positions,
+      terminationReason: positions.length === limit ? "LIMIT_REACHED" : "END_MARKER"
+    };
   }
 
   async openSearchPosition(position: DriverSearchPosition): Promise<DriverItemPage> {
@@ -407,9 +448,6 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     const stable = await this.waitForStableSku(root);
     const selectedLabels = readSelectedLabels(stable);
     const evidence = readSelectedSkuEvidence(stable);
-    if (evidence.stockState === "OUT_OF_STOCK") {
-      return { availability: "UNAVAILABLE", reason: "Selected SKU is out of stock" };
-    }
 
     const detail = readDetailPage(stable);
     const itemId = detail.platformItemId ?? this.currentItemId;
@@ -470,6 +508,10 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
   private async ensureSupported(): Promise<AxHelperDiagnosticPayload> {
     if (this.diagnostic) return this.diagnostic;
     const diagnostic = await this.client.diagnose();
+    if (!diagnostic.appInstalled) throw new TaobaoNotInstalledError();
+    if (!diagnostic.appRunning) throw new TaobaoNotRunningError();
+    if (!diagnostic.trusted) throw new AccessibilityPermissionRequiredError();
+    if (!diagnostic.screenRecordingTrusted) throw new ScreenRecordingPermissionRequiredError();
     if (diagnostic.shortVersion !== SUPPORTED_VERSION || diagnostic.build !== SUPPORTED_BUILD) {
       throw new AppVersionUnsupportedError(diagnostic.shortVersion, diagnostic.build);
     }

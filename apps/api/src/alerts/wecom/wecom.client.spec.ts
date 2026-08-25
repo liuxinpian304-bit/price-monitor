@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { WecomClient } from "./wecom.client.ts";
+import { WecomClient, WecomDeliveryAmbiguousError } from "./wecom.client.ts";
 
 const webhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=01234567-secret";
 
@@ -67,4 +67,38 @@ test("retries with one logical message and returns only a sanitized failure", as
   );
   assert.equal(requestBodies.length, 2);
   assert.equal(requestBodies[0], requestBodies[1]);
+});
+
+test("does not repeat a POST when response loss makes WeCom acceptance ambiguous", async () => {
+  let requests = 0;
+  const fetcher = (async () => {
+    requests += 1;
+    throw new TypeError(`response lost for ${webhook}`);
+  }) as typeof fetch;
+  const client = new WecomClient({ webhookUrl: webhook, fetch: fetcher, attempts: 3 });
+
+  await assert.rejects(
+    () => client.sendMarkdown("private request content"),
+    (error) => error instanceof WecomDeliveryAmbiguousError
+      && error.message === "企业微信通知结果不明确"
+      && !error.message.includes("01234567-secret")
+      && !error.message.includes("private request content")
+  );
+  assert.equal(requests, 1);
+});
+
+test("treats a lost success response body as ambiguous without another POST", async () => {
+  let requests = 0;
+  const fetcher = (async () => {
+    requests += 1;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => { throw new Error("response stream lost"); }
+    } as unknown as Response;
+  }) as typeof fetch;
+  const client = new WecomClient({ webhookUrl: webhook, fetch: fetcher, attempts: 3 });
+
+  await assert.rejects(() => client.sendMarkdown("summary"), WecomDeliveryAmbiguousError);
+  assert.equal(requests, 1);
 });

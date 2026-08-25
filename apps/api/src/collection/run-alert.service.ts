@@ -92,6 +92,7 @@ export interface RunAlertUnitOfWork {
   alerts: AlertRepository;
   saveSnapshotDecisions(decisions: SnapshotMatchPersistence[]): Promise<void>;
   saveCandidateDecisions(decisions: CandidateMatchPersistence[]): Promise<void>;
+  saveOwnBaselineSnapshot(snapshotId: string | null): Promise<void>;
   ensureBaselineIssue(code: BaselineIssueCode): Promise<boolean>;
 }
 
@@ -365,6 +366,7 @@ export class RunAlertService {
       };
 
       if (ownBaselines.length !== 1) {
+        await unit.saveOwnBaselineSnapshot(null);
         const systemIssue: BaselineIssueCode = ownBaselines.length === 0
           ? "OWN_BASELINE_MISSING"
           : "OWN_BASELINE_AMBIGUOUS";
@@ -379,6 +381,7 @@ export class RunAlertService {
       }
 
       const baseline = ownBaselines[0]!;
+      await unit.saveOwnBaselineSnapshot(baseline.snapshot.id);
       const alertService = new AlertService(unit.alerts);
       const alerts: RunAlertEntry[] = [];
       for (const entry of evaluated) {

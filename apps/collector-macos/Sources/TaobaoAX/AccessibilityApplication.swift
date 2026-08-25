@@ -21,17 +21,13 @@ final class AccessibilityApplication {
             kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt,
         ] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
-        guard trusted else {
-            throw HelperError(
-                code: "ACCESSIBILITY_PERMISSION_REQUIRED",
-                message: "Accessibility permission is required."
-            )
-        }
 
         let runningApplication = runningApplication()
         let metadata = bundleMetadata(runningApplication: runningApplication)
+        let appInstalled = runningApplication?.bundleURL != nil
+            || NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil
         let frontWindowAvailable: Bool
-        if let runningApplication {
+        if trusted, let runningApplication {
             let root = LiveAXElement(element: AXUIElementCreateApplication(runningApplication.processIdentifier))
             frontWindowAvailable = try root.hasValue(for: kAXFocusedWindowAttribute as String)
         } else {
@@ -39,7 +35,9 @@ final class AccessibilityApplication {
         }
 
         return .object([
+            "appInstalled": .boolean(appInstalled),
             "trusted": .boolean(trusted),
+            "screenRecordingTrusted": .boolean(ScreenCapture().preflightAccess()),
             "appRunning": .boolean(runningApplication != nil),
             "pid": runningApplication.map { .number(Double($0.processIdentifier)) } ?? .null,
             "bundleId": metadata.bundleIdentifier.map(JSONValue.string) ?? .null,

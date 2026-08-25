@@ -489,7 +489,9 @@ test("resets search-derived progress coherently when a later rank has no stable 
       openedRanks,
       async diagnose() {
         return {
+          appInstalled: true,
           accessibilityTrusted: true,
+          screenRecordingTrusted: true,
           appRunning: true,
           processId: 123,
           bundleId: "fixture.taobao.desktop",
@@ -513,7 +515,7 @@ test("resets search-derived progress coherently when a later rank has no stable 
         };
       },
       async search() {
-        return [
+        const positions = [
           { rank: 1, platformItemId: "stable-a", url: "https://item.example.test/item.htm?id=stable-a" },
           { rank: 2, platformItemId: null, url: "https://item.example.test/" }
         ].map((entry) => ({
@@ -526,6 +528,7 @@ test("resets search-derived progress coherently when a later rank has no stable 
           capturedAt,
           rawEvidence: { source: "test", capturedAt, metadata: { rank: entry.rank } }
         }));
+        return { positions, terminationReason: "LIMIT_REACHED" };
       },
       async openSearchPosition(position) {
         currentRank = position.rank;
@@ -603,7 +606,9 @@ test("clears own-item search ranks when missing-ID rollback removes every search
   const driver: TaobaoDesktopDriver = {
     async diagnose() {
       return {
+        appInstalled: true,
         accessibilityTrusted: true,
+        screenRecordingTrusted: true,
         appRunning: true,
         processId: 123,
         bundleId: "fixture.taobao.desktop",
@@ -627,7 +632,7 @@ test("clears own-item search ranks when missing-ID rollback removes every search
       };
     },
     async search() {
-      return [
+      const positions = [
         { rank: 1, platformItemId: "own-ranked", url: "https://item.example.test/item.htm?id=own-ranked" },
         { rank: 2, platformItemId: null, url: "https://item.example.test/" }
       ].map((entry) => ({
@@ -640,6 +645,7 @@ test("clears own-item search ranks when missing-ID rollback removes every search
         capturedAt,
         rawEvidence: { source: "test", capturedAt, metadata: { rank: entry.rank } }
       }));
+      return { positions, terminationReason: "LIMIT_REACHED" };
     },
     async openSearchPosition(position) {
       assert.equal(position.rank, 2);
@@ -745,7 +751,9 @@ test("resolves same-URL host-only ranks independently across pause and resume", 
       openedRanks,
       async diagnose() {
         return {
+          appInstalled: true,
           accessibilityTrusted: true,
+          screenRecordingTrusted: true,
           appRunning: true,
           processId: 123,
           bundleId: "fixture.taobao.desktop",
@@ -769,7 +777,7 @@ test("resolves same-URL host-only ranks independently across pause and resume", 
         };
       },
       async search() {
-        return [1, 2].map((rank) => ({
+        const positions = [1, 2].map((rank) => ({
           rank,
           platformItemId: null,
           url: sameUrl,
@@ -781,6 +789,7 @@ test("resolves same-URL host-only ranks independently across pause and resume", 
           capturedAt,
           rawEvidence: { source: "test", capturedAt, metadata: { rank } }
         }));
+        return { positions, terminationReason: "LIMIT_REACHED" };
       },
       async openSearchPosition(position) {
         openedRanks.push(position.rank);
@@ -1564,7 +1573,10 @@ test("rejects shape-valid checkpoints that contradict job, progress, alias, phas
     }> = [
       {
         name: "report search limit",
-        mutate: (checkpoint) => { checkpoint.report.searchLimit = semanticJob.searchLimit + 1; }
+        mutate: (checkpoint) => {
+          checkpoint.report.searchLimit = semanticJob.searchLimit + 1;
+          checkpoint.report.searchTerminationReason = "END_MARKER";
+        }
       },
       {
         name: "own listing identity",
@@ -1772,10 +1784,13 @@ test("reports typed startup and missing-identity driver outcomes without claimin
       diagnose: () => missingBase.diagnose(),
       openOwnListing: (url) => missingBase.openOwnListing(url),
       search: async (query, limit) => {
-        const positions = await missingBase.search(query, limit);
-        return positions.map((position, index) => index === 0
-          ? { ...position, platformItemId: null, url: "https://item.example.test/unresolved" }
-          : position);
+        const result = await missingBase.search(query, limit);
+        return {
+          ...result,
+          positions: result.positions.map((position, index) => index === 0
+            ? { ...position, platformItemId: null, url: "https://item.example.test/unresolved" }
+            : position)
+        };
       },
       openSearchPosition: async () => {
         throw new DriverIssueError("MISSING_ITEM_ID", "A stable Taobao item ID was not available.");

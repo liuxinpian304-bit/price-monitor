@@ -47,7 +47,9 @@ export type CollectorCliErrorCode =
   | "INVALID_COMMAND"
   | "PLATFORM_UNSUPPORTED"
   | "HELPER_UNAVAILABLE"
+  | "TAOBAO_NOT_INSTALLED"
   | "ACCESSIBILITY_PERMISSION_REQUIRED"
+  | "SCREEN_RECORDING_PERMISSION_REQUIRED"
   | "TAOBAO_NOT_RUNNING"
   | "TAOBAO_LOGIN_REQUIRED"
   | "TAOBAO_WINDOW_UNAVAILABLE"
@@ -138,10 +140,14 @@ function defaultSignalHandlers(worker: CollectorCliWorker): () => void {
 }
 
 function assertDiagnostic(diagnostic: DriverDiagnostic): void {
+  if (!diagnostic.appInstalled) throw new CollectorCliError("TAOBAO_NOT_INSTALLED");
+  if (!diagnostic.appRunning) throw new CollectorCliError("TAOBAO_NOT_RUNNING");
   if (!diagnostic.accessibilityTrusted) {
     throw new CollectorCliError("ACCESSIBILITY_PERMISSION_REQUIRED");
   }
-  if (!diagnostic.appRunning) throw new CollectorCliError("TAOBAO_NOT_RUNNING");
+  if (!diagnostic.screenRecordingTrusted) {
+    throw new CollectorCliError("SCREEN_RECORDING_PERMISSION_REQUIRED");
+  }
   if (diagnostic.appVersion !== "2.4.5" || diagnostic.appBuild !== "15") {
     throw new CollectorCliError("TAOBAO_VERSION_UNSUPPORTED");
   }
@@ -190,9 +196,16 @@ export async function runCollectorCli(
       diagnostic = await driver.diagnose();
     } catch (error) {
       const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : null;
-      if (code === "APP_VERSION_UNSUPPORTED") {
-        throw new CollectorCliError("TAOBAO_VERSION_UNSUPPORTED");
-      }
+      const mapped = code === "APP_VERSION_UNSUPPORTED"
+        ? "TAOBAO_VERSION_UNSUPPORTED"
+        : code;
+      if (
+        mapped === "TAOBAO_NOT_INSTALLED"
+        || mapped === "TAOBAO_NOT_RUNNING"
+        || mapped === "ACCESSIBILITY_PERMISSION_REQUIRED"
+        || mapped === "SCREEN_RECORDING_PERMISSION_REQUIRED"
+        || mapped === "TAOBAO_VERSION_UNSUPPORTED"
+      ) throw new CollectorCliError(mapped);
       throw new CollectorCliError("DIAGNOSTIC_FAILED");
     } finally {
       driver.close();

@@ -126,7 +126,7 @@ const sonyRule: MonitoredProductRule = {
   version: null,
   comparisonType: "BARE",
   effectiveAliases: ["索尼 7506", "7506"],
-  excludedAliases: [],
+  excludedAliases: ["M1", "MV1"],
   mustIncludeTerms: [],
   excludedTerms: ["M1", "MV1", "展示样机", "单独转换线"]
 };
@@ -152,6 +152,26 @@ test("compares an exact 7506 bare SKU", () => {
 
   assert.equal(decision.category, "BARE");
   assert.equal(decision.comparable, true);
+});
+
+test("compares an exact selected 7506 SKU on a title that lists 7506, M1, and MV1 variants", () => {
+  const mixed = sonyOffer("MDR-7506 单机");
+  mixed.title = "索尼 MDR-7506 / M1 / MV1 专业监听耳机 多规格可选";
+
+  const decision = new MatcherService().match(sonyRule, mixed);
+
+  assert.equal(decision.category, "BARE");
+  assert.equal(decision.comparable, true);
+});
+
+test("keeps offer-wide risk terms active on mixed-variant titles", () => {
+  const risky = sonyOffer("MDR-7506 单机");
+  risky.title = "索尼 MDR-7506 / M1 / MV1 展示样机";
+
+  const decision = new MatcherService().match(sonyRule, risky);
+
+  assert.equal(decision.category, "REJECTED");
+  assert.ok(decision.reasons.some((reason) => reason.includes("展示样机")));
 });
 
 test("does not conflate a 7506 plus conversion cable SKU with the bare SKU", () => {

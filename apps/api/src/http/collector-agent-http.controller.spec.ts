@@ -71,6 +71,7 @@ function reportFixture(): CollectorReport {
     completedAt: "2026-08-24T01:31:00.000Z",
     status: "SUCCEEDED",
     searchLimit: 1,
+    searchTerminationReason: "END_MARKER",
     positions: [],
     ownItems: [{
       ownListingId: "own-1",
@@ -124,6 +125,7 @@ class FakeCollectorAgentService {
   claimCalls = 0;
   heartbeatCalls = 0;
   pauseCalls = 0;
+  releaseCalls = 0;
 
   async register(input: { name: string; platform: "MACOS" | "WINDOWS" }, _actorId: string) {
     this.registrationCalls += 1;
@@ -158,6 +160,12 @@ class FakeCollectorAgentService {
     _message: string
   ): Promise<void> {
     this.pauseCalls += 1;
+    if (this.invalidToken || this.disabledToken) throw new CollectorAgentAuthenticationError();
+    if (this.wrongOwner) throw new CollectorAgentRunOwnershipError();
+  }
+
+  async release(_token: string, _runId: string): Promise<void> {
+    this.releaseCalls += 1;
     if (this.invalidToken || this.disabledToken) throw new CollectorAgentAuthenticationError();
     if (this.wrongOwner) throw new CollectorAgentRunOwnershipError();
   }
@@ -239,6 +247,10 @@ test("declares the exact registration and collector-agent route paths and respon
     "collector-agent/jobs/:runId/pause"
   );
   assert.equal(
+    Reflect.getMetadata(PATH_METADATA, CollectorAgentHttpController.prototype.release),
+    "collector-agent/jobs/:runId/release"
+  );
+  assert.equal(
     Reflect.getMetadata(PATH_METADATA, CollectorAgentHttpController.prototype.evidence),
     "collector-agent/jobs/:runId/evidence/:sha256"
   );
@@ -253,6 +265,7 @@ test("declares the exact registration and collector-agent route paths and respon
   assert.equal(Reflect.getMetadata(HTTP_CODE_METADATA, CollectorAgentHttpController.prototype.claim), 200);
   assert.equal(Reflect.getMetadata(HTTP_CODE_METADATA, CollectorAgentHttpController.prototype.heartbeat), 204);
   assert.equal(Reflect.getMetadata(HTTP_CODE_METADATA, CollectorAgentHttpController.prototype.pause), 204);
+  assert.equal(Reflect.getMetadata(HTTP_CODE_METADATA, CollectorAgentHttpController.prototype.release), 204);
   assert.equal(Reflect.getMetadata(HTTP_CODE_METADATA, CollectorAgentHttpController.prototype.evidence), 200);
   assert.equal(Reflect.getMetadata(HTTP_CODE_METADATA, CollectorAgentHttpController.prototype.report), 202);
 });
@@ -330,6 +343,10 @@ test("invalid or disabled authentication takes precedence over malformed bodies"
       (error) => statusOf(error) === 401
     );
     await assert.rejects(
+      () => controller.release("run-1", authenticated),
+      (error) => statusOf(error) === 401
+    );
+    await assert.rejects(
       () => controller.report("run-1", { rejected: "account text" }, authenticated, response()),
       (error) => statusOf(error) === 401
     );
@@ -341,6 +358,7 @@ test("invalid or disabled authentication takes precedence over malformed bodies"
     assert.equal(service.claimCalls, 0);
     assert.equal(service.heartbeatCalls, 0);
     assert.equal(service.pauseCalls, 0);
+    assert.equal(service.releaseCalls, 0);
     assert.equal(ingestion.reportCalls, 0);
     assert.equal(ingestion.evidenceCalls, 0);
   }
@@ -580,6 +598,14 @@ test("maps report ownership/state, validation, payload, and persistence failures
   );
 });
 
+test("graceful release returns 204 and delegates ownership fencing", async () => {
+  const { controller, service } = createController();
+  const authenticated = request({ authorization: "Bearer pmc_test" });
+
+  assert.equal(await controller.release("run-1", authenticated), undefined);
+  assert.equal(service.releaseCalls, 1);
+});
+
 test("missing or mislabeled evidence is rejected without invoking storage", async () => {
   const { controller, ingestion } = createController();
   const authenticated = request({ authorization: "Bearer pmc_test" });
@@ -633,6 +659,10 @@ test("wrong run ownership maps to 409", async () => {
       { code: "LOGIN_REQUIRED", message: "login expired" },
       authenticated
     ),
+    (error) => statusOf(error) === 409
+  );
+  await assert.rejects(
+    () => controller.release("run-other", authenticated),
     (error) => statusOf(error) === 409
   );
 });

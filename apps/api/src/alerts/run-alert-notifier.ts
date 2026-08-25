@@ -1,5 +1,9 @@
 import type { RunAlertSummary } from "../collection/run-alert.service.ts";
-import { WecomClient, type WecomMarkdownSender } from "./wecom/wecom.client.ts";
+import {
+  WecomClient,
+  WecomDeliveryAmbiguousError,
+  type WecomMarkdownSender
+} from "./wecom/wecom.client.ts";
 import { buildWecomRunSummary } from "./wecom/wecom-run-summary.ts";
 
 export interface ClaimedRunAlertBatch {
@@ -16,6 +20,11 @@ export interface RunAlertNotificationRepository {
     message: "WECOM_NOT_CONFIGURED" | "WECOM_DELIVERY_FAILED",
     failedAt: Date
   ): Promise<void>;
+  recordBatchNotificationAmbiguous(
+    batch: ClaimedRunAlertBatch,
+    failedAt: Date
+  ): Promise<void>;
+  listRetryableSummaries(attemptedAt: Date, limit: number): Promise<RunAlertSummary[]>;
 }
 
 export type WecomSenderFactory = () => Promise<WecomMarkdownSender | null>;
@@ -56,7 +65,11 @@ export class RunAlertNotifier {
 
     try {
       await sender.sendMarkdown(buildWecomRunSummary(batch.summary));
-    } catch {
+    } catch (error) {
+      if (error instanceof WecomDeliveryAmbiguousError) {
+        await this.repository.recordBatchNotificationAmbiguous(batch, this.now());
+        return;
+      }
       await this.repository.recordBatchNotificationFailure(
         batch,
         "WECOM_DELIVERY_FAILED",

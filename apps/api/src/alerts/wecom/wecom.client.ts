@@ -10,6 +10,13 @@ export interface WecomMarkdownSender {
 
 const DEFAULT_HTTP_ATTEMPTS_PER_BATCH_DELIVERY = 3;
 
+export class WecomDeliveryAmbiguousError extends Error {
+  constructor() {
+    super("企业微信通知结果不明确");
+    this.name = "WecomDeliveryAmbiguousError";
+  }
+}
+
 function assertWebhookUrl(value: string): string {
   try {
     const url = new URL(value);
@@ -66,16 +73,24 @@ export class WecomClient implements WecomMarkdownSender {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMilliseconds);
       try {
-        const response = await this.fetcher(this.webhookUrl, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body,
-          signal: controller.signal
-        });
-        const payload = await response.json() as { errcode?: number };
+        let response: Response;
+        try {
+          response = await this.fetcher(this.webhookUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body,
+            signal: controller.signal
+          });
+        } catch {
+          throw new WecomDeliveryAmbiguousError();
+        }
+        let payload: { errcode?: number };
+        try {
+          payload = await response.json() as { errcode?: number };
+        } catch {
+          throw new WecomDeliveryAmbiguousError();
+        }
         if (response.ok && payload.errcode === 0) return;
-      } catch {
-        // Deliberately discard transport details because they may contain the webhook or body.
       } finally {
         clearTimeout(timeout);
       }

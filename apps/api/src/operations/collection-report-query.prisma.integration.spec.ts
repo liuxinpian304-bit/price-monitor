@@ -184,6 +184,14 @@ test("bounds large report pages and keeps database-side filters and totals accur
       }
     ]
   });
+  await prisma.collectionRun.update({
+    where: { id: mainRunId },
+    data: { ownBaselineSnapshotId: `${prefix}-snapshot-own` }
+  });
+  await prisma.collectionRun.update({
+    where: { id: zeroBaselineRunId },
+    data: { ownBaselineSnapshotId: `${prefix}-zero-own` }
+  });
   await prisma.collectionIssue.createMany({
     data: Array.from({ length: 140 }, (_, index) => ({
       collectionRunId: mainRunId,

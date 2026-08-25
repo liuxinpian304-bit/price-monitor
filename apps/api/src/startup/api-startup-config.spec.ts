@@ -128,6 +128,21 @@ test("startup configuration validates bind, ports, report limit, public URL and 
     API_HOST: "0.0.0.0",
     ALLOW_PRIVATE_NETWORK_API: "true"
   }));
+  for (const API_HOST of ["::", "[::]", "0:0:0:0:0:0:0:0", "192.168.1.25", "2001:db8::25", "api.internal"]) {
+    assert.throws(
+      () => apiStartupConfigFromEnvironment({ ...base, API_HOST }),
+      /ALLOW_PRIVATE_NETWORK_API/,
+      API_HOST
+    );
+    assert.doesNotThrow(() => apiStartupConfigFromEnvironment({
+      ...base,
+      API_HOST,
+      ALLOW_PRIVATE_NETWORK_API: "true"
+    }));
+  }
+  for (const API_HOST of ["127.0.0.1", "127.25.4.3", "::1", "[::1]", "localhost", "LOCALHOST"]) {
+    assert.doesNotThrow(() => apiStartupConfigFromEnvironment({ ...base, API_HOST }), API_HOST);
+  }
   assert.throws(() => apiStartupConfigFromEnvironment({ ...base, API_PORT: "nope" }), /API_PORT/);
   assert.throws(() => apiStartupConfigFromEnvironment({ ...base, REDIS_PORT: "70000" }), /REDIS_PORT/);
   assert.throws(() => apiStartupConfigFromEnvironment({ ...base, REDIS_HOST: " " }), /REDIS_HOST/);

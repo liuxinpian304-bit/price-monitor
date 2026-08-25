@@ -56,6 +56,8 @@ export interface CollectionReportRawRun {
   startedAt: Date | null;
   finishedAt: Date | null;
   searchLimit: number;
+  searchTerminationReason: "LIMIT_REACHED" | "END_MARKER" | null;
+  ownBaselineSnapshotId: string | null;
   searchedCount: number;
   fetchedCount: number;
   matchedCount: number;
@@ -82,7 +84,7 @@ export interface CollectionReportRawRun {
     appVersion: string | null;
   } | null;
   alertNotificationBatch: {
-    state: "PENDING" | "SENDING" | "NOTIFIED" | "FAILED";
+    state: "PENDING" | "SENDING" | "NOTIFIED" | "AMBIGUOUS" | "FAILED";
     notificationAttempts: number;
     notifiedAt: Date | null;
     lastNotificationError: string | null;
@@ -171,6 +173,7 @@ export interface CollectionRunCompletion {
   uniqueItemCount: number;
   skuCount: number;
   incompleteCount: number;
+  terminationReason: "LIMIT_REACHED" | "END_MARKER" | null;
   complete: boolean;
   label: string;
 }
@@ -197,7 +200,7 @@ export interface CollectionRunReportSummary {
   } | null;
   completion: CollectionRunCompletion;
   notification: {
-    state: "NOT_CREATED" | "PENDING" | "SENDING" | "NOTIFIED" | "FAILED";
+    state: "NOT_CREATED" | "PENDING" | "SENDING" | "NOTIFIED" | "AMBIGUOUS" | "FAILED";
     attempts: number;
     notifiedAt: string | null;
     lastError: string | null;
@@ -319,7 +322,10 @@ function completion(run: CollectionReportRawRun): CollectionRunCompletion {
   const positionsCaptured = Math.max(0, run.positionCount);
   const requestedPositions = Math.max(0, run.searchLimit);
   const incompleteCount = Math.max(0, run.incompleteCount);
-  const complete = positionsCaptured >= requestedPositions && incompleteCount === 0;
+  const verifiedCoverage = run.searchTerminationReason === "END_MARKER"
+    || run.searchTerminationReason === "LIMIT_REACHED"
+    || (run.searchTerminationReason === null && positionsCaptured >= requestedPositions);
+  const complete = verifiedCoverage && incompleteCount === 0;
   return {
     positionsCaptured,
     requestedPositions,
@@ -330,10 +336,15 @@ function completion(run: CollectionReportRawRun): CollectionRunCompletion {
     uniqueItemCount: Math.max(0, run.uniqueItemCount),
     skuCount: Math.max(0, run.snapshotCount),
     incompleteCount,
+    terminationReason: run.searchTerminationReason,
     complete,
-    label: complete
-      ? `${positionsCaptured} / ${requestedPositions}，已完成`
-      : `${positionsCaptured} / ${requestedPositions}，未完成`
+    label: complete && run.searchTerminationReason === "END_MARKER"
+      ? `${positionsCaptured} 项，已验证到底`
+      : complete && run.searchTerminationReason === "LIMIT_REACHED"
+        ? `${positionsCaptured} / ${requestedPositions}，已达上限`
+        : complete
+          ? `${positionsCaptured} / ${requestedPositions}，已完成`
+          : `${positionsCaptured} / ${requestedPositions}，未完成`
   };
 }
 
@@ -457,6 +468,8 @@ const reportRunSummarySelect = {
   startedAt: true,
   finishedAt: true,
   searchLimit: true,
+  searchTerminationReason: true,
+  ownBaselineSnapshotId: true,
   searchedCount: true,
   fetchedCount: true,
   matchedCount: true,
@@ -523,6 +536,8 @@ function toRawRun(run: PrismaReportRun, uniqueItemCount: number): CollectionRepo
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
     searchLimit: run.searchLimit,
+    searchTerminationReason: run.searchTerminationReason,
+    ownBaselineSnapshotId: run.ownBaselineSnapshotId,
     searchedCount: run.searchedCount,
     fetchedCount: run.fetchedCount,
     matchedCount: run.matchedCount,
@@ -698,23 +713,11 @@ export class PrismaCollectionReportRepository implements CollectionReportDataRep
   }
 
   async findExactOwnBaseline(run: CollectionReportRawRun): Promise<CollectionReportRawSnapshot | null> {
-    const ids = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT s."id"
-      FROM "OfferSnapshot" s
-      INNER JOIN "OwnListing" own ON own."id" = s."ownListingId"
-      WHERE s."collectionRunId" = ${run.id}
-        AND s."skuText" IS NOT NULL
-        AND LOWER(BTRIM(s."skuText")) = LOWER(BTRIM(own."skuText"))
-        AND s."comparable" = TRUE
-        AND s."matchDecision"::text = ${run.monitoredModel.comparisonType}
-        AND s."stockState"::text = 'IN_STOCK'
-        AND s."priceConfidence"::text = 'CONFIRMED'
-        AND s."payableFen" IS NOT NULL
-      ORDER BY s."id" ASC
-      LIMIT 2
-    `);
-    if (ids.length !== 1) return null;
-    const snapshot = await this.prisma.offerSnapshot.findUnique({ where: { id: ids[0]!.id }, select: snapshotSelect });
+    if (!run.ownBaselineSnapshotId) return null;
+    const snapshot = await this.prisma.offerSnapshot.findFirst({
+      where: { id: run.ownBaselineSnapshotId, collectionRunId: run.id },
+      select: snapshotSelect
+    });
     return snapshot ? toRawSnapshot(snapshot) : null;
   }
 

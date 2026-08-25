@@ -238,6 +238,7 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
           startedAt: new Date(report.startedAt),
           finishedAt: new Date(report.completedAt),
           heartbeatAt: new Date(report.completedAt),
+          searchTerminationReason: report.searchTerminationReason ?? null,
           ...counters,
           desktopReportDigest: reportDigest,
           errorCode: null,

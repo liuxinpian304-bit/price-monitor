@@ -34,6 +34,7 @@ const summary = {
     uniqueItemCount: 47,
     skuCount: 2,
     incompleteCount: 3,
+    terminationReason: null,
     complete: false,
     label: "47 / 50，未完成"
   },
@@ -123,7 +124,7 @@ const detailFixture = {
         reasons: ["fixture 型号一致"]
       },
       comparison: { state: "OWN", ownPayableFen: 69_800, differenceFen: null },
-      evidenceSha256: null,
+      evidenceSha256: "a".repeat(64),
       capturedAt
     },
     {
@@ -238,6 +239,19 @@ test("ADMIN unlock recovers run list once and report tables stay contained", asy
       return;
     }
 
+    if (url.pathname === `/api/operations/collection-runs/${runId}/evidence/${"a".repeat(64)}`) {
+      if (authorization !== `Bearer ${adminToken}`) {
+        await route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ message: "forbidden" }) });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "image/png",
+        body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64")
+      });
+      return;
+    }
+
     await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ message: "fixture route not found" }) });
   });
 
@@ -258,6 +272,13 @@ test("ADMIN unlock recovers run list once and report tables stay contained", asy
   await expectNoBodyOverflow(page);
   await expectContainedHorizontalScroll(page.getByTestId("collection-run-positions-scroll"));
   await expectContainedHorizontalScroll(page.getByTestId("collection-run-skus-scroll"));
+
+  const popupPromise = page.context().waitForEvent("page");
+  await page.getByRole("button", { name: "查看证据" }).first().click();
+  const evidencePage = await popupPromise;
+  await expect.poll(() => evidencePage.url()).toMatch(/^blob:/);
+  await expect(evidencePage.locator("img")).toBeVisible();
+  await evidencePage.close();
 
   const filterControls = page.locator(".run-filter-tools .ant-select");
   await expect(filterControls).toHaveCount(4);

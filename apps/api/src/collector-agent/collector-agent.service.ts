@@ -26,6 +26,7 @@ export interface CollectorAgentRepository {
     code: "LOGIN_REQUIRED" | "PLATFORM_CHALLENGE",
     message: string
   ): Promise<boolean>;
+  release(agentId: string, runId: string): Promise<boolean>;
   ownsRun(agentId: string, runId: string): Promise<boolean>;
 }
 
@@ -91,6 +92,13 @@ export class CollectorAgentService {
     const agent = await this.authenticate(token);
     const status = code === "LOGIN_REQUIRED" ? "PAUSED_LOGIN" : "PAUSED_CHALLENGE";
     if (!await this.repository.pause(agent.id, runId, status, code, message)) {
+      throw new CollectorAgentRunOwnershipError();
+    }
+  }
+
+  async release(token: string, runId: string): Promise<void> {
+    const agent = await this.authenticate(token);
+    if (!await this.repository.release(agent.id, runId)) {
       throw new CollectorAgentRunOwnershipError();
     }
   }

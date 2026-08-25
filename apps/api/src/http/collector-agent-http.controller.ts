@@ -221,6 +221,17 @@ export class CollectorAgentHttpController {
     }
   }
 
+  async release(runId: string, request: Request) {
+    const token = bearerToken(request);
+    await this.assertAuthenticated(token);
+    try {
+      await this.service.release(token, runId);
+      return undefined;
+    } catch (error) {
+      mapServiceError(error);
+    }
+  }
+
   async evidence(
     runIdInput: string,
     sha256Input: string,
@@ -335,6 +346,19 @@ HttpCode(204)(
   controllerPrototype,
   "pause",
   Object.getOwnPropertyDescriptor(controllerPrototype, "pause")!
+);
+
+Param("runId")(controllerPrototype, "release", 0);
+Req()(controllerPrototype, "release", 1);
+Post("collector-agent/jobs/:runId/release")(
+  controllerPrototype,
+  "release",
+  Object.getOwnPropertyDescriptor(controllerPrototype, "release")!
+);
+HttpCode(204)(
+  controllerPrototype,
+  "release",
+  Object.getOwnPropertyDescriptor(controllerPrototype, "release")!
 );
 
 Param("runId")(controllerPrototype, "evidence", 0);

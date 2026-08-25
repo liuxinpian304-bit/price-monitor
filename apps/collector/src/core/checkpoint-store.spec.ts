@@ -20,6 +20,7 @@ function report(status: CollectorReport["status"]): CollectorReport {
     completedAt: capturedAt,
     status,
     searchLimit: 3,
+    ...(status === "SUCCEEDED" ? { searchTerminationReason: "END_MARKER" as const } : {}),
     positions: [],
     ownItems: status === "SUCCEEDED" ? [{
       ownListingId: "own-1",

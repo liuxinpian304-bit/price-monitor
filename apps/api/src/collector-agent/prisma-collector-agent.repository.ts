@@ -1,10 +1,11 @@
 import { collectorJobSchema, type CollectorJob } from "../../../../packages/contracts/src/index.ts";
-import type { PrismaClient } from "../../../../generated/prisma/client.ts";
+import { Prisma, type PrismaClient } from "../../../../generated/prisma/client.ts";
 
 import type { CollectorAgentRepository } from "./collector-agent.service.ts";
 import { verifyCollectorToken } from "./collector-token.ts";
 
 const maximumClaimAttempts = 5;
+export const COLLECTOR_RUN_LEASE_MILLISECONDS = 90_000;
 
 function isSerializableConflict(error: unknown): boolean {
   return typeof error === "object" && error !== null && Reflect.get(error, "code") === "P2034";
@@ -105,6 +106,19 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
     return true;
   }
 
+  async release(agentId: string, runId: string): Promise<boolean> {
+    const updated = await this.prisma.collectionRun.updateMany({
+      where: { id: runId, collectorAgentId: agentId, status: "RUNNING" },
+      data: {
+        status: "QUEUED",
+        heartbeatAt: new Date(),
+        errorCode: null,
+        errorMessage: null
+      }
+    });
+    return updated.count === 1;
+  }
+
   async ownsRun(agentId: string, runId: string): Promise<boolean> {
     return Boolean(await this.prisma.collectionRun.findFirst({
       where: { id: runId, collectorAgentId: agentId },
@@ -128,7 +142,19 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
       });
       if (activeAgent.count === 0) return null;
 
-      const nextRun = await transaction.collectionRun.findFirst({
+      const staleBefore = new Date(now.getTime() - COLLECTOR_RUN_LEASE_MILLISECONDS);
+      const staleOwnedRun = await transaction.collectionRun.findFirst({
+        where: {
+          status: "RUNNING",
+          collectorAgentId: agentId,
+          heartbeatAt: { lte: staleBefore },
+          desktopReportDigest: null,
+          monitoredModel: { ownListings: { some: { active: true } } }
+        },
+        orderBy: [{ heartbeatAt: "asc" }, { scheduledFor: "asc" }, { id: "asc" }],
+        select: { id: true }
+      });
+      const nextRun = staleOwnedRun ?? await transaction.collectionRun.findFirst({
         where: {
           status: "QUEUED",
           OR: [{ collectorAgentId: null }, { collectorAgentId: agentId }],
@@ -139,24 +165,35 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
       });
       if (!nextRun) return null;
 
-      const claimed = await transaction.collectionRun.updateMany({
-        where: {
-          id: nextRun.id,
-          status: "QUEUED",
-          OR: [{ collectorAgentId: null }, { collectorAgentId: agentId }],
-          monitoredModel: { ownListings: { some: { active: true } } }
-        },
-        data: {
-          status: "RUNNING",
-          collectorAgentId: agentId,
-          claimedAt: now,
-          heartbeatAt: now,
-          startedAt: now,
-          finishedAt: null,
-          errorCode: null,
-          errorMessage: null
-        }
-      });
+      const claimed = staleOwnedRun
+        ? await transaction.collectionRun.updateMany({
+            where: {
+              id: nextRun.id,
+              status: "RUNNING",
+              collectorAgentId: agentId,
+              heartbeatAt: { lte: staleBefore },
+              desktopReportDigest: null
+            },
+            data: { claimedAt: now, heartbeatAt: now }
+          })
+        : await transaction.collectionRun.updateMany({
+            where: {
+              id: nextRun.id,
+              status: "QUEUED",
+              OR: [{ collectorAgentId: null }, { collectorAgentId: agentId }],
+              monitoredModel: { ownListings: { some: { active: true } } }
+            },
+            data: {
+              status: "RUNNING",
+              collectorAgentId: agentId,
+              claimedAt: now,
+              heartbeatAt: now,
+              startedAt: now,
+              finishedAt: null,
+              errorCode: null,
+              errorMessage: null
+            }
+          });
       if (claimed.count === 0) return null;
 
       const run = await transaction.collectionRun.findUniqueOrThrow({
@@ -164,6 +201,7 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
         select: {
           id: true,
           searchLimit: true,
+          claimedJob: true,
           monitoredModel: {
             select: {
               id: true,
@@ -188,14 +226,15 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
         }
       });
 
-      await transaction.collectionRun.update({
-        where: { id: run.id },
-        data: {
-          claimedOwnListingIds: run.monitoredModel.ownListings.map((listing) => listing.id)
+      if (run.claimedJob !== null) {
+        const stored = collectorJobSchema.safeParse(run.claimedJob);
+        if (!stored.success || stored.data.runId !== run.id || stored.data.collectorId !== agentId) {
+          throw new Error("Stored collector job is invalid");
         }
-      });
+        return stored.data;
+      }
 
-      return collectorJobSchema.parse({
+      const job = collectorJobSchema.parse({
         schemaVersion: 1,
         runId: run.id,
         collectorId: agentId,
@@ -223,6 +262,14 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
           excludedTerms: run.monitoredModel.excludedTerms
         }
       });
+      await transaction.collectionRun.update({
+        where: { id: run.id },
+        data: {
+          claimedOwnListingIds: run.monitoredModel.ownListings.map((listing) => listing.id),
+          claimedJob: JSON.parse(JSON.stringify(job)) as Prisma.InputJsonValue
+        }
+      });
+      return job;
     }, { isolationLevel: "Serializable" });
   }
 }

@@ -123,6 +123,19 @@ class PrismaRunAlertUnitOfWork implements RunAlertUnitOfWork {
     }
   }
 
+  async saveOwnBaselineSnapshot(snapshotId: string | null): Promise<void> {
+    if (snapshotId !== null) {
+      const snapshot = await this.transaction.offerSnapshot.count({
+        where: { id: snapshotId, collectionRunId: this.data.runId }
+      });
+      if (snapshot !== 1) throw new RunAlertEvaluationError();
+    }
+    await this.transaction.collectionRun.update({
+      where: { id: this.data.runId },
+      data: { ownBaselineSnapshotId: snapshotId }
+    });
+  }
+
   async ensureBaselineIssue(code: BaselineIssueCode): Promise<boolean> {
     const created = await this.transaction.collectionIssue.createMany({
       data: [{

@@ -10,11 +10,13 @@ export interface CollectionSchedule {
 export interface CollectionScheduleQueue {
   upsertSchedule(schedule: CollectionSchedule): Promise<void>;
   removeSchedule(id: string): Promise<void>;
+  listScheduleIds(): Promise<string[]>;
 }
 
 export interface CollectionScheduleSettings {
   enabled: boolean;
   provider: "manual" | "external" | "desktop";
+  checkTimes: string[];
 }
 
 function cronPattern(localTime: string): string {
@@ -28,7 +30,11 @@ export class CollectionScheduler {
 
   constructor(
     queue: CollectionScheduleQueue,
-    settings: () => Promise<CollectionScheduleSettings> = async () => ({ enabled: true, provider: "desktop" })
+    settings: () => Promise<CollectionScheduleSettings> = async () => ({
+      enabled: true,
+      provider: "desktop",
+      checkTimes: [...CHECK_TIMES]
+    })
   ) {
     this.queue = queue;
     this.settings = settings;
@@ -37,18 +43,24 @@ export class CollectionScheduler {
   async registerSchedules(): Promise<void> {
     const settings = await this.settings();
     const active = settings.enabled && settings.provider === "desktop";
-    for (const localTime of CHECK_TIMES) {
+    const existingIds = (await this.queue.listScheduleIds())
+      .filter((id) => id.startsWith("tmall-collection-"));
+    const desiredIds = new Set(active
+      ? settings.checkTimes.map((localTime) => `tmall-collection-${localTime.replace(":", "")}`)
+      : []);
+    for (const id of existingIds) {
+      if (!desiredIds.has(id)) await this.queue.removeSchedule(id);
+    }
+    if (!active) return;
+
+    for (const localTime of settings.checkTimes) {
       const schedule = {
         id: `tmall-collection-${localTime.replace(":", "")}`,
         localTime,
         pattern: cronPattern(localTime),
         timeZone: TIME_ZONE
       };
-      if (active) {
-        await this.queue.upsertSchedule(schedule);
-      } else {
-        await this.queue.removeSchedule(schedule.id);
-      }
+      await this.queue.upsertSchedule(schedule);
     }
   }
 }

@@ -71,7 +71,13 @@ enum RunAlertNotificationState {
   PENDING
   SENDING
   NOTIFIED
+  AMBIGUOUS
   FAILED
+}
+
+enum SearchTerminationReason {
+  LIMIT_REACHED
+  END_MARKER
 }
 
 model MonitoredModel {
@@ -196,10 +202,19 @@ model CollectionRun {
   collectorAgentId   String?
   claimedAt          DateTime?
   claimedOwnListingIds String[]                   @default([])
+  claimedJob         Json?
   desktopReportDigest String?                     @db.VarChar(80)
   desktopIngestionSummary Json?
+  alertEvaluationToken String?                    @db.VarChar(80)
+  alertEvaluationStartedAt DateTime?
+  alertEvaluationLastAttemptAt DateTime?
+  alertEvaluationAttempts Int                     @default(0)
+  alertEvaluatedAt     DateTime?
+  alertEvaluationError String?                    @db.VarChar(120)
+  ownBaselineSnapshotId String?
   heartbeatAt        DateTime?
   searchLimit        Int                        @default(50)
+  searchTerminationReason SearchTerminationReason?
   coalescedIntoRunId String?
   searchedCount      Int                        @default(0)
   fetchedCount       Int                        @default(0)
@@ -218,12 +233,15 @@ model CollectionRun {
   coalescedInto      CollectionRun?             @relation("RunCoalescing", fields: [coalescedIntoRunId], references: [id], onDelete: SetNull)
   coalescedRuns      CollectionRun[]            @relation("RunCoalescing")
   snapshots          OfferSnapshot[]
+  ownBaselineSnapshot OfferSnapshot?             @relation("RunOwnBaseline", fields: [ownBaselineSnapshotId], references: [id], onDelete: SetNull)
   alertNotificationBatch RunAlertNotificationBatch?
 
   @@unique([monitoredModelId, providerKey, scheduledFor])
   @@index([status, scheduledFor])
   @@index([collectorAgentId])
   @@index([coalescedIntoRunId])
+  @@index([alertEvaluatedAt, alertEvaluationLastAttemptAt])
+  @@index([ownBaselineSnapshotId])
 }
 
 model OfferSnapshot {
@@ -264,6 +282,7 @@ model OfferSnapshot {
   searchCandidate       SearchCandidate? @relation(fields: [searchCandidateId], references: [id], onDelete: SetNull)
   ownPriceAlerts        PriceAlert[]     @relation("OwnSnapshotAlerts")
   competitorPriceAlerts PriceAlert[]     @relation("CompetitorSnapshotAlerts")
+  ownBaselineForRuns    CollectionRun[]  @relation("RunOwnBaseline")
 
   @@index([collectionRunId])
   @@index([ownListingId, capturedAt])

@@ -197,13 +197,22 @@ struct EvidenceFileWriter {
 
 struct ScreenCapture {
     private let environment: [String: String]
+    private let preflight: () -> Bool
 
-    init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+    init(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        preflight: @escaping () -> Bool = CGPreflightScreenCaptureAccess
+    ) {
         self.environment = environment
+        self.preflight = preflight
+    }
+
+    func preflightAccess() -> Bool {
+        preflight()
     }
 
     func captureWindow(processIdentifier: pid_t, destination: String) throws -> JSONValue {
-        guard CGPreflightScreenCaptureAccess() else {
+        guard preflightAccess() else {
             throw HelperError(
                 code: "SCREEN_RECORDING_PERMISSION_REQUIRED",
                 message: "Screen Recording permission is required."

@@ -1,6 +1,7 @@
 import { adminPrincipalConfigFromEnvironment, type AdminPrincipalConfig } from "../auth/verified-principal.ts";
 import { parseCollectorReportJsonLimit } from "../http/api-body-parsing.ts";
 import { normalizeNodeEnvironment } from "../runtime/node-environment.ts";
+import { isIP } from "node:net";
 
 export interface ApiStartupConfig {
   host: string;
@@ -83,6 +84,23 @@ export function reportUrlForRun(publicBaseUrl: string, runId: string): string {
   return new URL(`/collection-runs/${encodeURIComponent(runId)}`, publicBaseUrl).toString();
 }
 
+function canonicalBindHost(value: string): string {
+  let host = value.trim().toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+  host = host.split("%")[0] ?? host;
+  if (isIP(host) === 6) {
+    const normalized = new URL(`http://[${host}]`).hostname;
+    return normalized.startsWith("[") ? normalized.slice(1, -1) : normalized;
+  }
+  return host;
+}
+
+function isLoopbackBindHost(value: string): boolean {
+  const host = canonicalBindHost(value);
+  if (host === "localhost" || host === "::1") return true;
+  return isIP(host) === 4 && host.startsWith("127.");
+}
+
 export function apiStartupConfigFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env
 ): ApiStartupConfig {
@@ -91,10 +109,10 @@ export function apiStartupConfigFromEnvironment(
   const port = parsePort("API_PORT", environment.API_PORT, 4100);
   if (
     nodeEnvironment === "production"
-    && host === "0.0.0.0"
+    && !isLoopbackBindHost(host)
     && environment.ALLOW_PRIVATE_NETWORK_API !== "true"
   ) {
-    throw new Error("API_HOST=0.0.0.0 requires ALLOW_PRIVATE_NETWORK_API=true in production");
+    throw new Error("Non-loopback API_HOST requires ALLOW_PRIVATE_NETWORK_API=true in production");
   }
 
   databaseUrlFromEnvironment(environment);
