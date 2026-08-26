@@ -125,6 +125,32 @@ test("treats an omitted tri-state field as unknown at runtime", () => {
   assert.equal(result.publicDiscountFen, 0);
 });
 
+for (const malformedInclusion of ["INVALID", false] as const) {
+  test(`treats malformed tri-state value ${JSON.stringify(malformedInclusion)} as unknown at runtime`, () => {
+    const malformedPromotion = {
+      kind: "COUPON",
+      label: "异常店铺券",
+      amountFen: 1_000,
+      thresholdFen: 50_000,
+      audience: "PUBLIC",
+      stackGroup: "shop-coupon",
+      includedInActivityPrice: false,
+      activityPriceInclusion: malformedInclusion
+    } as unknown as PromotionEvidence;
+
+    const result = calculatePublicPrice({
+      listPriceFen: 70_000,
+      activityPriceFen: 60_000,
+      promotions: [malformedPromotion],
+      mandatoryFeeFen: 0
+    });
+
+    assert.equal(result.confidence, "MANUAL_REVIEW");
+    assert.equal(result.payableFen, null);
+    assert.equal(result.publicDiscountFen, 0);
+  });
+}
+
 test("subtracts a promotion only when exclusion from the activity price is explicit", () => {
   const result = calculatePublicPrice({
     listPriceFen: 70_000,
