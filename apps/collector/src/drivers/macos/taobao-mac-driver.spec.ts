@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -448,6 +449,8 @@ test("waits for exactly three stable observations and writes a flat collision-re
   const client = new FakeClient();
   const defaultDetail = await fixture("item-7506-default.json");
   const cableDetail = await fixture("item-7506-cable.json");
+  const workDir = join("/tmp", "collector-work");
+  const evidenceFilename = "taobao-example-7506-123e4567-e89b-42d3-a456-426614174000.png";
   client.snapshotQueue.push(defaultDetail, cableDetail, cableDetail, cableDetail, cableDetail);
   const sleeps: number[] = [];
   let now = 0;
@@ -457,7 +460,7 @@ test("waits for exactly three stable observations and writes a flat collision-re
     sleep: async (milliseconds) => { sleeps.push(milliseconds); now += milliseconds; },
     capturedAt: () => "2026-08-24T00:00:00.000Z",
     uuid: () => "123e4567-e89b-42d3-a456-426614174000",
-    workDir: "/tmp/collector-work"
+    workDir
   });
 
   const result = await driver.selectSku({ 套装: "7506 + C口转换线", 转换线型号: "M1" });
@@ -467,9 +470,9 @@ test("waits for exactly three stable observations and writes a flat collision-re
   assert.deepEqual(result.view.selectedLabels, { 套装: "7506 + C口转换线", 转换线型号: "M1" });
   assert.deepEqual(sleeps, [250, 250]);
   const screenshot = client.commands.find((entry) => entry.command === "screenshot");
-  assert.equal(screenshot?.fields.destination, "taobao-example-7506-123e4567-e89b-42d3-a456-426614174000.png");
+  assert.equal(screenshot?.fields.destination, evidenceFilename);
   assert.equal(screenshot?.fields.destination?.includes("/"), false);
-  assert.equal(result.view.evidencePath, "/tmp/collector-work/taobao-example-7506-123e4567-e89b-42d3-a456-426614174000.png");
+  assert.equal(result.view.evidencePath, join(workDir, evidenceFilename));
 });
 
 test("rejects stable selected-SKU observations from a different item", async () => {

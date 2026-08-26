@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
@@ -57,7 +58,9 @@ function response(process: FakeProcess, value: object): void {
 
 test("uses the exact required command timeout", () => {
   assert.equal(AX_HELPER_TIMEOUT_MS, 15_000);
-  assert.equal(defaultAxHelperPath().endsWith("/apps/collector-macos/.build/debug/taobao-ax-helper"), true);
+  assert.equal(defaultAxHelperPath().endsWith(
+    join("apps", "collector-macos", ".build", "debug", "taobao-ax-helper")
+  ), true);
 });
 
 test("correlates concurrent one-line responses by UUID", async () => {

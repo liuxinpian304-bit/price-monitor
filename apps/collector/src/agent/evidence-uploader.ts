@@ -77,7 +77,7 @@ function directChildPath(runDirectory: string, manifestPath: string): string {
   const filename = basename(candidate);
   if (filename.length === 0 || filename === "." || filename === ".."
     || filename.includes("/") || filename.includes("\\") || filename.includes("%")
-    || manifestPath.includes("\\") || !filename.toLowerCase().endsWith(".png")
+    || (!absolute && manifestPath.includes("\\")) || !filename.toLowerCase().endsWith(".png")
     || dirname(candidate) !== runDirectory
     || candidate !== join(runDirectory, filename)) {
     throw new EvidenceUploadError("INVALID_PATH");
