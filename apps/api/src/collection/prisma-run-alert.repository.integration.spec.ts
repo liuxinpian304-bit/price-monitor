@@ -7,13 +7,21 @@ import { after, before, test } from "node:test";
 import { Prisma } from "../../../../generated/prisma/client.ts";
 import { createPrismaClient } from "../database/prisma.service.ts";
 import { RunAlertNotifier } from "../alerts/run-alert-notifier.ts";
+import { RunAlertReconciler } from "../alerts/run-alert-reconciler.ts";
 import {
   WecomDeliveryAmbiguousError,
   type WecomMarkdownSender
 } from "../alerts/wecom/wecom.client.ts";
 import { PrismaRunAlertNotificationRepository } from "../alerts/prisma-run-alert-notification.repository.ts";
-import { PrismaRunAlertRepository } from "./prisma-run-alert.repository.ts";
-import { RunAlertService } from "./run-alert.service.ts";
+import {
+  PrismaRunAlertRepository,
+  RunAlertEvaluationError
+} from "./prisma-run-alert.repository.ts";
+import {
+  RunAlertService,
+  type RunAlertSummary,
+  type RunAlertUnitOfWork
+} from "./run-alert.service.ts";
 
 const prisma = createPrismaClient();
 
@@ -148,6 +156,110 @@ async function seedRun(input: {
   return run;
 }
 
+async function seedEvaluationFixture(label: string, index: number) {
+  const suffix = randomUUID().replaceAll("-", "");
+  const model = await prisma.monitoredModel.create({
+    data: {
+      monitorCode: `T3-${label}-${suffix.slice(0, 12)}`,
+      brand: "Sony",
+      standardModel: "MDR-7506",
+      category: "headphones",
+      searchQuery: "Sony MDR-7506",
+      comparisonType: "BARE",
+      owner: "task-3-transaction"
+    }
+  });
+  const ownListing = await prisma.ownListing.create({
+    data: {
+      monitoredModelId: model.id,
+      platform: "TAOBAO",
+      shopName: "星空乐器专营店",
+      platformItemId: `own-${label}-${suffix.slice(0, 8)}`,
+      url: `https://item.taobao.com/item.htm?id=own-${label}`,
+      skuText: "MDR-7506 单机"
+    }
+  });
+  const run = await seedRun({
+    modelId: model.id,
+    ownListingId: ownListing.id,
+    index,
+    prices: [{ key: `${label}-${suffix.slice(0, 8)}`, payableFen: 65_000 }]
+  });
+  return { model, run };
+}
+
+async function createTransactionalSummary(
+  unit: RunAlertUnitOfWork,
+  dedupKey: string
+): Promise<RunAlertSummary> {
+  const own = unit.data.snapshots.find((snapshot) => snapshot.ownListingId !== null)!;
+  const competitor = unit.data.snapshots.find((snapshot) => snapshot.searchCandidateId !== null)!;
+  const alert = await unit.alerts.createIfAbsent({
+    monitoredModelId: unit.data.model.id,
+    severity: "CONFIRMED_LOW",
+    status: "PENDING",
+    dedupKey,
+    brand: unit.data.model.brand,
+    standardModel: unit.data.model.standardModel,
+    comparisonType: unit.data.model.comparisonType,
+    owner: unit.data.model.owner,
+    ownSnapshotId: own.id,
+    competitorSnapshotId: competitor.id,
+    ownShopName: own.shopName,
+    ownSkuText: own.skuText,
+    ownPriceFen: own.payableFen!,
+    competitorShopName: competitor.shopName,
+    competitorSkuText: competitor.skuText,
+    competitorPriceFen: competitor.payableFen!,
+    competitorItemId: competitor.platformItemId,
+    competitorSkuId: competitor.skuId,
+    competitorUrl: competitor.url,
+    differenceFen: own.payableFen! - competitor.payableFen!,
+    reasons: ["simulated transactional alert"],
+    firstSeenAt: competitor.capturedAt,
+    lastSeenAt: competitor.capturedAt
+  });
+  assert.ok(alert);
+  return {
+    runId: unit.data.runId,
+    monitoredModelId: unit.data.model.id,
+    brand: unit.data.model.brand,
+    standardModel: unit.data.model.standardModel,
+    comparisonType: unit.data.model.comparisonType,
+    owner: unit.data.model.owner,
+    completedAt: unit.data.completedAt,
+    checkedItemCount: 1,
+    searchLimit: unit.data.searchLimit,
+    skuCount: unit.data.skuCount,
+    issueCount: unit.data.issueCount,
+    reportUrl: `https://monitor.example.test/collection-runs/${unit.data.runId}`,
+    baseline: {
+      snapshotId: own.id,
+      skuId: own.skuId,
+      skuText: own.skuText,
+      activityPriceFen: own.activityPriceFen,
+      publicDiscountFen: own.publicDiscountFen,
+      payableFen: own.payableFen!
+    },
+    systemIssue: null,
+    alerts: [{
+      alertId: alert.id,
+      severity: alert.severity,
+      snapshotId: competitor.id,
+      rank: competitor.searchRanks[0] ?? null,
+      shopName: competitor.shopName,
+      title: competitor.title,
+      skuText: competitor.skuText,
+      activityPriceFen: competitor.activityPriceFen,
+      publicDiscountFen: competitor.publicDiscountFen,
+      payableFen: competitor.payableFen!,
+      differenceFen: alert.differenceFen,
+      url: competitor.url,
+      reasons: alert.reasons
+    }]
+  };
+}
+
 class RecordingSender implements WecomMarkdownSender {
   messages: string[] = [];
   fail = true;
@@ -222,9 +334,40 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
       service.evaluateRun(firstRun.id),
       service.evaluateRun(firstRun.id)
     ]);
+    const summaryWithAlerts = concurrent.find((item) => item.alerts.length === 2)!;
 
     assert.equal(concurrent.reduce((count, item) => count + item.alerts.length, 0), 2);
     assert.equal(await prisma.priceAlert.count({ where: { monitoredModelId: model.id } }), 2);
+    const committedBatch = await prisma.runAlertNotificationBatch.findUniqueOrThrow({
+      where: { collectionRunId: firstRun.id }
+    });
+    assert.deepEqual(
+      committedBatch.alertIds.sort(),
+      summaryWithAlerts.alerts.map((alert) => alert.alertId).sort()
+    );
+    assert.equal(committedBatch.state, "PENDING");
+
+    const restartedSender = new RecordingSender();
+    restartedSender.fail = false;
+    const restartedNotificationRepository = new PrismaRunAlertNotificationRepository(prisma);
+    const restartedNotifier = new RunAlertNotifier(
+      restartedNotificationRepository,
+      async () => restartedSender
+    );
+    const restartedReconciler = new RunAlertReconciler(
+      {
+        claimRun: async () => null,
+        markEvaluated: async () => undefined,
+        recordEvaluationFailure: async () => undefined
+      },
+      { evaluateRun: async () => { throw new Error("unexpected evaluation"); } },
+      restartedNotifier,
+      restartedNotificationRepository
+    );
+    await restartedReconciler.reconcilePending();
+    await restartedReconciler.reconcilePending();
+    assert.equal(restartedSender.messages.length, 1);
+
     const decided = await prisma.offerSnapshot.findMany({
       where: { collectionRunId: firstRun.id },
       select: { skuId: true, matchDecision: true, comparable: true }
@@ -242,6 +385,9 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
       prices: [{ key: "low", payableFen: 65_800 }]
     });
     assert.equal((await service.evaluateRun(repeatedRun.id)).alerts.length, 0);
+    assert.equal(await prisma.runAlertNotificationBatch.findUnique({
+      where: { collectionRunId: repeatedRun.id }
+    }), null);
 
     const lowerRun = await seedRun({
       modelId: model.id,
@@ -253,7 +399,6 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     assert.equal(lowerSummary.alerts.length, 1);
     assert.equal(await prisma.priceAlert.count({ where: { monitoredModelId: model.id } }), 3);
 
-    const summaryWithAlerts = concurrent.find((item) => item.alerts.length === 2)!;
     const evaluatedRun = await prisma.collectionRun.findUniqueOrThrow({
       where: { id: firstRun.id },
       select: { ownBaselineSnapshotId: true }
@@ -274,15 +419,24 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     assert.equal(ambiguousBatch.state, "AMBIGUOUS");
     assert.equal(ambiguousBatch.lastNotificationError, "WECOM_DELIVERY_AMBIGUOUS");
 
+    const retryRun = await seedRun({
+      modelId: model.id,
+      ownListingId: ownListing.id,
+      index: 5,
+      prices: [{ key: "retry", payableFen: 65_798 }]
+    });
+    const retrySummary = await service.evaluateRun(retryRun.id);
+    assert.equal(retrySummary.alerts.length, 1);
+
     const sender = new RecordingSender();
     const notifier = new RunAlertNotifier(
       new PrismaRunAlertNotificationRepository(prisma),
       async () => sender
     );
-    await notifier.send(summaryWithAlerts);
+    await notifier.send(retrySummary);
 
     const failedBatch = await prisma.runAlertNotificationBatch.findUniqueOrThrow({
-      where: { collectionRunId: firstRun.id }
+      where: { collectionRunId: retryRun.id }
     });
     assert.equal(failedBatch.state, "PENDING");
     assert.equal(failedBatch.notificationAttempts, 1);
@@ -298,6 +452,7 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     const abandonedSummary = {
       ...summaryWithAlerts,
       runId: abandonedRun.id,
+      baseline: null,
       systemIssue: "OWN_BASELINE_MISSING" as const,
       alerts: []
     };
@@ -329,22 +484,70 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     assert.equal(abandonedBatch.lastNotificationError, "WECOM_DELIVERY_AMBIGUOUS");
 
     sender.fail = false;
-    await notifier.send({ ...summaryWithAlerts, brand: "changed", alerts: [] });
-    await notifier.send({ ...summaryWithAlerts, alerts: [] });
+    await notifier.send({ ...retrySummary, brand: "changed", alerts: [] });
+    await notifier.send({ ...retrySummary, alerts: [] });
 
     assert.equal(sender.messages.length, 2);
     assert.equal(sender.messages[0], sender.messages[1]);
     const notifiedBatch = await prisma.runAlertNotificationBatch.findUniqueOrThrow({
-      where: { collectionRunId: firstRun.id }
+      where: { collectionRunId: retryRun.id }
     });
     assert.equal(notifiedBatch.state, "NOTIFIED");
     assert.equal(notifiedBatch.notificationAttempts, 2);
     assert.notEqual(notifiedBatch.notifiedAt, null);
     const notifiedAlerts = await prisma.priceAlert.findMany({
-      where: { id: { in: summaryWithAlerts.alerts.map((alert) => alert.alertId) } }
+      where: { id: { in: retrySummary.alerts.map((alert) => alert.alertId) } }
     });
     assert.equal(notifiedAlerts.every((alert) => alert.notificationAttempts === 2), true);
     assert.equal(notifiedAlerts.every((alert) => alert.notifiedAt !== null), true);
+  } finally {
+    await prisma.monitoredModel.delete({ where: { id: model.id } });
+  }
+});
+
+test("rejects a notification summary for a different run", async () => {
+  const { model, run } = await seedEvaluationFixture("mismatch", 6);
+  const dedupKey = `task-3-mismatch-${randomUUID()}`;
+  const repository = new PrismaRunAlertRepository(prisma);
+
+  try {
+    await assert.rejects(
+      repository.withEvaluation(run.id, async (unit) => {
+        const summary = await createTransactionalSummary(unit, dedupKey);
+        await unit.ensureNotificationBatch({ ...summary, runId: "different-run" });
+      }),
+      (error: unknown) => {
+        assert.equal(error instanceof RunAlertEvaluationError, true);
+        return true;
+      }
+    );
+    assert.equal(await prisma.priceAlert.count({ where: { dedupKey } }), 0);
+    assert.equal(await prisma.runAlertNotificationBatch.findUnique({
+      where: { collectionRunId: run.id }
+    }), null);
+  } finally {
+    await prisma.monitoredModel.delete({ where: { id: model.id } });
+  }
+});
+
+test("rolls back the alert and notification batch on a pre-commit crash", async () => {
+  const { model, run } = await seedEvaluationFixture("rollback", 7);
+  const dedupKey = `task-3-rollback-${randomUUID()}`;
+  const repository = new PrismaRunAlertRepository(prisma);
+
+  try {
+    await assert.rejects(
+      repository.withEvaluation(run.id, async (unit) => {
+        const summary = await createTransactionalSummary(unit, dedupKey);
+        await unit.ensureNotificationBatch(summary);
+        throw new Error("simulated pre-commit crash");
+      }),
+      /simulated pre-commit crash/
+    );
+    assert.equal(await prisma.priceAlert.count({ where: { dedupKey } }), 0);
+    assert.equal(await prisma.runAlertNotificationBatch.findUnique({
+      where: { collectionRunId: run.id }
+    }), null);
   } finally {
     await prisma.monitoredModel.delete({ where: { id: model.id } });
   }

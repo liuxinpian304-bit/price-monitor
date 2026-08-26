@@ -10,6 +10,7 @@ import {
   type CandidateMatchPersistence,
   type RunAlertData,
   type RunAlertRepository,
+  type RunAlertSummary,
   type RunAlertUnitOfWork,
   type SnapshotMatchPersistence
 } from "./run-alert.service.ts";
@@ -137,6 +138,7 @@ class FakeRunAlertRepository implements RunAlertRepository, RunAlertUnitOfWork {
   readonly alerts = new FakeAlertRepository();
   readonly snapshotDecisions = new Map<string, SnapshotMatchPersistence>();
   readonly candidateDecisions = new Map<string, CandidateMatchPersistence>();
+  readonly ensuredBatches = new Map<string, RunAlertSummary>();
   readonly issues = new Set<"OWN_BASELINE_MISSING" | "OWN_BASELINE_AMBIGUOUS">();
   ownBaselineSnapshotId: string | null = null;
   data: RunAlertData;
@@ -169,6 +171,13 @@ class FakeRunAlertRepository implements RunAlertRepository, RunAlertUnitOfWork {
     const created = !this.issues.has(code);
     this.issues.add(code);
     return created;
+  }
+
+  async ensureNotificationBatch(summary: RunAlertSummary) {
+    if (summary.alerts.length === 0 && summary.systemIssue === null) return;
+    if (!this.ensuredBatches.has(summary.runId)) {
+      this.ensuredBatches.set(summary.runId, structuredClone(summary));
+    }
   }
 }
 
@@ -211,6 +220,7 @@ test("creates confirmed lows only for the exact in-stock confirmed 69799 and 658
   assert.equal(summary.systemIssue, null);
   assert.equal(repository.alerts.alerts.length, 2);
   assert.equal(repository.ownBaselineSnapshotId, "own-snapshot");
+  assert.deepEqual(repository.ensuredBatches.get("run-bare"), summary);
 
   assert.equal(repository.snapshotDecisions.size, 7);
   assert.equal(repository.snapshotDecisions.get("snapshot-2")?.decision, "BARE");
@@ -321,8 +331,21 @@ for (const fixture of [
     assert.equal(repository.issues.size, 1);
     assert.equal(repository.alerts.alerts.length, 0);
     assert.equal(repository.ownBaselineSnapshotId, null);
+    assert.deepEqual(repository.ensuredBatches.get(data.runId), first);
   });
 }
+
+test("does not persist a notification batch when evaluation has no new event", async () => {
+  const data = bareRun();
+  data.snapshots = [data.snapshots[0]!, data.snapshots[1]!];
+  const { repository, service } = context(data);
+
+  const summary = await service.evaluateRun(data.runId);
+
+  assert.deepEqual(summary.alerts, []);
+  assert.equal(summary.systemIssue, null);
+  assert.equal(repository.ensuredBatches.size, 0);
+});
 
 test("compares an exact bundle signature and makes a different signature manual review only", async () => {
   const data = bareRun();

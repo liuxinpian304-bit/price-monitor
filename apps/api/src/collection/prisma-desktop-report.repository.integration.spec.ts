@@ -21,6 +21,7 @@ import { createPrismaClient } from "../database/prisma.service.ts";
 import { CollectionEvidenceStore } from "./collection-evidence-store.ts";
 import { DesktopReportIngestionService } from "./desktop-report-ingestion.service.ts";
 import { PrismaDesktopReportRepository } from "./prisma-desktop-report.repository.ts";
+import { PrismaRunAlertRepository } from "./prisma-run-alert.repository.ts";
 import type { RunAlertSummary } from "./run-alert.service.ts";
 
 const prisma = createPrismaClient();
@@ -453,7 +454,14 @@ test("transactionally ingests one concurrent report history and returns its orig
       notificationRepository,
       async () => failingSender
     );
-    const evaluator = { async evaluateRun() { return structuredClone(immutableSummary); } };
+    const evaluator = {
+      async evaluateRun(runId: string) {
+        return new PrismaRunAlertRepository(prisma).withEvaluation(runId, async (unit) => {
+          await unit.ensureNotificationBatch(immutableSummary);
+          return structuredClone(immutableSummary);
+        });
+      }
+    };
     const reconciler = new RunAlertReconciler(
       new PrismaRunAlertEvaluationRepository(prisma),
       evaluator,

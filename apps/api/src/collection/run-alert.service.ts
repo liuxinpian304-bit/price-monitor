@@ -94,6 +94,7 @@ export interface RunAlertUnitOfWork {
   saveCandidateDecisions(decisions: CandidateMatchPersistence[]): Promise<void>;
   saveOwnBaselineSnapshot(snapshotId: string | null): Promise<void>;
   ensureBaselineIssue(code: BaselineIssueCode): Promise<boolean>;
+  ensureNotificationBatch(summary: RunAlertSummary): Promise<void>;
 }
 
 export interface RunAlertRepository {
@@ -328,6 +329,10 @@ export class RunAlertService {
 
   async evaluateRun(runId: string): Promise<RunAlertSummary> {
     return this.repository.withEvaluation(runId, async (unit) => {
+      const complete = async (summary: RunAlertSummary): Promise<RunAlertSummary> => {
+        await unit.ensureNotificationBatch(summary);
+        return summary;
+      };
       const data = unit.data;
       const rule = ruleFrom(data);
       const evaluated = data.snapshots.map((snapshot) =>
@@ -371,13 +376,13 @@ export class RunAlertService {
           ? "OWN_BASELINE_MISSING"
           : "OWN_BASELINE_AMBIGUOUS";
         const issueCreated = await unit.ensureBaselineIssue(systemIssue);
-        return {
+        return complete({
           ...common,
           issueCount: data.issueCount + (issueCreated ? 1 : 0),
           baseline: null,
           systemIssue,
           alerts: []
-        };
+        });
       }
 
       const baseline = ownBaselines[0]!;
@@ -447,13 +452,13 @@ export class RunAlertService {
         });
       }
 
-      return {
+      return complete({
         ...common,
         issueCount: data.issueCount,
         baseline: baselineSummary(baseline.snapshot),
         systemIssue: null,
         alerts
-      };
+      });
     });
   }
 }

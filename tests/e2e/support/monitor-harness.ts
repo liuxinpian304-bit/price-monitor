@@ -91,6 +91,7 @@ class InMemoryAlertRepository implements AlertRepository {
 
 class InMemoryNotificationRepository implements RunAlertNotificationRepository {
   private readonly alertRepository: InMemoryAlertRepository;
+  private readonly summaries = new Map<string, RunAlertSummary>();
   private readonly claimedRunIds = new Set<string>();
   private nextBatch = 1;
 
@@ -98,10 +99,17 @@ class InMemoryNotificationRepository implements RunAlertNotificationRepository {
     this.alertRepository = alertRepository;
   }
 
-  async claimBatch(summary: RunAlertSummary, _attemptedAt: Date): Promise<ClaimedRunAlertBatch | null> {
-    if (summary.alerts.length === 0 && summary.systemIssue === null) return null;
-    if (this.claimedRunIds.has(summary.runId)) return null;
-    this.claimedRunIds.add(summary.runId);
+  ensureBatch(summary: RunAlertSummary): void {
+    if (summary.alerts.length === 0 && summary.systemIssue === null) return;
+    if (!this.summaries.has(summary.runId)) {
+      this.summaries.set(summary.runId, structuredClone(summary));
+    }
+  }
+
+  async claimBatch(runId: string, _attemptedAt: Date): Promise<ClaimedRunAlertBatch | null> {
+    const summary = this.summaries.get(runId);
+    if (!summary || this.claimedRunIds.has(runId)) return null;
+    this.claimedRunIds.add(runId);
     const sequence = this.nextBatch;
     this.nextBatch += 1;
     return {
@@ -203,6 +211,7 @@ class PipelineCollectionRepository implements CollectionRepository {
   private readonly ownPriceFen: number;
   private readonly competitorBundleModel: "MK4" | "MK8" | undefined;
   private readonly alertService: AlertService;
+  private readonly notificationRepository: InMemoryNotificationRepository;
   private readonly runAlertNotifier: RunAlertNotifier;
   private readonly runAlerts: RunAlertEntry[] = [];
   private capturedAt = new Date("2026-08-19T01:30:00.000Z");
@@ -214,6 +223,7 @@ class PipelineCollectionRepository implements CollectionRepository {
     ownPriceFen: number;
     competitorBundleModel: "MK4" | "MK8" | undefined;
     alertService: AlertService;
+    notificationRepository: InMemoryNotificationRepository;
     runAlertNotifier: RunAlertNotifier;
   }) {
     this.collectionModel = input.collectionModel;
@@ -222,6 +232,7 @@ class PipelineCollectionRepository implements CollectionRepository {
     this.ownPriceFen = input.ownPriceFen;
     this.competitorBundleModel = input.competitorBundleModel;
     this.alertService = input.alertService;
+    this.notificationRepository = input.notificationRepository;
     this.runAlertNotifier = input.runAlertNotifier;
   }
 
@@ -304,7 +315,7 @@ class PipelineCollectionRepository implements CollectionRepository {
     _status: "SUCCEEDED" | "PARTIAL_FAILED" | "FAILED",
     summary: CollectionSummary
   ) {
-    await this.runAlertNotifier.send({
+    const alertSummary: RunAlertSummary = {
       runId,
       monitoredModelId: this.collectionModel.id,
       brand: this.importedModel.brand,
@@ -327,7 +338,9 @@ class PipelineCollectionRepository implements CollectionRepository {
       },
       systemIssue: null,
       alerts: [...this.runAlerts]
-    });
+    };
+    this.notificationRepository.ensureBatch(alertSummary);
+    await this.runAlertNotifier.send(alertSummary);
   }
 }
 
@@ -449,9 +462,10 @@ export async function createMonitorHarness() {
 
   const catalog = catalogWriter.catalog;
   const alertRepository = new InMemoryAlertRepository();
+  const notificationRepository = new InMemoryNotificationRepository(alertRepository);
   const sender = new RecordingSender();
   const runAlertNotifier = new RunAlertNotifier(
-    new InMemoryNotificationRepository(alertRepository),
+    notificationRepository,
     async () => sender,
     () => new Date("2026-08-19T01:31:00.000Z")
   );
@@ -476,6 +490,7 @@ export async function createMonitorHarness() {
         ownPriceFen: options.ownPriceFen,
         competitorBundleModel: options.competitorBundleModel,
         alertService,
+        notificationRepository,
         runAlertNotifier
       });
       const service = new CollectionService(

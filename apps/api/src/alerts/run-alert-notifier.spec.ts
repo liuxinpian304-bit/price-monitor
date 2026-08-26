@@ -64,19 +64,19 @@ class FakeBatchRepository implements RunAlertNotificationRepository {
   readonly batches = new Map<string, StoredBatch>();
   readonly notified: Array<{ alertIds: string[]; notifiedAt: Date }> = [];
 
-  async claimBatch(input: RunAlertSummary, _attemptedAt: Date): Promise<ClaimedRunAlertBatch | null> {
-    let stored = this.batches.get(input.runId);
-    if (!stored) {
-      if (input.alerts.length === 0 && input.systemIssue === null) return null;
-      stored = {
-        id: `batch-${this.batches.size + 1}`,
-        summary: structuredClone(input),
-        state: "PENDING",
-        token: null,
-        failures: []
-      };
-      this.batches.set(input.runId, stored);
-    }
+  seed(input: RunAlertSummary): void {
+    this.batches.set(input.runId, {
+      id: `batch-${this.batches.size + 1}`,
+      summary: structuredClone(input),
+      state: "PENDING",
+      token: null,
+      failures: []
+    });
+  }
+
+  async claimBatch(runId: string, _attemptedAt: Date): Promise<ClaimedRunAlertBatch | null> {
+    const stored = this.batches.get(runId);
+    if (!stored) return null;
     if (stored.state !== "PENDING") return null;
     stored.state = "SENDING";
     stored.token = randomUUID();
@@ -143,6 +143,7 @@ test("sends and marks every new run alert in one logical batch", async () => {
   const sender = new RecordingSender();
   const input = summary();
   input.alerts.push({ ...input.alerts[0]!, alertId: "alert-2", snapshotId: "snapshot-2" });
+  repository.seed(input);
   const notifier = new RunAlertNotifier(repository, async () => sender);
 
   await notifier.send(input);
@@ -157,8 +158,9 @@ test("keeps a failed batch and retries the exact original logical summary once",
   sender.failure = new Error(
     "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret body=private"
   );
-  const notifier = new RunAlertNotifier(repository, async () => sender);
   const original = summary();
+  repository.seed(original);
+  const notifier = new RunAlertNotifier(repository, async () => sender);
 
   await notifier.send(original);
 
@@ -178,17 +180,15 @@ test("keeps a failed batch and retries the exact original logical summary once",
   assert.equal(repository.notified.length, 1);
 });
 
-test("does not create a batch or message for an idempotent run with no new event", async () => {
+test("never constructs a notification batch after evaluation", async () => {
   const repository = new FakeBatchRepository();
   const sender = new RecordingSender();
-  const input = summary();
-  input.alerts = [];
   const notifier = new RunAlertNotifier(repository, async () => sender);
 
-  await notifier.send(input);
+  await notifier.send(summary("missing-outbox"));
 
-  assert.equal(sender.messages.length, 0);
   assert.equal(repository.batches.size, 0);
+  assert.equal(sender.messages.length, 0);
 });
 
 test("sends one baseline system summary even when the batch has no alert IDs", async () => {
@@ -198,6 +198,7 @@ test("sends one baseline system summary even when the batch has no alert IDs", a
   input.alerts = [];
   input.baseline = null;
   input.systemIssue = "OWN_BASELINE_MISSING";
+  repository.seed(input);
   const notifier = new RunAlertNotifier(repository, async () => sender);
 
   await notifier.send(input);
@@ -209,9 +210,11 @@ test("sends one baseline system summary even when the batch has no alert IDs", a
 
 test("records a missing webhook without throwing or exposing configuration", async () => {
   const repository = new FakeBatchRepository();
+  const input = summary();
+  repository.seed(input);
   const notifier = new RunAlertNotifier(repository, async () => null);
 
-  await notifier.send(summary());
+  await notifier.send(input);
 
   assert.deepEqual(repository.batches.get("run-1")?.failures, ["WECOM_NOT_CONFIGURED"]);
 });
@@ -220,10 +223,12 @@ test("records ambiguous delivery and never claims the batch for another POST", a
   const repository = new FakeBatchRepository();
   const sender = new RecordingSender();
   sender.failure = new WecomDeliveryAmbiguousError();
+  const input = summary();
+  repository.seed(input);
   const notifier = new RunAlertNotifier(repository, async () => sender);
 
-  await notifier.send(summary());
-  await notifier.send(summary());
+  await notifier.send(input);
+  await notifier.send(input);
 
   assert.equal(sender.messages.length, 1);
   assert.equal(repository.batches.get("run-1")?.state, "AMBIGUOUS");

@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 
 import { Prisma, type PrismaClient } from "../../../../generated/prisma/client.ts";
 import { PrismaAlertRepository } from "../alerts/prisma-alert.repository.ts";
+import { runAlertSummaryToJson } from "../alerts/run-alert-summary.persistence.ts";
 import type {
   BaselineIssueCode,
   CandidateMatchPersistence,
   RunAlertBundleComponent,
   RunAlertData,
   RunAlertRepository,
+  RunAlertSummary,
   RunAlertUnitOfWork,
   SnapshotMatchPersistence
 } from "./run-alert.service.ts";
@@ -158,6 +160,19 @@ class PrismaRunAlertUnitOfWork implements RunAlertUnitOfWork {
       return true;
     }
     return false;
+  }
+
+  async ensureNotificationBatch(summary: RunAlertSummary): Promise<void> {
+    if (summary.runId !== this.data.runId) throw new RunAlertEvaluationError();
+    if (summary.alerts.length === 0 && summary.systemIssue === null) return;
+    await this.transaction.runAlertNotificationBatch.createMany({
+      data: [{
+        collectionRunId: summary.runId,
+        summary: runAlertSummaryToJson(summary),
+        alertIds: summary.alerts.map((alert) => alert.alertId)
+      }],
+      skipDuplicates: true
+    });
   }
 }
 

@@ -13,7 +13,7 @@ export interface ClaimedRunAlertBatch {
   alertIds: string[];
 }
 export interface RunAlertNotificationRepository {
-  claimBatch(summary: RunAlertSummary, attemptedAt: Date): Promise<ClaimedRunAlertBatch | null>;
+  claimBatch(runId: string, attemptedAt: Date): Promise<ClaimedRunAlertBatch | null>;
   markBatchNotified(batch: ClaimedRunAlertBatch, notifiedAt: Date): Promise<void>;
   recordBatchNotificationFailure(
     batch: ClaimedRunAlertBatch,
@@ -45,7 +45,7 @@ export class RunAlertNotifier {
   }
 
   async send(summary: RunAlertSummary): Promise<void> {
-    const batch = await this.repository.claimBatch(summary, this.now());
+    const batch = await this.repository.claimBatch(summary.runId, this.now());
     if (!batch) return;
 
     let sender: WecomMarkdownSender | null;

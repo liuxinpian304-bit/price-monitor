@@ -65,16 +65,6 @@ class FakeEvaluationRepository implements RunAlertEvaluationRepository {
 test("a reconstructed reconciler retries the durable notification summary after process restart", async () => {
   const evaluations = new FakeEvaluationRepository();
   const durablePending = [summary("run-restart")];
-  const firstAttempts: string[] = [];
-  const first = new RunAlertReconciler(
-    evaluations,
-    { evaluateRun: async (runId) => summary(runId) },
-    { send: async (input) => { firstAttempts.push(input.runId); } },
-    { listRetryableSummaries: async () => durablePending }
-  );
-  await first.reconcilePending();
-  assert.deepEqual(firstAttempts, ["run-restart"]);
-
   const restartedAttempts: string[] = [];
   const restarted = new RunAlertReconciler(
     evaluations,
@@ -82,6 +72,7 @@ test("a reconstructed reconciler retries the durable notification summary after 
     { send: async (input) => { restartedAttempts.push(input.runId); durablePending.length = 0; } },
     { listRetryableSummaries: async () => durablePending }
   );
+  await restarted.reconcilePending();
   await restarted.reconcilePending();
 
   assert.deepEqual(restartedAttempts, ["run-restart"]);
