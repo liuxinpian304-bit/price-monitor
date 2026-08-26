@@ -101,7 +101,8 @@ export class PriceEngineService {
       thresholdFen: 0,
       audience: "PUBLIC",
       stackGroup: `legacy-public-discount-${index}`,
-      includedInActivityPrice: false
+      includedInActivityPrice: false,
+      activityPriceInclusion: "EXCLUDED" as const
     }));
     const result = this.calculateDesktop({
       listPriceFen: input.pagePriceFen,

@@ -121,8 +121,8 @@ test("calculates desktop prices through the shared public-price formula", () => 
     listPriceFen: 77_500,
     activityPriceFen: 65_800,
     promotions: [
-      { kind: "COUPON", label: "满600减20", amountFen: 2_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false },
-      { kind: "FULL_REDUCTION", label: "满650减10", amountFen: 1_000, thresholdFen: 65_000, audience: "PUBLIC", stackGroup: "platform-full", includedInActivityPrice: false }
+      { kind: "COUPON", label: "满600减20", amountFen: 2_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" },
+      { kind: "FULL_REDUCTION", label: "满650减10", amountFen: 1_000, thresholdFen: 65_000, audience: "PUBLIC", stackGroup: "platform-full", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
     ],
     mandatoryFeeFen: 0
   });

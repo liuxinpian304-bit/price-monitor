@@ -45,7 +45,8 @@ function sku(itemId: string, skuId: string) {
         thresholdFen: 60_000,
         audience: "PUBLIC",
         stackGroup: "shop-coupon",
-        includedInActivityPrice: false
+        includedInActivityPrice: false,
+        activityPriceInclusion: "EXCLUDED" as const
       }
     ],
     mandatoryFeeFen: 0,
@@ -143,6 +144,35 @@ test("accepts a report with one own SKU and two competitor SKUs", () => {
   assert.equal(parsed.ownItems[0]?.skus.length, 1);
   assert.equal(parsed.competitorItems.length, 2);
   assert.equal(parsed.competitorItems[0]?.skus.length, 1);
+  assert.equal(
+    parsed.competitorItems[0]?.skus[0]?.promotions[0]?.activityPriceInclusion,
+    "EXCLUDED"
+  );
+});
+
+test("normalizes legacy false inclusion to UNKNOWN and never accepts it as confirmed", () => {
+  const legacyManual = structuredClone(report) as any;
+  const legacySku = legacyManual.competitorItems[0].skus[0];
+  delete legacySku.promotions[0].activityPriceInclusion;
+  legacySku.promotions[0].includedInActivityPrice = false;
+  legacySku.couponDiscountFen = 0;
+  legacySku.fullReductionFen = 0;
+  legacySku.directDiscountFen = 0;
+  legacySku.priceConfidence = "MANUAL_REVIEW";
+  legacySku.payableFen = null;
+
+  const parsed = collectorReportSchema.parse(legacyManual);
+  assert.equal(
+    parsed.competitorItems[0]?.skus[0]?.promotions[0]?.activityPriceInclusion,
+    "UNKNOWN"
+  );
+
+  const unsafeConfirmed = structuredClone(report) as any;
+  delete unsafeConfirmed.competitorItems[0].skus[0].promotions[0].activityPriceInclusion;
+  assert.throws(
+    () => collectorReportSchema.parse(unsafeConfirmed),
+    /UNKNOWN public promotion inclusion cannot be CONFIRMED/
+  );
 });
 
 test("accepts optional structured bundle components and rejects ambiguous component data", () => {

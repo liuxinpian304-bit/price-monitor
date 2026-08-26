@@ -284,7 +284,8 @@ test("transactionally ingests one concurrent report history and returns its orig
               thresholdFen: null,
               audience: "PUBLIC",
               stackGroup: "shop",
-              includedInActivityPrice: false
+              includedInActivityPrice: false,
+              activityPriceInclusion: "EXCLUDED"
             }],
             mandatoryFeeFen: 100,
             priceConfidence: "CONFIRMED",

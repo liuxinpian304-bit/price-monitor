@@ -72,7 +72,11 @@ const promotionEvidenceSchema = z.object({
   stackGroup: z.string().min(1).max(120).nullable(),
   includedInActivityPrice: z.boolean(),
   activityPriceInclusion: z.enum(["INCLUDED", "EXCLUDED", "UNKNOWN"]).optional()
-}).strict();
+}).strict().transform((promotion) => ({
+  ...promotion,
+  activityPriceInclusion: promotion.activityPriceInclusion
+    ?? (promotion.includedInActivityPrice ? "INCLUDED" : "UNKNOWN")
+}));
 
 const collectedSkuComponentSchema = z.object({
   accessoryType: z.string().min(1).max(200),
@@ -327,6 +331,16 @@ export const collectorReportSchema = reportBodySchema.superRefine((report, conte
       }
 
       if (sku.priceConfidence === "CONFIRMED") {
+        if (sku.promotions.some((promotion) =>
+          promotion.audience === "PUBLIC" && promotion.activityPriceInclusion === "UNKNOWN"
+        )) {
+          context.addIssue({
+            code: "custom",
+            path: [itemCollection, itemIndex, "skus", skuIndex, "priceConfidence"],
+            message: "UNKNOWN public promotion inclusion cannot be CONFIRMED"
+          });
+        }
+
         const expectedPayableFen = sku.activityPriceFen - sku.couponDiscountFen
           - sku.fullReductionFen - sku.directDiscountFen + sku.mandatoryFeeFen;
         if (!Number.isSafeInteger(expectedPayableFen) || expectedPayableFen < 0

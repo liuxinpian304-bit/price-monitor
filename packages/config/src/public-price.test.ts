@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { PromotionEvidence } from "../../contracts/src/desktop-collector.ts";
 import { calculatePublicPrice } from "./public-price.ts";
 
 test("combines the activity price with deterministic single-unit public discounts", () => {
@@ -8,8 +9,8 @@ test("combines the activity price with deterministic single-unit public discount
     listPriceFen: 77_500,
     activityPriceFen: 65_800,
     promotions: [
-      { kind: "COUPON", label: "满600减20", amountFen: 2_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false },
-      { kind: "FULL_REDUCTION", label: "满650减10", amountFen: 1_000, thresholdFen: 65_000, audience: "PUBLIC", stackGroup: "platform-full", includedInActivityPrice: false }
+      { kind: "COUPON", label: "满600减20", amountFen: 2_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" },
+      { kind: "FULL_REDUCTION", label: "满650减10", amountFen: 1_000, thresholdFen: 65_000, audience: "PUBLIC", stackGroup: "platform-full", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
     ],
     mandatoryFeeFen: 0
   });
@@ -33,7 +34,7 @@ test("does not apply a public discount when its threshold exceeds the activity p
     listPriceFen: 77_500,
     activityPriceFen: 65_800,
     promotions: [
-      { kind: "FULL_REDUCTION", label: "满700减50", amountFen: 5_000, thresholdFen: 70_000, audience: "PUBLIC", stackGroup: "platform-full", includedInActivityPrice: false }
+      { kind: "FULL_REDUCTION", label: "满700减50", amountFen: 5_000, thresholdFen: 70_000, audience: "PUBLIC", stackGroup: "platform-full", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
     ],
     mandatoryFeeFen: 0
   });
@@ -48,9 +49,9 @@ test("uses the largest eligible public discount in each stack group", () => {
     listPriceFen: 80_000,
     activityPriceFen: 70_000,
     promotions: [
-      { kind: "COUPON", label: "满600减10", amountFen: 1_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false },
-      { kind: "COUPON", label: "满600减20", amountFen: 2_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false },
-      { kind: "DIRECT_DISCOUNT", label: "平台立减5", amountFen: 500, thresholdFen: 0, audience: "PUBLIC", stackGroup: "platform-direct", includedInActivityPrice: false }
+      { kind: "COUPON", label: "满600减10", amountFen: 1_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" },
+      { kind: "COUPON", label: "满600减20", amountFen: 2_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" },
+      { kind: "DIRECT_DISCOUNT", label: "平台立减5", amountFen: 500, thresholdFen: 0, audience: "PUBLIC", stackGroup: "platform-direct", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
     ],
     mandatoryFeeFen: 0
   });
@@ -66,7 +67,7 @@ test("does not subtract a public promotion already included in the activity pric
     listPriceFen: 70_000,
     activityPriceFen: 60_000,
     promotions: [
-      { kind: "DIRECT_DISCOUNT", label: "活动立减100", amountFen: 10_000, thresholdFen: 0, audience: "PUBLIC", stackGroup: "activity-direct", includedInActivityPrice: true }
+      { kind: "DIRECT_DISCOUNT", label: "活动立减100", amountFen: 10_000, thresholdFen: 0, audience: "PUBLIC", stackGroup: "activity-direct", includedInActivityPrice: true, activityPriceInclusion: "INCLUDED" }
     ],
     mandatoryFeeFen: 0
   });
@@ -101,6 +102,29 @@ test("never confirms a low when promotion inclusion in an activity payable price
   assert.deepEqual(result.reviewReasons, ["店铺券 满500减10"]);
 });
 
+test("treats an omitted tri-state field as unknown at runtime", () => {
+  const legacyPromotion = {
+    kind: "COUPON",
+    label: "旧店铺券",
+    amountFen: 1_000,
+    thresholdFen: 50_000,
+    audience: "PUBLIC",
+    stackGroup: "shop-coupon",
+    includedInActivityPrice: false
+  } as unknown as PromotionEvidence;
+
+  const result = calculatePublicPrice({
+    listPriceFen: 70_000,
+    activityPriceFen: 60_000,
+    promotions: [legacyPromotion],
+    mandatoryFeeFen: 0
+  });
+
+  assert.equal(result.confidence, "MANUAL_REVIEW");
+  assert.equal(result.payableFen, null);
+  assert.equal(result.publicDiscountFen, 0);
+});
+
 test("subtracts a promotion only when exclusion from the activity price is explicit", () => {
   const result = calculatePublicPrice({
     listPriceFen: 70_000,
@@ -130,8 +154,8 @@ test("ignores member-only and 88VIP promotions without lowering confidence", () 
     listPriceFen: 70_000,
     activityPriceFen: 60_000,
     promotions: [
-      { kind: "COUPON", label: "会员券满500减50", amountFen: null, thresholdFen: null, audience: "MEMBER", stackGroup: null, includedInActivityPrice: false },
-      { kind: "COUPON", label: "88VIP券满500减50", amountFen: null, thresholdFen: null, audience: "88VIP", stackGroup: null, includedInActivityPrice: false }
+      { kind: "COUPON", label: "会员券满500减50", amountFen: null, thresholdFen: null, audience: "MEMBER", stackGroup: null, includedInActivityPrice: false, activityPriceInclusion: "UNKNOWN" },
+      { kind: "COUPON", label: "88VIP券满500减50", amountFen: null, thresholdFen: null, audience: "88VIP", stackGroup: null, includedInActivityPrice: false, activityPriceInclusion: "UNKNOWN" }
     ],
     mandatoryFeeFen: 0
   });
@@ -146,7 +170,7 @@ test("returns manual review when a relevant public promotion is incomplete", () 
     listPriceFen: 70_000,
     activityPriceFen: 60_000,
     promotions: [
-      { kind: "COUPON", label: "公开券详情待确认", amountFen: null, thresholdFen: 50_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false }
+      { kind: "COUPON", label: "公开券详情待确认", amountFen: null, thresholdFen: 50_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
     ],
     mandatoryFeeFen: 0
   });
@@ -158,9 +182,9 @@ test("returns manual review when a relevant public promotion is incomplete", () 
 
 test("returns manual review when a public promotion lacks any required deterministic field", () => {
   const incompletePromotions = [
-    { kind: "COUPON", label: "金额待确认", amountFen: null, thresholdFen: 50_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false },
-    { kind: "COUPON", label: "门槛待确认", amountFen: 1_000, thresholdFen: null, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false },
-    { kind: "COUPON", label: "叠加规则待确认", amountFen: 1_000, thresholdFen: 50_000, audience: "PUBLIC", stackGroup: null, includedInActivityPrice: false }
+    { kind: "COUPON", label: "金额待确认", amountFen: null, thresholdFen: 50_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" },
+    { kind: "COUPON", label: "门槛待确认", amountFen: 1_000, thresholdFen: null, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" },
+    { kind: "COUPON", label: "叠加规则待确认", amountFen: 1_000, thresholdFen: 50_000, audience: "PUBLIC", stackGroup: null, includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
   ];
 
   for (const promotion of incompletePromotions) {
@@ -182,7 +206,7 @@ test("ignores an incomplete public promotion whose known threshold is ineligible
     listPriceFen: 77_500,
     activityPriceFen: 65_800,
     promotions: [
-      { kind: "COUPON", label: "满700减额外优惠", amountFen: null, thresholdFen: 70_000, audience: "PUBLIC", stackGroup: null, includedInActivityPrice: false }
+      { kind: "COUPON", label: "满700减额外优惠", amountFen: null, thresholdFen: 70_000, audience: "PUBLIC", stackGroup: null, includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
     ],
     mandatoryFeeFen: 0
   });
@@ -197,7 +221,7 @@ test("uses an official displayed estimated payable price when public promotion d
     listPriceFen: 70_000,
     activityPriceFen: 60_000,
     promotions: [
-      { kind: "COUPON", label: "公开券详情待确认", amountFen: 1_000, thresholdFen: null, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false }
+      { kind: "COUPON", label: "公开券详情待确认", amountFen: 1_000, thresholdFen: null, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
     ],
     mandatoryFeeFen: 0,
     displayedEstimatedPayableFen: 59_000
@@ -213,7 +237,7 @@ test("adds mandatory fees to the payable price", () => {
     listPriceFen: 70_000,
     activityPriceFen: 60_000,
     promotions: [
-      { kind: "COUPON", label: "满500减10", amountFen: 1_000, thresholdFen: 50_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false }
+      { kind: "COUPON", label: "满500减10", amountFen: 1_000, thresholdFen: 50_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
     ],
     mandatoryFeeFen: 600
   });
@@ -227,7 +251,7 @@ test("returns manual review when discounts would make the payable price negative
     listPriceFen: 1_000,
     activityPriceFen: 1_000,
     promotions: [
-      { kind: "DIRECT_DISCOUNT", label: "立减20", amountFen: 2_000, thresholdFen: 0, audience: "PUBLIC", stackGroup: "platform-direct", includedInActivityPrice: false }
+      { kind: "DIRECT_DISCOUNT", label: "立减20", amountFen: 2_000, thresholdFen: 0, audience: "PUBLIC", stackGroup: "platform-direct", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
     ],
     mandatoryFeeFen: 0
   });
@@ -257,8 +281,8 @@ test("rejects aggregate public discounts that overflow despite each input being 
     listPriceFen: Number.MAX_SAFE_INTEGER,
     activityPriceFen: Number.MAX_SAFE_INTEGER,
     promotions: [
-      { kind: "COUPON", label: "大额店铺券", amountFen: Number.MAX_SAFE_INTEGER, thresholdFen: 0, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false },
-      { kind: "DIRECT_DISCOUNT", label: "大额平台立减", amountFen: Number.MAX_SAFE_INTEGER, thresholdFen: 0, audience: "PUBLIC", stackGroup: "platform-direct", includedInActivityPrice: false }
+      { kind: "COUPON", label: "大额店铺券", amountFen: Number.MAX_SAFE_INTEGER, thresholdFen: 0, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" },
+      { kind: "DIRECT_DISCOUNT", label: "大额平台立减", amountFen: Number.MAX_SAFE_INTEGER, thresholdFen: 0, audience: "PUBLIC", stackGroup: "platform-direct", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
     ],
     mandatoryFeeFen: 0
   }), /金额超出安全范围/);
@@ -269,7 +293,7 @@ test("validates fen values in ignored private promotions", () => {
     listPriceFen: 70_000,
     activityPriceFen: 60_000,
     promotions: [
-      { kind: "COUPON", label: "会员券", amountFen: -1, thresholdFen: 50_000, audience: "MEMBER", stackGroup: "member-coupon", includedInActivityPrice: false }
+      { kind: "COUPON", label: "会员券", amountFen: -1, thresholdFen: 50_000, audience: "MEMBER", stackGroup: "member-coupon", includedInActivityPrice: false, activityPriceInclusion: "UNKNOWN" }
     ],
     mandatoryFeeFen: 0
   }), /非负整数分/);

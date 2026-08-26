@@ -105,8 +105,8 @@
               "activityPriceText": "658.00",
               "officialEstimatedPayablePriceText": null,
               "promotions": [
-                { "kind": "COUPON", "label": "满600减20", "amountFen": 2000, "thresholdFen": 60000, "audience": "PUBLIC", "stackGroup": "shop-coupon", "includedInActivityPrice": false },
-                { "kind": "FULL_REDUCTION", "label": "满800减30", "amountFen": 3000, "thresholdFen": 80000, "audience": "PUBLIC", "stackGroup": "shop-full-reduction", "includedInActivityPrice": false }
+                { "kind": "COUPON", "label": "满600减20", "amountFen": 2000, "thresholdFen": 60000, "audience": "PUBLIC", "stackGroup": "shop-coupon", "includedInActivityPrice": false, "activityPriceInclusion": "EXCLUDED" },
+                { "kind": "FULL_REDUCTION", "label": "满800减30", "amountFen": 3000, "thresholdFen": 80000, "audience": "PUBLIC", "stackGroup": "shop-full-reduction", "includedInActivityPrice": false, "activityPriceInclusion": "EXCLUDED" }
               ],
               "mandatoryFeeText": "0.00",
               "stockState": "IN_STOCK",
@@ -122,8 +122,8 @@
               "activityPriceText": "728.00",
               "officialEstimatedPayablePriceText": null,
               "promotions": [
-                { "kind": "COUPON", "label": "满600减20", "amountFen": 2000, "thresholdFen": 60000, "audience": "PUBLIC", "stackGroup": "shop-coupon", "includedInActivityPrice": false },
-                { "kind": "FULL_REDUCTION", "label": "满800减30", "amountFen": 3000, "thresholdFen": 80000, "audience": "PUBLIC", "stackGroup": "shop-full-reduction", "includedInActivityPrice": false }
+                { "kind": "COUPON", "label": "满600减20", "amountFen": 2000, "thresholdFen": 60000, "audience": "PUBLIC", "stackGroup": "shop-coupon", "includedInActivityPrice": false, "activityPriceInclusion": "EXCLUDED" },
+                { "kind": "FULL_REDUCTION", "label": "满800减30", "amountFen": 3000, "thresholdFen": 80000, "audience": "PUBLIC", "stackGroup": "shop-full-reduction", "includedInActivityPrice": false, "activityPriceInclusion": "EXCLUDED" }
               ],
               "mandatoryFeeText": "0.00",
               "stockState": "IN_STOCK",
