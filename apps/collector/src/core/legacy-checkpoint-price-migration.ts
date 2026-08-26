@@ -57,20 +57,6 @@ function isPromotionEvidence(value: unknown): value is PromotionEvidence {
     && ACTIVITY_PRICE_INCLUSIONS.has(value.activityPriceInclusion);
 }
 
-function hasSafePromotionTotal(promotions: PromotionEvidence[]): boolean {
-  let total = 0;
-  for (const promotion of promotions) {
-    if (promotion.audience !== "PUBLIC"
-      || promotion.activityPriceInclusion !== "EXCLUDED"
-      || promotion.amountFen === null) {
-      continue;
-    }
-    if (total > Number.MAX_SAFE_INTEGER - promotion.amountFen) return false;
-    total += promotion.amountFen;
-  }
-  return true;
-}
-
 function isSchemaRepresentablePriceResult(price: PublicPriceResult): boolean {
   return isMoneyFen(price.couponDiscountFen)
     && isMoneyFen(price.fullReductionFen)
@@ -117,21 +103,27 @@ function migrateItemSkus(value: unknown): void {
   for (const sku of value.skus) {
     if (!isRecord(sku) || !Array.isArray(sku.promotions)) continue;
     for (const promotion of sku.promotions) normalizePromotion(promotion);
-    if (!isMigratableSku(sku) || !sku.promotions.some((promotion) =>
-      promotion.audience === "PUBLIC" && promotion.activityPriceInclusion === "UNKNOWN")) {
-      continue;
-    }
-    if (!hasSafePromotionTotal(sku.promotions)) {
+    if (!isMigratableSku(sku)) continue;
+
+    let price: PublicPriceResult;
+    try {
+      price = calculatePublicPrice({
+        listPriceFen: sku.listPriceFen,
+        activityPriceFen: sku.activityPriceFen,
+        promotions: sku.promotions,
+        mandatoryFeeFen: sku.mandatoryFeeFen
+      });
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
       applyUnrepresentablePriceFallback(sku);
       continue;
     }
-
-    const price = calculatePublicPrice({
-      listPriceFen: sku.listPriceFen,
-      activityPriceFen: sku.activityPriceFen,
-      promotions: sku.promotions,
-      mandatoryFeeFen: sku.mandatoryFeeFen
-    });
+    const hasUnknownPublicPromotion = sku.promotions.some((promotion) =>
+      promotion.audience === "PUBLIC" && promotion.activityPriceInclusion === "UNKNOWN");
+    const hasStaleComponents = sku.couponDiscountFen !== price.couponDiscountFen
+      || sku.fullReductionFen !== price.fullReductionFen
+      || sku.directDiscountFen !== price.directDiscountFen;
+    if (!hasUnknownPublicPromotion && !hasStaleComponents) continue;
     if (!isSchemaRepresentablePriceResult(price)) {
       applyUnrepresentablePriceFallback(sku);
       continue;

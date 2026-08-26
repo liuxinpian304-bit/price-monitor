@@ -47,6 +47,16 @@ function sku(itemId: string, skuId: string) {
         stackGroup: "shop-coupon",
         includedInActivityPrice: false,
         activityPriceInclusion: "EXCLUDED" as const
+      },
+      {
+        kind: "FULL_REDUCTION",
+        label: "满650减10",
+        amountFen: 1_000,
+        thresholdFen: 65_000,
+        audience: "PUBLIC",
+        stackGroup: "platform-full",
+        includedInActivityPrice: false,
+        activityPriceInclusion: "EXCLUDED" as const
       }
     ],
     mandatoryFeeFen: 0,
@@ -172,6 +182,181 @@ test("normalizes legacy false inclusion to UNKNOWN and never accepts it as confi
   assert.throws(
     () => collectorReportSchema.parse(unsafeConfirmed),
     /UNKNOWN public promotion inclusion cannot be CONFIRMED/
+  );
+});
+
+test("normalizes legacy true inclusion to INCLUDED and rejects its stale deducted component", () => {
+  const normalizedReport = structuredClone(report) as any;
+  const normalizedSku = normalizedReport.competitorItems[0].skus[0];
+  normalizedSku.promotions = [{
+    ...normalizedSku.promotions[0],
+    includedInActivityPrice: true
+  }];
+  delete normalizedSku.promotions[0].activityPriceInclusion;
+  normalizedSku.couponDiscountFen = 0;
+  normalizedSku.fullReductionFen = 0;
+  normalizedSku.directDiscountFen = 0;
+  normalizedSku.payableFen = 65_800;
+
+  const parsed = collectorReportSchema.parse(normalizedReport);
+  assert.equal(
+    parsed.competitorItems[0]?.skus[0]?.promotions[0]?.activityPriceInclusion,
+    "INCLUDED"
+  );
+
+  const staleReport = structuredClone(normalizedReport) as any;
+  staleReport.competitorItems[0].skus[0].couponDiscountFen = 2_000;
+  staleReport.competitorItems[0].skus[0].payableFen = 63_800;
+  assert.throws(
+    () => collectorReportSchema.parse(staleReport),
+    /discount components must match eligible EXCLUDED promotion evidence/
+  );
+});
+
+test("rejects a deducted component backed only by explicit INCLUDED evidence", () => {
+  const candidate = structuredClone(report) as any;
+  const candidateSku = candidate.competitorItems[0].skus[0];
+  candidateSku.promotions = [{
+    ...candidateSku.promotions[0],
+    includedInActivityPrice: true,
+    activityPriceInclusion: "INCLUDED"
+  }];
+  candidateSku.couponDiscountFen = 2_000;
+  candidateSku.fullReductionFen = 0;
+  candidateSku.directDiscountFen = 0;
+  candidateSku.payableFen = 63_800;
+
+  assert.throws(
+    () => collectorReportSchema.parse(candidate),
+    /discount components must match eligible EXCLUDED promotion evidence/
+  );
+});
+
+const unsupportedComponentEvidenceCases = [
+  {
+    name: "absent promotion evidence",
+    promotions: [],
+    couponDiscountFen: 2_000,
+    payableFen: 63_800
+  },
+  {
+    name: "private promotion evidence",
+    promotions: [{
+      ...report.competitorItems[0].skus[0].promotions[0],
+      audience: "MEMBER"
+    }],
+    couponDiscountFen: 2_000,
+    payableFen: 63_800
+  },
+  {
+    name: "incomplete promotion evidence",
+    promotions: [{
+      ...report.competitorItems[0].skus[0].promotions[0],
+      amountFen: null
+    }],
+    couponDiscountFen: 2_000,
+    payableFen: 63_800
+  },
+  {
+    name: "threshold-ineligible promotion evidence",
+    promotions: [{
+      ...report.competitorItems[0].skus[0].promotions[0],
+      thresholdFen: 70_000
+    }],
+    couponDiscountFen: 2_000,
+    payableFen: 63_800
+  },
+  {
+    name: "non-winning stack-group evidence",
+    promotions: [{
+      ...report.competitorItems[0].skus[0].promotions[0],
+      label: "满600减10",
+      amountFen: 1_000
+    }, report.competitorItems[0].skus[0].promotions[0]],
+    couponDiscountFen: 3_000,
+    payableFen: 62_800
+  }
+] as const;
+
+for (const evidenceCase of unsupportedComponentEvidenceCases) {
+  test(`rejects a component backed only by ${evidenceCase.name}`, () => {
+    const candidate = structuredClone(report) as any;
+    const candidateSku = candidate.competitorItems[0].skus[0];
+    candidateSku.promotions = structuredClone(evidenceCase.promotions);
+    candidateSku.couponDiscountFen = evidenceCase.couponDiscountFen;
+    candidateSku.fullReductionFen = 0;
+    candidateSku.directDiscountFen = 0;
+    candidateSku.payableFen = evidenceCase.payableFen;
+
+    assert.throws(
+      () => collectorReportSchema.parse(candidate),
+      /discount components must match eligible EXCLUDED promotion evidence/
+    );
+  });
+}
+
+test("accepts only the exact EXCLUDED winners from mixed promotion evidence", () => {
+  const candidate = structuredClone(report) as any;
+  const candidateSku = candidate.competitorItems[0].skus[0];
+  candidateSku.promotions = [{
+    kind: "COUPON",
+    label: "活动价已含优惠",
+    amountFen: 2_000,
+    thresholdFen: 0,
+    audience: "PUBLIC",
+    stackGroup: "activity-included",
+    includedInActivityPrice: true,
+    activityPriceInclusion: "INCLUDED"
+  }, {
+    kind: "COUPON",
+    label: "店铺券候选",
+    amountFen: 1_000,
+    thresholdFen: 60_000,
+    audience: "PUBLIC",
+    stackGroup: "shop-coupon",
+    includedInActivityPrice: false,
+    activityPriceInclusion: "EXCLUDED"
+  }, {
+    kind: "COUPON",
+    label: "店铺券胜出",
+    amountFen: 2_500,
+    thresholdFen: 60_000,
+    audience: "PUBLIC",
+    stackGroup: "shop-coupon",
+    includedInActivityPrice: false,
+    activityPriceInclusion: "EXCLUDED"
+  }, {
+    kind: "FULL_REDUCTION",
+    label: "平台满减",
+    amountFen: 500,
+    thresholdFen: 65_000,
+    audience: "PUBLIC",
+    stackGroup: "platform-full",
+    includedInActivityPrice: false,
+    activityPriceInclusion: "EXCLUDED"
+  }, {
+    kind: "DIRECT_DISCOUNT",
+    label: "未达门槛立减",
+    amountFen: 700,
+    thresholdFen: 70_000,
+    audience: "PUBLIC",
+    stackGroup: "platform-direct",
+    includedInActivityPrice: false,
+    activityPriceInclusion: "EXCLUDED"
+  }];
+  candidateSku.couponDiscountFen = 2_500;
+  candidateSku.fullReductionFen = 500;
+  candidateSku.directDiscountFen = 0;
+  candidateSku.payableFen = 62_800;
+
+  assert.doesNotThrow(() => collectorReportSchema.parse(candidate));
+
+  const deductsIncludedPromotion = structuredClone(candidate) as any;
+  deductsIncludedPromotion.competitorItems[0].skus[0].couponDiscountFen = 4_500;
+  deductsIncludedPromotion.competitorItems[0].skus[0].payableFen = 60_800;
+  assert.throws(
+    () => collectorReportSchema.parse(deductsIncludedPromotion),
+    /discount components must match eligible EXCLUDED promotion evidence/
   );
 });
 

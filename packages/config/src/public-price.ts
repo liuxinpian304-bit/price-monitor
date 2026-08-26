@@ -1,4 +1,5 @@
 import type { PriceConfidence, PromotionEvidence } from "../../contracts/src/desktop-collector.ts";
+import { derivePromotionDiscounts } from "../../contracts/src/promotion-discount-components.ts";
 
 export interface PublicPriceInput {
   listPriceFen: number;
@@ -22,63 +23,10 @@ export interface PublicPriceResult {
   reviewReasons: string[];
 }
 
-interface AppliedPromotion {
-  kind: string;
-  label: string;
-  amountFen: number;
-}
-
-type CompletePublicPromotion = PromotionEvidence & {
-  amountFen: number;
-  thresholdFen: number;
-  stackGroup: string;
-};
-
 function assertFen(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(`${label}必须是非负整数分`);
   }
-}
-
-function addFen(total: number, value: number, label: string): number {
-  const next = total + value;
-  if (!Number.isSafeInteger(next)) {
-    throw new RangeError(`${label}金额超出安全范围`);
-  }
-  return next;
-}
-
-function isPublicPromotion(promotion: PromotionEvidence): boolean {
-  return promotion.audience === "PUBLIC";
-}
-
-function hasCompletePublicPromotion(promotion: PromotionEvidence): promotion is CompletePublicPromotion {
-  return promotion.amountFen !== null && promotion.thresholdFen !== null && promotion.stackGroup !== null;
-}
-
-function discountComponents(promotions: AppliedPromotion[]): Pick<PublicPriceResult,
-  "couponDiscountFen" | "fullReductionFen" | "directDiscountFen" | "publicDiscountFen"> {
-  let couponDiscountFen = 0;
-  let fullReductionFen = 0;
-  let directDiscountFen = 0;
-
-  for (const promotion of promotions) {
-    if (promotion.kind === "COUPON") {
-      couponDiscountFen = addFen(couponDiscountFen, promotion.amountFen, "优惠");
-    } else if (promotion.kind === "FULL_REDUCTION") {
-      fullReductionFen = addFen(fullReductionFen, promotion.amountFen, "优惠");
-    } else {
-      directDiscountFen = addFen(directDiscountFen, promotion.amountFen, "优惠");
-    }
-  }
-
-  const publicDiscountFen = addFen(
-    addFen(couponDiscountFen, fullReductionFen, "优惠"),
-    directDiscountFen,
-    "优惠"
-  );
-
-  return { couponDiscountFen, fullReductionFen, directDiscountFen, publicDiscountFen };
 }
 
 export function calculatePublicPrice(input: PublicPriceInput): PublicPriceResult {
@@ -98,48 +46,17 @@ export function calculatePublicPrice(input: PublicPriceInput): PublicPriceResult
     }
   }
 
-  const selectedByStackGroup = new Map<string, AppliedPromotion>();
-  const reviewReasons: string[] = [];
-
-  for (const promotion of input.promotions) {
-    if (!isPublicPromotion(promotion)) {
-      continue;
-    }
-
-    const inclusion = promotion.activityPriceInclusion ?? "UNKNOWN";
-    if (inclusion === "INCLUDED") continue;
-    if (inclusion !== "EXCLUDED") {
-      reviewReasons.push(promotion.label);
-      continue;
-    }
-
-    if (promotion.thresholdFen !== null && input.activityPriceFen < promotion.thresholdFen) {
-      continue;
-    }
-
-    if (!hasCompletePublicPromotion(promotion)) {
-      reviewReasons.push(promotion.label);
-      continue;
-    }
-
-    const current = selectedByStackGroup.get(promotion.stackGroup);
-    if (current === undefined || promotion.amountFen > current.amountFen) {
-      selectedByStackGroup.set(promotion.stackGroup, {
-        kind: promotion.kind,
-        label: promotion.label,
-        amountFen: promotion.amountFen
-      });
-    }
-  }
-
-  const appliedPromotions = [...selectedByStackGroup.values()];
-  const components = discountComponents(appliedPromotions);
+  const {
+    appliedPromotionLabels,
+    reviewReasons,
+    ...components
+  } = derivePromotionDiscounts(input.activityPriceFen, input.promotions);
   const baseResult = {
     listPriceFen: input.listPriceFen,
     activityPriceFen: input.activityPriceFen,
     ...components,
     mandatoryFeeFen: input.mandatoryFeeFen,
-    appliedPromotionLabels: appliedPromotions.map((promotion) => promotion.label),
+    appliedPromotionLabels,
     reviewReasons
   };
 

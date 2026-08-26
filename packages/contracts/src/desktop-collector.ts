@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { derivePromotionDiscounts } from "./promotion-discount-components.ts";
+
 export const PRICE_CONFIDENCES = ["CONFIRMED", "ESTIMATED", "MANUAL_REVIEW"] as const;
 export const COLLECTOR_REPORT_STATUSES = [
   "SUCCEEDED", "PARTIAL_FAILED", "PAUSED_LOGIN", "PAUSED_CHALLENGE", "FAILED"
@@ -338,6 +340,26 @@ export const collectorReportSchema = reportBodySchema.superRefine((report, conte
             code: "custom",
             path: [itemCollection, itemIndex, "skus", skuIndex, "priceConfidence"],
             message: "UNKNOWN public promotion inclusion cannot be CONFIRMED"
+          });
+        }
+
+        try {
+          const expectedComponents = derivePromotionDiscounts(sku.activityPriceFen, sku.promotions);
+          if (sku.couponDiscountFen !== expectedComponents.couponDiscountFen
+            || sku.fullReductionFen !== expectedComponents.fullReductionFen
+            || sku.directDiscountFen !== expectedComponents.directDiscountFen) {
+            context.addIssue({
+              code: "custom",
+              path: [itemCollection, itemIndex, "skus", skuIndex, "priceConfidence"],
+              message: "CONFIRMED discount components must match eligible EXCLUDED promotion evidence"
+            });
+          }
+        } catch (error) {
+          if (!(error instanceof RangeError)) throw error;
+          context.addIssue({
+            code: "custom",
+            path: [itemCollection, itemIndex, "skus", skuIndex, "priceConfidence"],
+            message: "CONFIRMED promotion discount evidence exceeds the safe arithmetic range"
           });
         }
 

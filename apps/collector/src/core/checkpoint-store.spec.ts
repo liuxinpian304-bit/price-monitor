@@ -228,26 +228,25 @@ test("migrates a legacy price while preserving checkpoint progress across save a
     const evidenceKey = `sha256:${"e".repeat(64)}`;
     const original = structuredClone(checkpoint("ITEMS")) as any;
     original.completedOwnListingIds = ["own-1"];
-    original.completedPlatformItemIds = ["1001"];
-    original.completedSkuKeys = [JSON.stringify(["1001", skuId])];
+    original.completedPlatformItemIds = ["competitor-1001"];
+    original.completedSkuKeys = [JSON.stringify(["competitor-1001", skuId])];
     original.evidenceManifest = { [evidenceKey]: "evidence/legacy-price.png" };
-    original.identityAliases = { "legacy-item-1001": "1001" };
+    original.identityAliases = { "legacy-item-1001": "competitor-1001" };
     original.report.positions = [{
       rank: 1,
-      platformItemId: "1001",
-      url: "https://item.example.test/item.htm?id=1001",
-      shopName: "Own Shop",
+      platformItemId: "competitor-1001",
+      url: "https://item.example.test/item.htm?id=competitor-1001",
+      shopName: "Competitor Shop",
       title: "Sony MDR-7506",
-      displayPriceMinFen: 7_000,
+      displayPriceMinFen: 6_500,
       displayPriceMaxFen: 8_000,
       sponsored: false,
       capturedAt
     }];
-    original.report.ownItems = [{
-      ownListingId: "own-1",
-      platformItemId: "1001",
-      url: "https://item.example.test/item.htm?id=1001",
-      shopName: "Own Shop",
+    original.report.competitorItems = [{
+      platformItemId: "competitor-1001",
+      url: "https://item.example.test/item.htm?id=competitor-1001",
+      shopName: "Competitor Shop",
       title: "Sony MDR-7506",
       searchRanks: [1],
       skus: [{
@@ -258,60 +257,58 @@ test("migrates a legacy price while preserving checkpoint progress across save a
         listPriceFen: 10_000,
         activityPriceFen: 8_000,
         couponDiscountFen: 1_000,
-        fullReductionFen: 0,
-        directDiscountFen: 0,
+        fullReductionFen: 200,
+        directDiscountFen: 300,
         promotions: [{
           kind: "COUPON",
-          label: "Large coupon A",
-          amountFen: 1_500_000_000,
-          thresholdFen: 0,
-          audience: "PUBLIC",
-          stackGroup: "large-coupon-a",
-          includedInActivityPrice: false,
-          activityPriceInclusion: "EXCLUDED"
-        }, {
-          kind: "COUPON",
-          label: "Large coupon B",
-          amountFen: 1_500_000_000,
-          thresholdFen: 0,
-          audience: "PUBLIC",
-          stackGroup: "large-coupon-b",
-          includedInActivityPrice: false,
-          activityPriceInclusion: "EXCLUDED"
-        }, {
-          kind: "COUPON",
-          label: "Public coupon",
+          label: "Activity-price coupon",
           amountFen: 1_000,
           thresholdFen: 5_000,
           audience: "PUBLIC",
           stackGroup: "coupon",
-          includedInActivityPrice: false
+          includedInActivityPrice: true
         }],
         mandatoryFeeFen: 0,
         priceConfidence: "CONFIRMED",
-        payableFen: 7_000,
+        payableFen: 6_500,
         capturedAt,
         evidenceKey
       }]
     }];
+    const originalPromotion = structuredClone(original.report.competitorItems[0].skus[0].promotions[0]);
 
     await writeRawCheckpoint(store, original);
     const loaded = await store.load("run-1");
 
     assert.ok(loaded);
+    const expectedReport = structuredClone(original.report);
+    const expectedSku = expectedReport.competitorItems[0].skus[0];
+    expectedSku.promotions[0].activityPriceInclusion = "INCLUDED";
+    expectedSku.couponDiscountFen = 0;
+    expectedSku.fullReductionFen = 0;
+    expectedSku.directDiscountFen = 0;
+    expectedSku.payableFen = 8_000;
     assert.deepEqual(loaded.completedOwnListingIds, original.completedOwnListingIds);
     assert.deepEqual(loaded.completedPlatformItemIds, original.completedPlatformItemIds);
     assert.deepEqual(loaded.completedSkuKeys, original.completedSkuKeys);
     assert.deepEqual(loaded.evidenceManifest, original.evidenceManifest);
     assert.deepEqual(loaded.identityAliases, original.identityAliases);
+    assert.deepEqual(loaded.report, expectedReport);
     assert.deepEqual(loaded.report.positions, original.report.positions);
-    assert.deepEqual(loaded.report.ownItems[0]?.searchRanks, original.report.ownItems[0].searchRanks);
-    assert.equal(loaded.report.ownItems[0]?.skus[0]?.evidenceKey, evidenceKey);
-    assert.equal(loaded.report.ownItems[0]?.skus[0]?.priceConfidence, "MANUAL_REVIEW");
-    assert.equal(loaded.report.ownItems[0]?.skus[0]?.payableFen, null);
-    assert.equal(loaded.report.ownItems[0]?.skus[0]?.couponDiscountFen, 0);
-    assert.equal(loaded.report.ownItems[0]?.skus[0]?.promotions[0]?.amountFen, 1_500_000_000);
-    assert.equal(loaded.report.ownItems[0]?.skus[0]?.promotions[1]?.amountFen, 1_500_000_000);
+    assert.deepEqual(
+      loaded.report.competitorItems[0]?.searchRanks,
+      original.report.competitorItems[0].searchRanks
+    );
+    assert.equal(loaded.report.competitorItems[0]?.skus[0]?.evidenceKey, evidenceKey);
+    assert.equal(loaded.report.competitorItems[0]?.skus[0]?.priceConfidence, "CONFIRMED");
+    assert.equal(loaded.report.competitorItems[0]?.skus[0]?.payableFen, 8_000);
+    assert.equal(loaded.report.competitorItems[0]?.skus[0]?.couponDiscountFen, 0);
+    assert.equal(loaded.report.competitorItems[0]?.skus[0]?.fullReductionFen, 0);
+    assert.equal(loaded.report.competitorItems[0]?.skus[0]?.directDiscountFen, 0);
+    assert.deepEqual(loaded.report.competitorItems[0]?.skus[0]?.promotions[0], {
+      ...originalPromotion,
+      activityPriceInclusion: "INCLUDED"
+    });
 
     await store.save("run-1", loaded);
     assert.deepEqual(await store.load("run-1"), loaded);

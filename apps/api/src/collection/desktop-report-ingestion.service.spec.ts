@@ -68,7 +68,16 @@ function reportFixture(): CollectorReport {
         couponDiscountFen: 100,
         fullReductionFen: 0,
         directDiscountFen: 0,
-        promotions: [],
+        promotions: [{
+          kind: "COUPON",
+          label: "Public coupon",
+          amountFen: 100,
+          thresholdFen: 1_000,
+          audience: "PUBLIC",
+          stackGroup: "shop-coupon",
+          includedInActivityPrice: false,
+          activityPriceInclusion: "EXCLUDED"
+        }],
         mandatoryFeeFen: 0,
         priceConfidence: "CONFIRMED",
         payableFen: 900,

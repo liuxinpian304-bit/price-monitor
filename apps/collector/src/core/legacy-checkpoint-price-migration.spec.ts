@@ -43,8 +43,8 @@ function reportWithCoupon(activityPriceInclusion?: "EXCLUDED"): Record<string, u
         listPriceFen: 10_000,
         activityPriceFen: 8_000,
         couponDiscountFen: 1_000,
-        fullReductionFen: 200,
-        directDiscountFen: 300,
+        fullReductionFen: 0,
+        directDiscountFen: 0,
         promotions: [{
           kind: "COUPON",
           label: "Public coupon",
@@ -57,7 +57,7 @@ function reportWithCoupon(activityPriceInclusion?: "EXCLUDED"): Record<string, u
         }],
         mandatoryFeeFen: 0,
         priceConfidence: "CONFIRMED",
-        payableFen: 6_500,
+        payableFen: 7_000,
         capturedAt,
         evidenceKey: `sha256:${"e".repeat(64)}`
       }]
@@ -101,6 +101,41 @@ test("leaves explicit EXCLUDED confirmed price components unchanged", () => {
   assert.equal(sku.priceConfidence, "CONFIRMED");
 });
 
+test("recalculates a competitor legacy true price without changing its promotion evidence", () => {
+  const legacyReport = reportWithCoupon();
+  const competitor = (legacyReport.ownItems as any[])[0];
+  delete competitor.ownListingId;
+  legacyReport.ownItems = [];
+  legacyReport.competitorItems = [competitor];
+  const legacySku = competitor.skus[0];
+  legacySku.promotions[0].includedInActivityPrice = true;
+  const originalPromotion = structuredClone(legacySku.promotions[0]);
+  const originalReport = structuredClone(legacyReport);
+
+  const migrated = migrateLegacyCheckpointReport(legacyReport) as any;
+  const sku = migrated.competitorItems[0].skus[0];
+  const expected = structuredClone(originalReport) as any;
+  const expectedSku = expected.competitorItems[0].skus[0];
+  expectedSku.promotions[0].activityPriceInclusion = "INCLUDED";
+  expectedSku.couponDiscountFen = 0;
+  expectedSku.fullReductionFen = 0;
+  expectedSku.directDiscountFen = 0;
+  expectedSku.payableFen = 8_000;
+
+  assert.deepEqual(migrated, expected);
+  assert.deepEqual(sku.promotions[0], {
+    ...originalPromotion,
+    activityPriceInclusion: "INCLUDED"
+  });
+  assert.equal(sku.couponDiscountFen, 0);
+  assert.equal(sku.fullReductionFen, 0);
+  assert.equal(sku.directDiscountFen, 0);
+  assert.equal(sku.payableFen, 8_000);
+  assert.equal(sku.priceConfidence, "CONFIRMED");
+  assert.deepEqual(legacyReport, originalReport);
+  assert.deepEqual(migrateLegacyCheckpointReport(migrated), migrated);
+});
+
 test("does not replace malformed price fields while normalizing legacy promotion inclusion", () => {
   const legacyReport = reportWithCoupon();
   const originalSku = (legacyReport.ownItems as any[])[0].skus[0];
@@ -112,7 +147,7 @@ test("does not replace malformed price fields while normalizing legacy promotion
   assert.equal(sku.promotions[0].activityPriceInclusion, "UNKNOWN");
   assert.equal(sku.couponDiscountFen, "not-fen");
   assert.equal(sku.priceConfidence, "CONFIRMED");
-  assert.equal(sku.payableFen, 6_500);
+  assert.equal(sku.payableFen, 7_000);
 });
 
 test("keeps mixed legacy promotion evidence schema-representable when calculated discounts exceed bounds", () => {
