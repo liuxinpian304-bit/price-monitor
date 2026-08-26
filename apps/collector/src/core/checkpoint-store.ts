@@ -4,6 +4,8 @@ import { dirname, join } from "node:path";
 
 import { collectorReportSchema, type CollectorReport } from "@stau-price-monitor/contracts";
 
+import { migrateLegacyCheckpointReport } from "./legacy-checkpoint-price-migration.ts";
+
 export interface CollectorCheckpoint {
   schemaVersion: 1;
   checkpointFormatVersion: 2;
@@ -98,7 +100,8 @@ function parseCheckpoint(value: unknown, expectedRunId: string): CollectorCheckp
   if (value.checkpointFormatVersion !== 2) {
     throw new TypeError("Unsupported checkpoint format version; restart the collection run");
   }
-  const parsedReport = collectorReportSchema.safeParse(value.report);
+  const migratedReport = migrateLegacyCheckpointReport(value.report);
+  const parsedReport = collectorReportSchema.safeParse(migratedReport);
   if (value.schemaVersion !== 1
     || value.runId !== expectedRunId
     || typeof value.jobHash !== "string"

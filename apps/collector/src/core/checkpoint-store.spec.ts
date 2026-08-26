@@ -219,3 +219,82 @@ test("rejects empty, self-referential, and cyclic identity aliases", async () =>
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("migrates a legacy price while preserving checkpoint progress across save and reload", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-checkpoint-legacy-price-"));
+  try {
+    const store = new AtomicCheckpointStore(root);
+    const skuId = `sku_${"b".repeat(64)}`;
+    const evidenceKey = `sha256:${"e".repeat(64)}`;
+    const original = structuredClone(checkpoint("ITEMS")) as any;
+    original.completedOwnListingIds = ["own-1"];
+    original.completedPlatformItemIds = ["1001"];
+    original.completedSkuKeys = [JSON.stringify(["1001", skuId])];
+    original.evidenceManifest = { [evidenceKey]: "evidence/legacy-price.png" };
+    original.identityAliases = { "legacy-item-1001": "1001" };
+    original.report.positions = [{
+      rank: 1,
+      platformItemId: "1001",
+      url: "https://item.example.test/item.htm?id=1001",
+      shopName: "Own Shop",
+      title: "Sony MDR-7506",
+      displayPriceMinFen: 7_000,
+      displayPriceMaxFen: 8_000,
+      sponsored: false,
+      capturedAt
+    }];
+    original.report.ownItems = [{
+      ownListingId: "own-1",
+      platformItemId: "1001",
+      url: "https://item.example.test/item.htm?id=1001",
+      shopName: "Own Shop",
+      title: "Sony MDR-7506",
+      searchRanks: [1],
+      skus: [{
+        skuId,
+        label: "Black",
+        attributes: { color: "Black" },
+        stockState: "IN_STOCK",
+        listPriceFen: 10_000,
+        activityPriceFen: 8_000,
+        couponDiscountFen: 1_000,
+        fullReductionFen: 0,
+        directDiscountFen: 0,
+        promotions: [{
+          kind: "COUPON",
+          label: "Public coupon",
+          amountFen: 1_000,
+          thresholdFen: 5_000,
+          audience: "PUBLIC",
+          stackGroup: "coupon",
+          includedInActivityPrice: false
+        }],
+        mandatoryFeeFen: 0,
+        priceConfidence: "CONFIRMED",
+        payableFen: 7_000,
+        capturedAt,
+        evidenceKey
+      }]
+    }];
+
+    await writeRawCheckpoint(store, original);
+    const loaded = await store.load("run-1");
+
+    assert.ok(loaded);
+    assert.deepEqual(loaded.completedOwnListingIds, original.completedOwnListingIds);
+    assert.deepEqual(loaded.completedPlatformItemIds, original.completedPlatformItemIds);
+    assert.deepEqual(loaded.completedSkuKeys, original.completedSkuKeys);
+    assert.deepEqual(loaded.evidenceManifest, original.evidenceManifest);
+    assert.deepEqual(loaded.identityAliases, original.identityAliases);
+    assert.deepEqual(loaded.report.positions, original.report.positions);
+    assert.deepEqual(loaded.report.ownItems[0]?.searchRanks, original.report.ownItems[0].searchRanks);
+    assert.equal(loaded.report.ownItems[0]?.skus[0]?.evidenceKey, evidenceKey);
+    assert.equal(loaded.report.ownItems[0]?.skus[0]?.priceConfidence, "MANUAL_REVIEW");
+    assert.equal(loaded.report.ownItems[0]?.skus[0]?.payableFen, null);
+
+    await store.save("run-1", loaded);
+    assert.deepEqual(await store.load("run-1"), loaded);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
