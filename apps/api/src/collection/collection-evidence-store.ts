@@ -225,6 +225,10 @@ function noFollowFlag(): number {
   return typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 }
 
+export function supportsDirectorySync(platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "win32";
+}
+
 function verifyBytes(bytes: Uint8Array, sha256: string): Buffer {
   if (bytes.byteLength > MAX_EVIDENCE_BYTES) throw new EvidenceStorePayloadTooLargeError();
   const buffer = Buffer.from(bytes);
@@ -1389,6 +1393,8 @@ export class CollectionEvidenceStore {
   }
 
   private async syncDirectory(path: string): Promise<void> {
+    // Windows rejects fsync on directory handles; evidence files are still synced before publication.
+    if (!supportsDirectorySync()) return;
     const handle = await open(path, constants.O_RDONLY | noFollowFlag());
     try {
       await handle.sync();

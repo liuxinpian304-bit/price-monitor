@@ -10,7 +10,8 @@ import {
   EvidenceStorePayloadTooLargeError,
   EvidenceStoreUnavailableError,
   EvidenceStoreValidationError,
-  MAX_EVIDENCE_BYTES
+  MAX_EVIDENCE_BYTES,
+  supportsDirectorySync
 } from "./collection-evidence-store.ts";
 
 const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
@@ -106,6 +107,12 @@ async function withStore<T>(run: (store: CollectionEvidenceStore, root: string) 
     await rm(root, { recursive: true, force: true });
   }
 }
+
+test("skips unsupported directory synchronization on Windows only", () => {
+  assert.equal(supportsDirectorySync("win32"), false);
+  assert.equal(supportsDirectorySync("darwin"), true);
+  assert.equal(supportsDirectorySync("linux"), true);
+});
 
 test("writes a verified PNG atomically and does not rewrite an idempotent repeat", async () => {
   await withStore(async (store, root) => {
