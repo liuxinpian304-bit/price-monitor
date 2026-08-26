@@ -262,6 +262,24 @@ test("migrates a legacy price while preserving checkpoint progress across save a
         directDiscountFen: 0,
         promotions: [{
           kind: "COUPON",
+          label: "Large coupon A",
+          amountFen: 1_500_000_000,
+          thresholdFen: 0,
+          audience: "PUBLIC",
+          stackGroup: "large-coupon-a",
+          includedInActivityPrice: false,
+          activityPriceInclusion: "EXCLUDED"
+        }, {
+          kind: "COUPON",
+          label: "Large coupon B",
+          amountFen: 1_500_000_000,
+          thresholdFen: 0,
+          audience: "PUBLIC",
+          stackGroup: "large-coupon-b",
+          includedInActivityPrice: false,
+          activityPriceInclusion: "EXCLUDED"
+        }, {
+          kind: "COUPON",
           label: "Public coupon",
           amountFen: 1_000,
           thresholdFen: 5_000,
@@ -291,6 +309,9 @@ test("migrates a legacy price while preserving checkpoint progress across save a
     assert.equal(loaded.report.ownItems[0]?.skus[0]?.evidenceKey, evidenceKey);
     assert.equal(loaded.report.ownItems[0]?.skus[0]?.priceConfidence, "MANUAL_REVIEW");
     assert.equal(loaded.report.ownItems[0]?.skus[0]?.payableFen, null);
+    assert.equal(loaded.report.ownItems[0]?.skus[0]?.couponDiscountFen, 0);
+    assert.equal(loaded.report.ownItems[0]?.skus[0]?.promotions[0]?.amountFen, 1_500_000_000);
+    assert.equal(loaded.report.ownItems[0]?.skus[0]?.promotions[1]?.amountFen, 1_500_000_000);
 
     await store.save("run-1", loaded);
     assert.deepEqual(await store.load("run-1"), loaded);

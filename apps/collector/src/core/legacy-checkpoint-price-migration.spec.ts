@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { collectorReportSchema } from "@stau-price-monitor/contracts";
+
 import { migrateLegacyCheckpointReport } from "./legacy-checkpoint-price-migration.ts";
 
 const capturedAt = "2026-08-24T05:00:00.000Z";
@@ -111,4 +113,63 @@ test("does not replace malformed price fields while normalizing legacy promotion
   assert.equal(sku.couponDiscountFen, "not-fen");
   assert.equal(sku.priceConfidence, "CONFIRMED");
   assert.equal(sku.payableFen, 6_500);
+});
+
+test("keeps mixed legacy promotion evidence schema-representable when calculated discounts exceed bounds", () => {
+  const legacyReport = reportWithCoupon();
+  const legacySku = (legacyReport.ownItems as any[])[0].skus[0];
+  legacySku.promotions = [{
+    kind: "COUPON",
+    label: "Large coupon A",
+    amountFen: 1_500_000_000,
+    thresholdFen: 0,
+    audience: "PUBLIC",
+    stackGroup: "large-coupon-a",
+    includedInActivityPrice: false,
+    activityPriceInclusion: "EXCLUDED"
+  }, {
+    kind: "COUPON",
+    label: "Large coupon B",
+    amountFen: 1_500_000_000,
+    thresholdFen: 0,
+    audience: "PUBLIC",
+    stackGroup: "large-coupon-b",
+    includedInActivityPrice: false,
+    activityPriceInclusion: "EXCLUDED"
+  }, legacySku.promotions[0]];
+
+  const migrated = migrateLegacyCheckpointReport(legacyReport) as any;
+  const sku = migrated.ownItems[0].skus[0];
+
+  assert.equal(sku.promotions[2].activityPriceInclusion, "UNKNOWN");
+  assert.equal(sku.promotions[0].amountFen, 1_500_000_000);
+  assert.equal(sku.promotions[1].amountFen, 1_500_000_000);
+  assert.equal(sku.couponDiscountFen, 0);
+  assert.equal(sku.fullReductionFen, 0);
+  assert.equal(sku.directDiscountFen, 0);
+  assert.equal(sku.payableFen, null);
+  assert.equal(sku.priceConfidence, "MANUAL_REVIEW");
+  assert.equal(collectorReportSchema.safeParse(migrated).success, true);
+  assert.deepEqual(migrateLegacyCheckpointReport(migrated), migrated);
+});
+
+test("does not repair a malformed source discount aggregate", () => {
+  const legacyReport = reportWithCoupon();
+  const legacySku = (legacyReport.ownItems as any[])[0].skus[0];
+  legacySku.couponDiscountFen = 1_500_000_000;
+  legacySku.fullReductionFen = 1_500_000_000;
+  legacySku.directDiscountFen = 0;
+  legacySku.payableFen = null;
+  legacySku.priceConfidence = "MANUAL_REVIEW";
+
+  const migrated = migrateLegacyCheckpointReport(legacyReport) as any;
+  const sku = migrated.ownItems[0].skus[0];
+
+  assert.equal(sku.promotions[0].activityPriceInclusion, "UNKNOWN");
+  assert.equal(sku.couponDiscountFen, 1_500_000_000);
+  assert.equal(sku.fullReductionFen, 1_500_000_000);
+  assert.equal(sku.directDiscountFen, 0);
+  assert.equal(sku.payableFen, null);
+  assert.equal(sku.priceConfidence, "MANUAL_REVIEW");
+  assert.equal(collectorReportSchema.safeParse(migrated).success, false);
 });

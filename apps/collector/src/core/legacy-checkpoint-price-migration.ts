@@ -1,4 +1,4 @@
-import { calculatePublicPrice } from "@stau-price-monitor/config/public-price";
+import { calculatePublicPrice, type PublicPriceResult } from "@stau-price-monitor/config/public-price";
 import type { PriceConfidence, PromotionEvidence } from "@stau-price-monitor/contracts";
 
 const POSTGRES_INT_MAX = 2_147_483_647;
@@ -27,6 +27,17 @@ function isMoneyFen(value: unknown): value is number {
 
 function isNullableMoneyFen(value: unknown): value is number | null {
   return value === null || isMoneyFen(value);
+}
+
+function hasSchemaRepresentableDiscountAggregate(
+  couponDiscountFen: unknown,
+  fullReductionFen: unknown,
+  directDiscountFen: unknown
+): boolean {
+  return isMoneyFen(couponDiscountFen)
+    && isMoneyFen(fullReductionFen)
+    && isMoneyFen(directDiscountFen)
+    && couponDiscountFen + fullReductionFen + directDiscountFen <= POSTGRES_INT_MAX;
 }
 
 function isBoundedNonEmptyString(value: unknown, maxLength: number): value is string {
@@ -60,13 +71,32 @@ function hasSafePromotionTotal(promotions: PromotionEvidence[]): boolean {
   return true;
 }
 
+function isSchemaRepresentablePriceResult(price: PublicPriceResult): boolean {
+  return isMoneyFen(price.couponDiscountFen)
+    && isMoneyFen(price.fullReductionFen)
+    && isMoneyFen(price.directDiscountFen)
+    && isMoneyFen(price.publicDiscountFen)
+    && isNullableMoneyFen(price.payableFen);
+}
+
+function applyUnrepresentablePriceFallback(sku: MigratableSku): void {
+  // Exact amounts remain in promotion evidence; neutral summaries avoid encoding a clipped value.
+  sku.couponDiscountFen = 0;
+  sku.fullReductionFen = 0;
+  sku.directDiscountFen = 0;
+  sku.payableFen = null;
+  sku.priceConfidence = "MANUAL_REVIEW";
+}
+
 function isMigratableSku(value: unknown): value is MigratableSku {
   if (!isRecord(value)
     || !isMoneyFen(value.listPriceFen)
     || !isMoneyFen(value.activityPriceFen)
-    || !isMoneyFen(value.couponDiscountFen)
-    || !isMoneyFen(value.fullReductionFen)
-    || !isMoneyFen(value.directDiscountFen)
+    || !hasSchemaRepresentableDiscountAggregate(
+      value.couponDiscountFen,
+      value.fullReductionFen,
+      value.directDiscountFen
+    )
     || !Array.isArray(value.promotions)
     || !value.promotions.every(isPromotionEvidence)
     || !isMoneyFen(value.mandatoryFeeFen)
@@ -74,7 +104,7 @@ function isMigratableSku(value: unknown): value is MigratableSku {
     || !isNullableMoneyFen(value.payableFen)) {
     return false;
   }
-  return hasSafePromotionTotal(value.promotions);
+  return true;
 }
 
 function normalizePromotion(value: unknown): void {
@@ -91,6 +121,10 @@ function migrateItemSkus(value: unknown): void {
       promotion.audience === "PUBLIC" && promotion.activityPriceInclusion === "UNKNOWN")) {
       continue;
     }
+    if (!hasSafePromotionTotal(sku.promotions)) {
+      applyUnrepresentablePriceFallback(sku);
+      continue;
+    }
 
     const price = calculatePublicPrice({
       listPriceFen: sku.listPriceFen,
@@ -98,6 +132,10 @@ function migrateItemSkus(value: unknown): void {
       promotions: sku.promotions,
       mandatoryFeeFen: sku.mandatoryFeeFen
     });
+    if (!isSchemaRepresentablePriceResult(price)) {
+      applyUnrepresentablePriceFallback(sku);
+      continue;
+    }
     sku.couponDiscountFen = price.couponDiscountFen;
     sku.fullReductionFen = price.fullReductionFen;
     sku.directDiscountFen = price.directDiscountFen;
