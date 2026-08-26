@@ -8,7 +8,7 @@ import { fallbackSettings } from "../data/api-fallbacks.ts";
 
 export function SettingsPage() {
   const { data, error, refresh } = useApiData<PublicSettings>("/api/settings", fallbackSettings);
-  const [form] = Form.useForm<{ shop: string; provider: "manual" | "external"; enabled: boolean }>();
+  const [form] = Form.useForm<{ shop: string; provider: "manual" | "external" | "desktop"; enabled: boolean }>();
   const [times, setTimes] = useState<string[]>(data.checkTimes);
   const [wecomWebhook, setWecomWebhook] = useState("");
   const [commerceApiKey, setCommerceApiKey] = useState("");
@@ -23,8 +23,8 @@ export function SettingsPage() {
     const values = await form.validateFields();
     try {
       await Promise.all([
-        apiRequest("/api/settings/provider", { method: "PATCH", role: "ADMIN", actorId: "本地管理员", body: JSON.stringify({ provider: values.provider }) }),
-        apiRequest("/api/settings/schedule", { method: "PATCH", role: "ADMIN", actorId: "本地管理员", body: JSON.stringify({ enabled: values.enabled, checkTimes: times }) })
+        apiRequest("/api/settings/provider", { method: "PATCH", role: "ADMIN", body: JSON.stringify({ provider: values.provider }) }),
+        apiRequest("/api/settings/schedule", { method: "PATCH", role: "ADMIN", body: JSON.stringify({ enabled: values.enabled, checkTimes: times }) })
       ]);
       await refresh();
       messageApi.success("基础配置已保存");
@@ -43,7 +43,6 @@ export function SettingsPage() {
       await apiRequest(`/api/settings/secrets/${kind}`, {
         method: "PUT",
         role: "ADMIN",
-        actorId: "本地管理员",
         body: JSON.stringify({ value })
       });
       kind === "wecom" ? setWecomWebhook("") : setCommerceApiKey("");
@@ -57,14 +56,15 @@ export function SettingsPage() {
   return <>
     {contextHolder}
     <PageToolbar title="系统设置" description="密钥仅加密保存，页面和日志不回显明文。" />
-    {error ? <Alert className="data-warning" type="warning" showIcon message="系统配置暂时无法刷新" description={error} /> : null}
+    {error ? <Alert className="data-warning" type="warning" showIcon title="系统配置暂时无法刷新" description={error} /> : null}
     <div className="settings-layout">
       <section className="panel settings-section">
         <h3>基础配置</h3>
         <Form form={form} layout="vertical">
           <Form.Item label="我方店铺" name="shop"><Input disabled /></Form.Item>
-          <Form.Item label="商品数据源" name="provider"><Select options={[{ value: "manual", label: "手工固定样例（开发）" }, { value: "external", label: "外部合规数据 API" }]} /></Form.Item>
-          <Form.Item label="启用自动检查（配置预留）" name="enabled" valuePropName="checked"><Switch /></Form.Item>
+          <Form.Item label="商品数据源" name="provider"><Select options={[{ value: "desktop", label: "淘宝桌面版采集器" }, { value: "manual", label: "手工固定样例（开发）" }, { value: "external", label: "外部合规数据 API" }]} /></Form.Item>
+          <p className="form-help">按设置时段由已登记、已登录的 Mac 桌面采集器自动检查。</p>
+          <Form.Item label="启用自动检查" name="enabled" valuePropName="checked"><Switch /></Form.Item>
           <Button type="primary" onClick={() => void saveBase()}>保存基础配置</Button>
         </Form>
       </section>

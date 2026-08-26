@@ -31,14 +31,15 @@ class MemoryAuditRepository {
   }
 }
 
-function createService() {
+function createService(onScheduleSettingsChanged?: () => Promise<void>) {
   const repository = new MemorySettingsRepository();
   const auditRepository = new MemoryAuditRepository();
   const secretStore = new SecretStore("test-only-master-key");
   const service = new SettingsService(
     repository,
     secretStore,
-    new AuditService(auditRepository)
+    new AuditService(auditRepository),
+    onScheduleSettingsChanged
   );
   return { service, repository, auditRepository, secretStore };
 }
@@ -87,4 +88,22 @@ test("admin schedule changes are validated, stored and audited without secrets",
   assert.equal(auditRepository.entries.length, 1);
   assert.equal(auditRepository.entries[0]?.action, "settings.schedule.updated");
   assert.equal(JSON.stringify(auditRepository.entries).includes("secret"), false);
+});
+
+test("desktop is a selectable provider while fresh settings remain manual", async () => {
+  const { service } = createService();
+
+  assert.equal((await service.getPublicSettings("ADMIN")).provider, "manual");
+  await service.updateProvider("desktop", "admin-1", "ADMIN");
+  assert.equal((await service.getPublicSettings("ADMIN")).provider, "desktop");
+});
+
+test("schedule and provider mutations immediately reconcile persisted clock schedules", async () => {
+  let reconciliations = 0;
+  const { service } = createService(async () => { reconciliations += 1; });
+
+  await service.updateSchedule({ enabled: false, checkTimes: [...CHECK_TIMES] }, "admin-1", "ADMIN");
+  await service.updateProvider("manual", "admin-1", "ADMIN");
+
+  assert.equal(reconciliations, 2);
 });

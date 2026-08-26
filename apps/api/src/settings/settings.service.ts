@@ -25,7 +25,7 @@ export interface ScheduleInput {
 
 export interface PublicSettings {
   shopName: string;
-  provider: "manual" | "external";
+  provider: "manual" | "external" | "desktop";
   schedulerEnabled: boolean;
   checkTimes: string[];
   timeZone: typeof TIME_ZONE;
@@ -61,11 +61,18 @@ export class SettingsService {
   private readonly repository: SettingsRepository;
   private readonly secretStore: SecretStore;
   private readonly audit: AuditService;
+  private readonly onScheduleSettingsChanged: () => Promise<void>;
 
-  constructor(repository: SettingsRepository, secretStore: SecretStore, audit: AuditService) {
+  constructor(
+    repository: SettingsRepository,
+    secretStore: SecretStore,
+    audit: AuditService,
+    onScheduleSettingsChanged: () => Promise<void> = async () => undefined
+  ) {
     this.repository = repository;
     this.secretStore = secretStore;
     this.audit = audit;
+    this.onScheduleSettingsChanged = onScheduleSettingsChanged;
   }
 
   async getPublicSettings(_role: UserRole): Promise<PublicSettings> {
@@ -76,7 +83,9 @@ export class SettingsService {
       this.repository.get("COMMERCE_PROVIDER")
     ]);
     const schedule = scheduleFrom(scheduleRecord);
-    const provider = providerRecord?.valueJson === "external" ? "external" : "manual";
+    const provider = providerRecord?.valueJson === "external" || providerRecord?.valueJson === "desktop"
+      ? providerRecord.valueJson
+      : "manual";
 
     return {
       shopName: "星空乐器专营店",
@@ -113,9 +122,10 @@ export class SettingsService {
       before: before?.valueJson ?? null,
       after: valueJson
     });
+    await this.onScheduleSettingsChanged();
   }
 
-  async updateProvider(provider: "manual" | "external", actorId: string, role: UserRole): Promise<void> {
+  async updateProvider(provider: "manual" | "external" | "desktop", actorId: string, role: UserRole): Promise<void> {
     requireAdmin(role);
     const before = await this.repository.get("COMMERCE_PROVIDER");
     await this.repository.set({
@@ -133,6 +143,7 @@ export class SettingsService {
       before: before?.valueJson ?? null,
       after: provider
     });
+    await this.onScheduleSettingsChanged();
   }
 
   async updateSecret(key: SecretSettingKey, plaintext: string, actorId: string, role: UserRole): Promise<void> {

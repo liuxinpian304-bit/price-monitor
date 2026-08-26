@@ -1,0 +1,35 @@
+{
+  "fixtureMetadata": { "kind": "synthetic-sanitized", "profile": "taobao-desktop-2.4.5-build-15", "liveValidationRequiredBy": "Task 14" },
+  "path": [], "role": "AXApplication", "subrole": null, "identifier": "taobao-app", "title": "淘宝", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+  "children": [
+    {
+      "path": [0], "role": "AXWindow", "subrole": "AXStandardWindow", "identifier": "item-detail-window", "title": "商品详情", "description": null, "value": null, "url": "https://item.example.test/item.htm?id=example-7506", "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+      "children": [
+        { "path": [0, 0], "role": "AXButton", "subrole": null, "identifier": "navigation-back", "title": "返回", "description": "返回搜索结果", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+        { "path": [0, 1], "role": "AXGroup", "subrole": null, "identifier": "item-header", "title": "商品信息", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+          { "path": [0, 1, 0], "role": "AXStaticText", "subrole": null, "identifier": "item-title", "title": null, "description": "商品标题", "value": "Sony MDR-7506 监听耳机", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+          { "path": [0, 1, 1], "role": "AXStaticText", "subrole": null, "identifier": "shop-name", "title": null, "description": "店铺", "value": "示例音频店", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+        ] },
+        { "path": [0, 2], "role": "AXGroup", "subrole": null, "identifier": "sku-region", "title": "规格选择", "description": "选择商品规格", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+          { "path": [0, 2, 0], "role": "AXGroup", "subrole": null, "identifier": "sku-dimension", "title": "套装", "description": "规格维度", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+            { "path": [0, 2, 0, 0], "role": "AXRadioButton", "subrole": null, "identifier": "sku-option-bare", "title": "7506 单机", "description": "规格选项", "value": null, "url": null, "enabled": true, "selected": false, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+            { "path": [0, 2, 0, 1], "role": "AXRadioButton", "subrole": null, "identifier": "sku-option-cable", "title": "7506 + C口转换线", "description": "规格选项", "value": null, "url": null, "enabled": true, "selected": true, "position": null, "size": null, "actions": ["AXPress"], "children": [] }
+          ] },
+          { "path": [0, 2, 1], "role": "AXGroup", "subrole": null, "identifier": "sku-dimension", "title": "转换线型号", "description": "规格维度", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+            { "path": [0, 2, 1, 0], "role": "AXRadioButton", "subrole": null, "identifier": "sku-option-m1", "title": "M1", "description": "规格选项", "value": null, "url": null, "enabled": true, "selected": true, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+            { "path": [0, 2, 1, 1], "role": "AXRadioButton", "subrole": null, "identifier": "sku-option-mv1", "title": "MV1", "description": "规格选项", "value": null, "url": null, "enabled": true, "selected": false, "position": null, "size": null, "actions": ["AXPress"], "children": [] }
+          ] }
+        ] },
+        { "path": [0, 3], "role": "AXGroup", "subrole": null, "identifier": "selected-sku-price", "title": "已选规格价格", "description": "当前规格价格", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+          { "path": [0, 3, 0], "role": "AXStaticText", "subrole": null, "identifier": "list-price", "title": null, "description": "原价", "value": "原价 ¥769.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+          { "path": [0, 3, 1], "role": "AXStaticText", "subrole": null, "identifier": "activity-price", "title": null, "description": "店铺优惠后", "value": "店铺优惠后 ¥728.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+          { "path": [0, 3, 2], "role": "AXStaticText", "subrole": null, "identifier": "stock-state", "title": null, "description": "库存", "value": "有货", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+        ] },
+        { "path": [0, 4], "role": "AXGroup", "subrole": null, "identifier": "selected-sku-promotions", "title": "已选规格优惠", "description": "当前规格优惠", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+          { "path": [0, 4, 0], "role": "AXStaticText", "subrole": null, "identifier": "shop-coupon", "title": null, "description": "店铺券", "value": "20元券", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+          { "path": [0, 4, 1], "role": "AXStaticText", "subrole": null, "identifier": "direct-reduction", "title": null, "description": "立减", "value": "立减10元", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+        ] }
+      ]
+    }
+  ]
+}

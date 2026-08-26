@@ -26,7 +26,7 @@ export function CatalogPage() {
 
   const toggle = async (model: CatalogModel) => {
     try {
-      await apiRequest(`/api/catalog/models/${model.id}/toggle`, { method: "POST", role: "ADMIN", actorId: "本地管理员" });
+      await apiRequest(`/api/catalog/models/${model.id}/toggle`, { method: "POST", role: "ADMIN" });
       await refresh();
       messageApi.success(model.enabled ? "已暂停监控" : "已启用监控");
     } catch (toggleError) {

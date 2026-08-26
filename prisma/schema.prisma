@@ -31,9 +31,23 @@ enum StockState {
   UNKNOWN
 }
 
+enum CollectorPlatform {
+  MACOS
+  WINDOWS
+}
+
+enum PriceConfidence {
+  CONFIRMED
+  ESTIMATED
+  MANUAL_REVIEW
+}
+
 enum CollectionRunStatus {
   QUEUED
   RUNNING
+  PAUSED_LOGIN
+  PAUSED_CHALLENGE
+  COALESCED
   SUCCEEDED
   PARTIAL_FAILED
   FAILED
@@ -51,6 +65,19 @@ enum AlertSeverity {
   CONFIRMED_LOW
   MANUAL_REVIEW
   SYSTEM_ERROR
+}
+
+enum RunAlertNotificationState {
+  PENDING
+  SENDING
+  NOTIFIED
+  AMBIGUOUS
+  FAILED
+}
+
+enum SearchTerminationReason {
+  LIMIT_REACHED
+  END_MARKER
 }
 
 model MonitoredModel {
@@ -165,25 +192,56 @@ model SearchCandidate {
 }
 
 model CollectionRun {
-  id               String              @id @default(cuid())
-  monitoredModelId String
-  providerKey      String              @db.VarChar(100)
-  status           CollectionRunStatus @default(QUEUED)
-  scheduledFor     DateTime
-  startedAt        DateTime?
-  finishedAt       DateTime?
-  searchedCount    Int                 @default(0)
-  fetchedCount     Int                 @default(0)
-  matchedCount     Int                 @default(0)
-  failedCount      Int                 @default(0)
-  errorCode        String?             @db.VarChar(120)
-  errorMessage     String?
-  createdAt        DateTime            @default(now())
-  monitoredModel   MonitoredModel      @relation(fields: [monitoredModelId], references: [id], onDelete: Cascade)
-  snapshots        OfferSnapshot[]
+  id                 String                     @id @default(cuid())
+  monitoredModelId   String
+  providerKey        String                     @db.VarChar(100)
+  status             CollectionRunStatus        @default(QUEUED)
+  scheduledFor       DateTime
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  collectorAgentId   String?
+  claimedAt          DateTime?
+  claimedOwnListingIds String[]                   @default([])
+  claimedJob         Json?
+  desktopReportDigest String?                     @db.VarChar(80)
+  desktopIngestionSummary Json?
+  alertEvaluationToken String?                    @db.VarChar(80)
+  alertEvaluationStartedAt DateTime?
+  alertEvaluationLastAttemptAt DateTime?
+  alertEvaluationAttempts Int                     @default(0)
+  alertEvaluatedAt     DateTime?
+  alertEvaluationError String?                    @db.VarChar(120)
+  ownBaselineSnapshotId String?
+  heartbeatAt        DateTime?
+  searchLimit        Int                        @default(50)
+  searchTerminationReason SearchTerminationReason?
+  coalescedIntoRunId String?
+  searchedCount      Int                        @default(0)
+  fetchedCount       Int                        @default(0)
+  matchedCount       Int                        @default(0)
+  failedCount        Int                        @default(0)
+  discoveredCount    Int                        @default(0)
+  skuCount           Int                        @default(0)
+  incompleteCount    Int                        @default(0)
+  errorCode          String?                    @db.VarChar(120)
+  errorMessage       String?
+  createdAt          DateTime                   @default(now())
+  monitoredModel     MonitoredModel             @relation(fields: [monitoredModelId], references: [id], onDelete: Cascade)
+  collectorAgent     CollectorAgent?            @relation(fields: [collectorAgentId], references: [id], onDelete: SetNull)
+  positions          CollectionSearchPosition[]
+  issues             CollectionIssue[]
+  coalescedInto      CollectionRun?             @relation("RunCoalescing", fields: [coalescedIntoRunId], references: [id], onDelete: SetNull)
+  coalescedRuns      CollectionRun[]            @relation("RunCoalescing")
+  snapshots          OfferSnapshot[]
+  ownBaselineSnapshot OfferSnapshot?             @relation("RunOwnBaseline", fields: [ownBaselineSnapshotId], references: [id], onDelete: SetNull)
+  alertNotificationBatch RunAlertNotificationBatch?
 
   @@unique([monitoredModelId, providerKey, scheduledFor])
   @@index([status, scheduledFor])
+  @@index([collectorAgentId])
+  @@index([coalescedIntoRunId])
+  @@index([alertEvaluatedAt, alertEvaluationLastAttemptAt])
+  @@index([ownBaselineSnapshotId])
 }
 
 model OfferSnapshot {
@@ -197,8 +255,21 @@ model OfferSnapshot {
   title                 String           @db.VarChar(1000)
   skuText               String?          @db.VarChar(500)
   listPriceFen          Int?
+  activityPriceFen      Int?
+  couponDiscountFen     Int              @default(0)
+  fullReductionFen      Int              @default(0)
+  directDiscountFen     Int              @default(0)
+  mandatoryFeeFen       Int              @default(0)
   publicDiscountFen     Int              @default(0)
   payableFen            Int?
+  priceConfidence       PriceConfidence  @default(MANUAL_REVIEW)
+  evidenceKey           String?          @db.VarChar(80)
+  ingestionKey          String?          @unique @db.VarChar(80)
+  matchDecision         CandidateDecision?
+  comparable            Boolean          @default(false)
+  matchConfidenceBps    Int              @default(0)
+  normalizedModel       String?          @db.VarChar(300)
+  matchReasons          Json?
   stockState            StockState       @default(UNKNOWN)
   promotions            Json?
   gifts                 Json?
@@ -211,11 +282,58 @@ model OfferSnapshot {
   searchCandidate       SearchCandidate? @relation(fields: [searchCandidateId], references: [id], onDelete: SetNull)
   ownPriceAlerts        PriceAlert[]     @relation("OwnSnapshotAlerts")
   competitorPriceAlerts PriceAlert[]     @relation("CompetitorSnapshotAlerts")
+  ownBaselineForRuns    CollectionRun[]  @relation("RunOwnBaseline")
 
   @@index([collectionRunId])
   @@index([ownListingId, capturedAt])
   @@index([searchCandidateId, capturedAt])
   @@index([platformItemId, skuId, capturedAt])
+}
+
+model CollectorAgent {
+  id             String            @id @default(cuid())
+  name           String            @unique @db.VarChar(160)
+  platform       CollectorPlatform
+  tokenHash      String            @unique @db.VarChar(160)
+  enabled        Boolean           @default(true)
+  appVersion     String?           @db.VarChar(120)
+  capabilities   Json?
+  lastSeenAt     DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  collectionRuns CollectionRun[]
+}
+
+model CollectionSearchPosition {
+  id                 String        @id @default(cuid())
+  collectionRunId    String
+  rank               Int
+  platformItemId     String        @db.VarChar(160)
+  url                String
+  shopName           String        @db.VarChar(200)
+  title              String        @db.VarChar(1000)
+  displayPriceMinFen Int
+  displayPriceMaxFen Int
+  sponsored          Boolean       @default(false)
+  capturedAt         DateTime
+  collectionRun      CollectionRun @relation(fields: [collectionRunId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionRunId, rank])
+}
+
+model CollectionIssue {
+  id              String        @id @default(cuid())
+  collectionRunId String
+  issueKey        String        @unique @db.VarChar(80)
+  code            String        @db.VarChar(120)
+  platformItemId  String?       @db.VarChar(160)
+  skuId           String?       @db.VarChar(160)
+  message         String
+  evidenceKey     String?       @db.VarChar(80)
+  capturedAt      DateTime
+  collectionRun   CollectionRun @relation(fields: [collectionRunId], references: [id], onDelete: Cascade)
+
+  @@index([collectionRunId])
 }
 
 model PriceAlert {
@@ -245,6 +363,25 @@ model PriceAlert {
 
   @@index([status, createdAt])
   @@index([monitoredModelId, lastSeenAt])
+}
+
+model RunAlertNotificationBatch {
+  id                        String                    @id @default(cuid())
+  collectionRunId           String                    @unique
+  summary                   Json
+  alertIds                  String[]                  @default([])
+  state                     RunAlertNotificationState @default(PENDING)
+  attemptToken              String?                   @db.VarChar(80)
+  attemptStartedAt          DateTime?
+  notificationAttempts      Int                       @default(0)
+  lastNotificationError     String?                   @db.VarChar(120)
+  lastNotificationAttemptAt DateTime?
+  notifiedAt                DateTime?
+  createdAt                 DateTime                  @default(now())
+  updatedAt                 DateTime                  @updatedAt
+  collectionRun             CollectionRun             @relation(fields: [collectionRunId], references: [id], onDelete: Cascade)
+
+  @@index([state, attemptStartedAt])
 }
 
 model AlertAction {

@@ -27,6 +27,26 @@ test("calculates exact payable price from page price, public discounts and manda
   });
 });
 
+test("preserves a zero legacy payable price when a mandatory fee offsets the public discount", () => {
+  const result = new PriceEngineService().calculate({
+    pagePriceFen: 100,
+    publicDiscounts: [{ label: "公开优惠", amountFen: 200 }],
+    mandatoryFees: [{ label: "必付费用", amountFen: 100 }],
+    privatePriceRequired: false
+  });
+
+  assert.deepEqual(result, {
+    payableFen: 0,
+    publicDiscountFen: 200,
+    confidence: "CONFIRMED",
+    reasons: [
+      "具体SKU页面价 100 分",
+      "扣除公开优惠 200 分",
+      "加上必付费用 100 分"
+    ]
+  });
+});
+
 test("returns manual with no payable price when a private chat price is required", () => {
   const result = new PriceEngineService().calculate({
     pagePriceFen: 649_900,
@@ -57,6 +77,34 @@ test("returns manual when page price or a public discount amount is uncertain", 
   }).confidence, "MANUAL");
 });
 
+test("validates a known public discount after an unknown public discount", () => {
+  assert.throws(() => new PriceEngineService().calculate({
+    pagePriceFen: 649_900,
+    publicDiscounts: [
+      { label: "金额待确认优惠", amountFen: null },
+      { label: "无效公开优惠", amountFen: -1 }
+    ],
+    mandatoryFees: [],
+    privatePriceRequired: false
+  }), /非负整数/);
+});
+
+test("validates known mandatory fees after an unknown mandatory fee", () => {
+  const engine = new PriceEngineService();
+
+  for (const amountFen of [-1, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => engine.calculate({
+      pagePriceFen: 649_900,
+      publicDiscounts: [],
+      mandatoryFees: [
+        { label: "金额待确认费用", amountFen: null },
+        { label: "无效必付费用", amountFen }
+      ],
+      privatePriceRequired: false
+    }), /非负整数/);
+  }
+});
+
 test("uses integer fen and rejects invalid negative money", () => {
   const engine = new PriceEngineService();
 
@@ -66,6 +114,22 @@ test("uses integer fen and rejects invalid negative money", () => {
     mandatoryFees: [],
     privatePriceRequired: false
   }), /非负整数/);
+});
+
+test("calculates desktop prices through the shared public-price formula", () => {
+  const result = new PriceEngineService().calculateDesktop({
+    listPriceFen: 77_500,
+    activityPriceFen: 65_800,
+    promotions: [
+      { kind: "COUPON", label: "满600减20", amountFen: 2_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" },
+      { kind: "FULL_REDUCTION", label: "满650减10", amountFen: 1_000, thresholdFen: 65_000, audience: "PUBLIC", stackGroup: "platform-full", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
+    ],
+    mandatoryFeeFen: 0
+  });
+
+  assert.equal(result.payableFen, 62_800);
+  assert.equal(result.confidence, "CONFIRMED");
+  assert.equal(result.publicDiscountFen, 3_000);
 });
 
 test("creates the same signature for the same core bundle regardless of row order", () => {

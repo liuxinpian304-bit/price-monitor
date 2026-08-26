@@ -5,9 +5,14 @@ import {
   type AlertEvaluationDecision,
   type AlertOffer,
   type AlertRepository,
-  type PriceAlertNotifier,
   type PriceAlertRecord
 } from "../../../apps/api/src/alerts/alert.service.ts";
+import {
+  RunAlertNotifier,
+  type ClaimedRunAlertBatch,
+  type RunAlertNotificationRepository
+} from "../../../apps/api/src/alerts/run-alert-notifier.ts";
+import type { WecomMarkdownSender } from "../../../apps/api/src/alerts/wecom/wecom.client.ts";
 import {
   CatalogImportService,
   type CatalogImportResult,
@@ -23,6 +28,10 @@ import {
   type CollectionRepository,
   type CollectionSummary
 } from "../../../apps/api/src/collection/collection.service.ts";
+import type {
+  RunAlertEntry,
+  RunAlertSummary
+} from "../../../apps/api/src/collection/run-alert.service.ts";
 import { ManualImportProvider } from "../../../apps/api/src/collection/providers/manual/manual-import.provider.ts";
 import { MatcherService } from "../../../apps/api/src/matching/matcher.service.ts";
 import { bundleSignature, type BundleComparableItem } from "../../../apps/api/src/pricing/bundle-signature.ts";
@@ -56,13 +65,10 @@ class RecordingCatalogWriter implements CatalogImportWriter {
 
 class InMemoryAlertRepository implements AlertRepository {
   readonly alerts: PriceAlertRecord[] = [];
-  readonly notificationFailures: Array<{ alertId: string; message: string }> = [];
+  readonly notificationFailures: Array<{ alertIds: string[]; message: string }> = [];
 
-  async findByDedupKey(key: string) {
-    return this.alerts.find((alert) => alert.dedupKey === key) ?? null;
-  }
-
-  async create(input: Omit<PriceAlertRecord, "id" | "notifiedAt">) {
+  async createIfAbsent(input: Omit<PriceAlertRecord, "id" | "notifiedAt">) {
+    if (this.alerts.some((alert) => alert.dedupKey === input.dedupKey)) return null;
     const alert: PriceAlertRecord = {
       ...input,
       id: `acceptance-alert-${this.alerts.length + 1}`,
@@ -72,23 +78,66 @@ class InMemoryAlertRepository implements AlertRepository {
     return alert;
   }
 
-  async markNotified(id: string, notifiedAt: Date) {
-    const alert = this.alerts.find((item) => item.id === id);
-    if (alert) {
+  async markBatchNotified(ids: string[], notifiedAt: Date) {
+    for (const alert of this.alerts.filter((item) => ids.includes(item.id))) {
       alert.notifiedAt = notifiedAt;
     }
   }
 
-  async recordNotificationFailure(alertId: string, message: string) {
-    this.notificationFailures.push({ alertId, message });
+  async recordBatchNotificationFailure(alertIds: string[], message: string) {
+    this.notificationFailures.push({ alertIds: [...alertIds], message });
   }
 }
 
-class RecordingNotifier implements PriceAlertNotifier {
-  readonly sent: PriceAlertRecord[] = [];
+class InMemoryNotificationRepository implements RunAlertNotificationRepository {
+  private readonly alertRepository: InMemoryAlertRepository;
+  private readonly summaries = new Map<string, RunAlertSummary>();
+  private readonly claimedRunIds = new Set<string>();
+  private nextBatch = 1;
 
-  async sendPriceAlert(alert: PriceAlertRecord) {
-    this.sent.push(alert);
+  constructor(alertRepository: InMemoryAlertRepository) {
+    this.alertRepository = alertRepository;
+  }
+
+  ensureBatch(summary: RunAlertSummary): void {
+    if (summary.alerts.length === 0 && summary.systemIssue === null) return;
+    if (!this.summaries.has(summary.runId)) {
+      this.summaries.set(summary.runId, structuredClone(summary));
+    }
+  }
+
+  async claimBatch(runId: string, _attemptedAt: Date): Promise<ClaimedRunAlertBatch | null> {
+    const summary = this.summaries.get(runId);
+    if (!summary || this.claimedRunIds.has(runId)) return null;
+    this.claimedRunIds.add(runId);
+    const sequence = this.nextBatch;
+    this.nextBatch += 1;
+    return {
+      batchId: `acceptance-batch-${sequence}`,
+      attemptToken: `acceptance-attempt-${sequence}`,
+      summary: structuredClone(summary),
+      alertIds: summary.alerts.map((alert) => alert.alertId)
+    };
+  }
+
+  async markBatchNotified(batch: ClaimedRunAlertBatch, notifiedAt: Date) {
+    await this.alertRepository.markBatchNotified(batch.alertIds, notifiedAt);
+  }
+
+  async recordBatchNotificationFailure(
+    batch: ClaimedRunAlertBatch,
+    message: "WECOM_NOT_CONFIGURED" | "WECOM_DELIVERY_FAILED",
+    _failedAt: Date
+  ) {
+    await this.alertRepository.recordBatchNotificationFailure(batch.alertIds, message);
+  }
+}
+
+class RecordingSender implements WecomMarkdownSender {
+  readonly messages: string[] = [];
+
+  async sendMarkdown(message: string) {
+    this.messages.push(message);
   }
 }
 
@@ -162,6 +211,10 @@ class PipelineCollectionRepository implements CollectionRepository {
   private readonly ownPriceFen: number;
   private readonly competitorBundleModel: "MK4" | "MK8" | undefined;
   private readonly alertService: AlertService;
+  private readonly notificationRepository: InMemoryNotificationRepository;
+  private readonly runAlertNotifier: RunAlertNotifier;
+  private readonly runAlerts: RunAlertEntry[] = [];
+  private capturedAt = new Date("2026-08-19T01:30:00.000Z");
 
   constructor(input: {
     collectionModel: CollectionModel;
@@ -170,6 +223,8 @@ class PipelineCollectionRepository implements CollectionRepository {
     ownPriceFen: number;
     competitorBundleModel: "MK4" | "MK8" | undefined;
     alertService: AlertService;
+    notificationRepository: InMemoryNotificationRepository;
+    runAlertNotifier: RunAlertNotifier;
   }) {
     this.collectionModel = input.collectionModel;
     this.importedModel = input.importedModel;
@@ -177,6 +232,8 @@ class PipelineCollectionRepository implements CollectionRepository {
     this.ownPriceFen = input.ownPriceFen;
     this.competitorBundleModel = input.competitorBundleModel;
     this.alertService = input.alertService;
+    this.notificationRepository = input.notificationRepository;
+    this.runAlertNotifier = input.runAlertNotifier;
   }
 
   async getModel(id: string) {
@@ -190,6 +247,7 @@ class PipelineCollectionRepository implements CollectionRepository {
   async startRun() {}
 
   async saveOffer(input: CollectedOfferInput) {
+    this.capturedAt = input.offer.capturedAt;
     const ownOffer: AlertOffer = {
       monitoredModelId: this.collectionModel.id,
       snapshotId: `${input.runId}-own`,
@@ -201,6 +259,8 @@ class PipelineCollectionRepository implements CollectionRepository {
       shopName: "星空乐器专营店",
       skuText: this.importedModel.ownSkuText,
       payableFen: this.ownPriceFen,
+      priceConfidence: "CONFIRMED",
+      stockState: "IN_STOCK",
       url: this.importedModel.ownUrl,
       capturedAt: input.offer.capturedAt,
       owner: this.importedModel.owner
@@ -216,23 +276,72 @@ class PipelineCollectionRepository implements CollectionRepository {
       shopName: input.offer.shopName,
       skuText: selectedSkuText(input),
       payableFen: input.price.payableFen,
+      priceConfidence: "CONFIRMED",
+      stockState: input.offer.stockState,
       url: input.offer.url,
       capturedAt: input.offer.capturedAt,
       owner: this.importedModel.owner
     };
 
-    await this.alertService.evaluate(
+    const alert = await this.alertService.evaluate(
       ownOffer,
       competitorOffer,
       bundleDecision(input, this.catalog, this.importedModel, this.competitorBundleModel)
     );
+    if (!alert || input.price.payableFen === null) return;
+    this.runAlerts.push({
+      alertId: alert.id,
+      severity: alert.severity,
+      snapshotId: competitorOffer.snapshotId,
+      rank: 1,
+      shopName: competitorOffer.shopName,
+      title: input.offer.title,
+      skuText: competitorOffer.skuText,
+      activityPriceFen: input.offer.listPriceFen,
+      publicDiscountFen: input.offer.publicDiscountFen,
+      payableFen: input.price.payableFen,
+      differenceFen: alert.differenceFen,
+      url: competitorOffer.url,
+      reasons: alert.reasons
+    });
   }
 
   async recordItemFailure() {}
 
   async recordSystemError() {}
 
-  async finishRun(_runId: string, _status: "SUCCEEDED" | "PARTIAL_FAILED" | "FAILED", _summary: CollectionSummary) {}
+  async finishRun(
+    runId: string,
+    _status: "SUCCEEDED" | "PARTIAL_FAILED" | "FAILED",
+    summary: CollectionSummary
+  ) {
+    const alertSummary: RunAlertSummary = {
+      runId,
+      monitoredModelId: this.collectionModel.id,
+      brand: this.importedModel.brand,
+      standardModel: this.importedModel.standardModel,
+      comparisonType: this.importedModel.comparisonType,
+      owner: this.importedModel.owner,
+      completedAt: this.capturedAt,
+      checkedItemCount: summary.searched,
+      searchLimit: 50,
+      skuCount: summary.fetched,
+      issueCount: summary.failed,
+      reportUrl: `https://monitor.example.test/collection-runs/${runId}`,
+      baseline: {
+        snapshotId: `${runId}-own`,
+        skuId: `own-sku-${this.importedModel.monitorCode}`,
+        skuText: this.importedModel.ownSkuText,
+        activityPriceFen: this.ownPriceFen,
+        publicDiscountFen: 0,
+        payableFen: this.ownPriceFen
+      },
+      systemIssue: null,
+      alerts: [...this.runAlerts]
+    };
+    this.notificationRepository.ensureBatch(alertSummary);
+    await this.runAlertNotifier.send(alertSummary);
+  }
 }
 
 function yuan(fen: number): string {
@@ -252,7 +361,7 @@ function providerFixture(model: ValidatedModelImport, options: CollectOptions, r
     : `Babyface Pro FS+${bundleModel}套装`;
   const attributes = model.comparisonType === "BARE"
     ? { 版本: "FS新版" }
-    : { 声卡: "Babyface Pro FS", 麦克风: bundleModel };
+    : { 声卡: "Babyface Pro FS", 麦克风: bundleModel, 版本: "FS新版" };
   const capturedAt = new Date(Date.UTC(2026, 7, 19, 1, 30, runNumber)).toISOString();
 
   return new ManualImportProvider({
@@ -353,14 +462,20 @@ export async function createMonitorHarness() {
 
   const catalog = catalogWriter.catalog;
   const alertRepository = new InMemoryAlertRepository();
-  const notifier = new RecordingNotifier();
-  const alertService = new AlertService(alertRepository, notifier);
+  const notificationRepository = new InMemoryNotificationRepository(alertRepository);
+  const sender = new RecordingSender();
+  const runAlertNotifier = new RunAlertNotifier(
+    notificationRepository,
+    async () => sender,
+    () => new Date("2026-08-19T01:31:00.000Z")
+  );
+  const alertService = new AlertService(alertRepository);
   let runNumber = 0;
 
   return {
     importResult: importResult as CatalogImportResult,
     alerts: alertRepository.alerts,
-    notifications: notifier.sent,
+    notifications: sender.messages,
     async collect(options: CollectOptions) {
       runNumber += 1;
       const importedModel = catalog.models.find((model) => model.monitorCode === options.monitorCode);
@@ -374,7 +489,9 @@ export async function createMonitorHarness() {
         catalog,
         ownPriceFen: options.ownPriceFen,
         competitorBundleModel: options.competitorBundleModel,
-        alertService
+        alertService,
+        notificationRepository,
+        runAlertNotifier
       });
       const service = new CollectionService(
         repository,

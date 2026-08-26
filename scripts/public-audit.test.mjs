@@ -16,6 +16,7 @@ test("rejects private and non-public paths across path separators", () => {
     ".env",
     "config/.env.production",
     ".env.example",
+    ".env.collector.example",
     templatePath,
     "node_modules/package/index.js",
     "apps\\web\\node_modules\\react\\index.js",
@@ -86,6 +87,13 @@ test("redacts secret values and detects local paths in text", () => {
   assert.equal(errors.join("\n").includes(masterKey), false);
   assert.deepEqual(
     auditText(".env.example", "SETTINGS_MASTER_KEY=replace-with-a-long-random-secret\n"),
+    []
+  );
+  assert.deepEqual(
+    auditText(
+      ".env.collector.example",
+      "COLLECTOR_PAIRING_TOKEN=\nCOLLECTOR_NAME=mac-studio-collector\n"
+    ),
     []
   );
   assert.deepEqual(

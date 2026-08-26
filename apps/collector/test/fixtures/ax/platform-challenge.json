@@ -1,0 +1,9 @@
+{
+  "fixtureMetadata": { "kind": "synthetic-sanitized", "profile": "taobao-desktop-2.4.5-build-15", "liveValidationRequiredBy": "Task 14" },
+  "path": [], "role": "AXApplication", "subrole": null, "identifier": "taobao-app", "title": "淘宝", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+  "children": [
+    { "path": [0], "role": "AXWindow", "subrole": "AXDialog", "identifier": "platform-challenge-dialog", "title": "安全验证", "description": "请完成验证", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+      { "path": [0, 0], "role": "AXStaticText", "subrole": null, "identifier": "platform-challenge-label", "title": null, "description": null, "value": "请完成安全验证", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+    ] }
+  ]
+}

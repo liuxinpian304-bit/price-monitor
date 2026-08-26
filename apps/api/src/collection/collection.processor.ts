@@ -4,6 +4,7 @@ import type { Redis } from "ioredis";
 
 import type { CollectionLock } from "./collection.service.ts";
 import type { CollectionSchedule, CollectionScheduleQueue } from "./collection.scheduler.ts";
+import type { CollectionRunQueueService } from "./collection-run-queue.service.ts";
 
 export interface ScheduledCollectionJob {
   scheduledLocalTime: string;
@@ -28,13 +29,45 @@ export class BullMqCollectionScheduleQueue implements CollectionScheduleQueue {
           timeZone: schedule.timeZone
         },
         opts: {
-          attempts: 3,
-          backoff: { type: "exponential", delay: 60_000 },
+          attempts: 1,
           removeOnComplete: 100,
           removeOnFail: 500
         }
       }
     );
+  }
+
+  async removeSchedule(id: string): Promise<void> {
+    await this.queue.removeJobScheduler(id);
+  }
+
+  async listScheduleIds(): Promise<string[]> {
+    const schedulers = await this.queue.getJobSchedulers(0, -1, true);
+    return schedulers.map((scheduler) => scheduler.key);
+  }
+}
+
+export interface ScheduledClockJob {
+  timestamp: number;
+}
+
+export class CollectionScheduleProcessor {
+  private readonly collectionRuns: Pick<CollectionRunQueueService, "enqueueEnabledModels">;
+  private readonly settings: () => Promise<{ enabled: boolean; provider: "manual" | "external" | "desktop" }>;
+
+  constructor(
+    collectionRuns: Pick<CollectionRunQueueService, "enqueueEnabledModels">,
+    settings: () => Promise<{ enabled: boolean; provider: "manual" | "external" | "desktop" }>
+      = async () => ({ enabled: true, provider: "desktop" })
+  ) {
+    this.collectionRuns = collectionRuns;
+    this.settings = settings;
+  }
+
+  async process(job: ScheduledClockJob): Promise<void> {
+    const settings = await this.settings();
+    if (!settings.enabled || settings.provider !== "desktop") return;
+    await this.collectionRuns.enqueueEnabledModels(new Date(job.timestamp));
   }
 }
 

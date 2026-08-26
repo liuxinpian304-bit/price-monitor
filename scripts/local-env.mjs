@@ -8,6 +8,14 @@ export function commandSpawnOptions(platform = process.platform) {
   };
 }
 
+export function collectorDoctorPlan(platform = process.platform) {
+  return platform === "darwin" ? [{
+    command: "pnpm",
+    args: ["collector:diagnose"],
+    label: "macOS collector diagnostics"
+  }] : [];
+}
+
 export function createLocalEnv(template, masterKey) {
   return template.replace(masterKeyPattern, `SETTINGS_MASTER_KEY=${masterKey}`);
 }

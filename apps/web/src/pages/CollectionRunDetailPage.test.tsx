@@ -1,0 +1,162 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { useApiData } from "../api/client.ts";
+import { fetchCollectionEvidence, requeueCollectionRun } from "../api/collection-runs.ts";
+import { CollectionRunDetailPage } from "./CollectionRunDetailPage.tsx";
+
+vi.mock("../api/client.ts", () => ({ useApiData: vi.fn() }));
+vi.mock("../api/collection-runs.ts", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../api/collection-runs.ts")>(),
+  fetchCollectionEvidence: vi.fn(),
+  requeueCollectionRun: vi.fn()
+}));
+
+function report(status: string) {
+  return {
+    id: "run-1",
+    status,
+    provider: "taobao-desktop",
+    scheduledFor: "2026-08-25T01:30:00.000Z",
+    startedAt: "2026-08-25T01:30:10.000Z",
+    finishedAt: null,
+    model: { id: "model-1", monitorCode: "SONY-7506", label: "Sony MDR-7506", comparisonType: "BARE", owner: "运营A" },
+    collector: { id: "agent-1", name: "mac-studio-1", platform: "MACOS", appVersion: "2.4.5" },
+    completion: { positionsCaptured: 47, requestedPositions: 50, discoveredCount: 47, fetchedCount: 47, matchedCount: 2, failedCount: 3, uniqueItemCount: 47, skuCount: 2, incompleteCount: 3, terminationReason: null, complete: false, label: "47 / 50，未完成" },
+    notification: { state: "FAILED", attempts: 2, notifiedAt: null, lastError: "WECOM_DELIVERY_FAILED" },
+    error: { code: "LOGIN_REQUIRED", message: "淘宝登录已失效" },
+    positions: [{ rank: 1, platformItemId: "item-1", url: "https://item.taobao.com/item.htm?id=1", shopName: "同行店", title: "Sony MDR-7506", displayPriceMinFen: 65_800, displayPriceMaxFen: 65_800, sponsored: false, capturedAt: "2026-08-25T01:30:00.000Z" }],
+    issues: [{ id: "issue-1", code: "LOGIN_REQUIRED", platformItemId: null, skuId: null, message: "淘宝登录已失效", evidenceSha256: null, capturedAt: "2026-08-25T01:31:00.000Z" }],
+    filters: {},
+    totalSkuCount: 2,
+    pagination: {
+      positions: { page: 1, pageSize: 50, total: 1, totalPages: 1, hasPrevious: false, hasNext: false },
+      issues: { page: 1, pageSize: 50, total: 1, totalPages: 1, hasPrevious: false, hasNext: false },
+      skus: { page: 1, pageSize: 50, total: 2, totalPages: 1, hasPrevious: false, hasNext: false }
+    },
+    skus: [
+      {
+        id: "own-sku", source: "OWN", platformItemId: "own-1", skuId: "own-standard", shopName: "星空乐器专营店", title: "Sony MDR-7506", skuText: "标准版", url: "https://detail.tmall.com/item.htm?id=own-1", ranks: [1],
+        prices: { listPriceFen: 69_800, activityPriceFen: 69_800, couponDiscountFen: 0, fullReductionFen: 0, directDiscountFen: 0, mandatoryFeeFen: 0, publicDiscountFen: 0, payableFen: 69_800 },
+        stockState: "IN_STOCK", confidence: "CONFIRMED", match: { category: "EXACT", decision: "BARE", comparable: true, confidenceBps: 10_000, reasons: ["型号一致"] }, comparison: { state: "OWN", ownPayableFen: 69_800, differenceFen: null }, evidenceSha256: "a".repeat(64), capturedAt: "2026-08-25T01:30:00.000Z"
+      },
+      {
+        id: "competitor-sku", source: "COMPETITOR", platformItemId: "item-1", skuId: "competitor-standard", shopName: "同行店", title: "Sony MDR-7506", skuText: "标准版", url: "https://item.taobao.com/item.htm?id=1", ranks: [1],
+        prices: { listPriceFen: 69_799, activityPriceFen: 69_799, couponDiscountFen: 0, fullReductionFen: 0, directDiscountFen: 0, mandatoryFeeFen: 0, publicDiscountFen: 0, payableFen: 69_799 },
+        stockState: "IN_STOCK", confidence: "CONFIRMED", match: { category: "EXACT", decision: "BARE", comparable: true, confidenceBps: 10_000, reasons: ["型号一致"] }, comparison: { state: "LOWER", ownPayableFen: 69_800, differenceFen: 1 }, evidenceSha256: "b".repeat(64), capturedAt: "2026-08-25T01:30:00.000Z"
+      }
+    ]
+  };
+}
+
+function renderPage() {
+  return render(<MemoryRouter initialEntries={["/runs/run-1"]}><Routes><Route path="/runs/:runId" element={<CollectionRunDetailPage />} /></Routes></MemoryRouter>);
+}
+
+describe("CollectionRunDetailPage", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(fetchCollectionEvidence).mockReset();
+    vi.mocked(requeueCollectionRun).mockReset();
+    vi.mocked(requeueCollectionRun).mockResolvedValue({ runId: "run-1" });
+  });
+
+  it("opens the evidence window synchronously before awaiting protected evidence bytes", async () => {
+    vi.mocked(useApiData).mockReturnValue({ data: report("SUCCEEDED"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
+    const events: string[] = [];
+    let resolveEvidence!: (blob: Blob) => void;
+    vi.mocked(fetchCollectionEvidence).mockImplementation(() => {
+      events.push("fetch");
+      return new Promise<Blob>((resolve) => { resolveEvidence = resolve; });
+    });
+    const popup = { close: vi.fn(), location: { href: "about:blank" }, opener: window };
+    vi.spyOn(window, "open").mockImplementation(() => {
+      events.push("open");
+      return popup as unknown as Window;
+    });
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:fixture-evidence");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+
+    renderPage();
+    fireEvent.click(screen.getAllByRole("button", { name: "查看证据" })[0]!);
+    expect(events).toEqual(["open", "fetch"]);
+
+    resolveEvidence(new Blob(["fixture"], { type: "image/png" }));
+    await vi.waitFor(() => expect(popup.location.href).toBe("blob:fixture-evidence"));
+    expect(popup.opener).toBeNull();
+  });
+
+  it("shows all SKU price components and gives a paused login run an operator-only recovery action", async () => {
+    vi.mocked(useApiData).mockReturnValue({ data: report("PAUSED_LOGIN"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
+    renderPage();
+
+    expect(screen.getByText("47 / 50，未完成")).toBeInTheDocument();
+    expect(screen.getAllByText(/公开优惠/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "搜索位置" })).toBeInTheDocument();
+    expect(within(screen.getByTestId("collection-run-positions-scroll")).getByText("排名 1")).toBeInTheDocument();
+    expect(screen.getByTestId("collection-run-positions-scroll")).toHaveClass("collection-runs-scroll");
+    expect(screen.getByTestId("collection-run-skus-scroll")).toHaveClass("collection-runs-scroll");
+    expect(screen.getByText("请在已登记的 Mac 上打开淘宝桌面版，恢复登录后再重新入队。"))
+      .toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /重新入队/ }));
+    expect(requeueCollectionRun).toHaveBeenCalledWith("run-1");
+  });
+
+  it("does not surface requeue controls for a running report", () => {
+    vi.mocked(useApiData).mockReturnValue({ data: report("RUNNING"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
+    renderPage();
+
+    expect(screen.queryByRole("button", { name: /重新入队/ })).not.toBeInTheDocument();
+  });
+
+  it("does not render a synthetic report while the first detail request is loading", () => {
+    vi.mocked(useApiData).mockReturnValue({ data: null, loading: true, error: null, errorStatus: null, hasSuccessfulData: false, refresh: vi.fn(), setData: vi.fn() });
+    renderPage();
+
+    expect(screen.getByText("正在加载采集运行")).toBeInTheDocument();
+    expect(screen.queryByText(/0 \/ 50/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "搜索位置" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [404, "采集运行不存在"],
+    [403, "需要管理员权限"],
+    [0, "采集运行加载失败"]
+  ])("renders a dedicated initial error state for status %s", (errorStatus, title) => {
+    vi.mocked(useApiData).mockReturnValue({
+      data: null,
+      loading: false,
+      error: errorStatus === 404 ? "Not Found" : errorStatus === 403 ? "Forbidden resource" : "无法连接后台接口",
+      errorStatus,
+      hasSuccessfulData: false,
+      refresh: vi.fn(),
+      setData: vi.fn()
+    });
+    renderPage();
+
+    expect(screen.getByText(title)).toBeInTheDocument();
+    expect(screen.queryByText(/0 \/ 50/)).not.toBeInTheDocument();
+  });
+
+  it("renders explicit table empty states only after a successful empty detail response", () => {
+    const empty = report("SUCCEEDED");
+    empty.completion = { ...empty.completion, positionsCaptured: 0, uniqueItemCount: 0, skuCount: 0, incompleteCount: 0, label: "0 / 50，未完成" };
+    empty.positions = [];
+    empty.issues = [];
+    empty.skus = [];
+    empty.totalSkuCount = 0;
+    empty.pagination = {
+      positions: { page: 1, pageSize: 50, total: 0, totalPages: 0, hasPrevious: false, hasNext: false },
+      issues: { page: 1, pageSize: 50, total: 0, totalPages: 0, hasPrevious: false, hasNext: false },
+      skus: { page: 1, pageSize: 50, total: 0, totalPages: 0, hasPrevious: false, hasNext: false }
+    };
+    vi.mocked(useApiData).mockReturnValue({ data: empty, loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
+    renderPage();
+
+    expect(screen.getByText("0 / 50，未完成")).toBeInTheDocument();
+    expect(screen.getByText("暂无搜索位置")).toBeInTheDocument();
+    expect(screen.getByText("暂无 SKU")).toBeInTheDocument();
+    expect(screen.getByText("暂无问题")).toBeInTheDocument();
+  });
+});

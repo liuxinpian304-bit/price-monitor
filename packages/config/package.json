@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     "./money": "./src/money.ts",
+    "./public-price": "./src/public-price.ts",
     "./schedule": "./src/schedule.ts"
   }
 }
