@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import ExcelJS from "exceljs";
 
 import {
@@ -10,7 +12,8 @@ import {
 import {
   RunAlertNotifier,
   type ClaimedRunAlertBatch,
-  type RunAlertNotificationRepository
+  type RunAlertNotificationRepository,
+  type StoredRunAlertNotificationBatch
 } from "../../../apps/api/src/alerts/run-alert-notifier.ts";
 import type { WecomMarkdownSender } from "../../../apps/api/src/alerts/wecom/wecom.client.ts";
 import {
@@ -36,6 +39,10 @@ import { ManualImportProvider } from "../../../apps/api/src/collection/providers
 import { MatcherService } from "../../../apps/api/src/matching/matcher.service.ts";
 import { bundleSignature, type BundleComparableItem } from "../../../apps/api/src/pricing/bundle-signature.ts";
 import { PriceEngineService } from "../../../apps/api/src/pricing/price-engine.service.ts";
+import {
+  createDesktopReportHarness,
+  type DesktopReportHarnessOptions
+} from "./desktop-report-harness.ts";
 
 const MODEL_HEADERS = [
   "监控编号", "是否启用", "品牌", "标准型号", "类目", "搜索关键词", "型号版本", "必须包含词",
@@ -91,8 +98,12 @@ class InMemoryAlertRepository implements AlertRepository {
 
 class InMemoryNotificationRepository implements RunAlertNotificationRepository {
   private readonly alertRepository: InMemoryAlertRepository;
-  private readonly summaries = new Map<string, RunAlertSummary>();
-  private readonly claimedRunIds = new Set<string>();
+  private readonly batches = new Map<string, {
+    batchId: string;
+    state: StoredRunAlertNotificationBatch["state"];
+    summary: RunAlertSummary;
+    attemptToken: string | null;
+  }>();
   private nextBatch = 1;
 
   constructor(alertRepository: InMemoryAlertRepository) {
@@ -101,26 +112,42 @@ class InMemoryNotificationRepository implements RunAlertNotificationRepository {
 
   ensureBatch(summary: RunAlertSummary): void {
     if (summary.alerts.length === 0 && summary.systemIssue === null) return;
-    if (!this.summaries.has(summary.runId)) {
-      this.summaries.set(summary.runId, structuredClone(summary));
-    }
+    if (this.batches.has(summary.runId)) return;
+    this.batches.set(summary.runId, {
+      batchId: `acceptance-batch-${this.nextBatch++}`,
+      state: "PENDING",
+      summary: structuredClone(summary),
+      attemptToken: null
+    });
+  }
+
+  async getBatch(runId: string): Promise<StoredRunAlertNotificationBatch | null> {
+    const batch = this.batches.get(runId);
+    return batch ? {
+      batchId: batch.batchId,
+      runId,
+      state: batch.state,
+      summary: structuredClone(batch.summary)
+    } : null;
   }
 
   async claimBatch(runId: string, _attemptedAt: Date): Promise<ClaimedRunAlertBatch | null> {
-    const summary = this.summaries.get(runId);
-    if (!summary || this.claimedRunIds.has(runId)) return null;
-    this.claimedRunIds.add(runId);
-    const sequence = this.nextBatch;
-    this.nextBatch += 1;
+    const batch = this.batches.get(runId);
+    if (!batch || batch.state !== "PENDING") return null;
+    batch.state = "SENDING";
+    batch.attemptToken = `acceptance-attempt-${runId}`;
     return {
-      batchId: `acceptance-batch-${sequence}`,
-      attemptToken: `acceptance-attempt-${sequence}`,
-      summary: structuredClone(summary),
-      alertIds: summary.alerts.map((alert) => alert.alertId)
+      batchId: batch.batchId,
+      attemptToken: batch.attemptToken,
+      summary: structuredClone(batch.summary),
+      alertIds: batch.summary.alerts.map((alert) => alert.alertId)
     };
   }
 
   async markBatchNotified(batch: ClaimedRunAlertBatch, notifiedAt: Date) {
+    const stored = this.requireClaim(batch);
+    stored.state = "NOTIFIED";
+    stored.attemptToken = null;
     await this.alertRepository.markBatchNotified(batch.alertIds, notifiedAt);
   }
 
@@ -129,7 +156,31 @@ class InMemoryNotificationRepository implements RunAlertNotificationRepository {
     message: "WECOM_NOT_CONFIGURED" | "WECOM_DELIVERY_FAILED",
     _failedAt: Date
   ) {
+    const stored = this.requireClaim(batch);
+    stored.state = "PENDING";
+    stored.attemptToken = null;
     await this.alertRepository.recordBatchNotificationFailure(batch.alertIds, message);
+  }
+
+  async recordBatchNotificationAmbiguous(batch: ClaimedRunAlertBatch) {
+    const stored = this.requireClaim(batch);
+    stored.state = "AMBIGUOUS";
+    stored.attemptToken = null;
+  }
+
+  async listRetryableSummaries(_attemptedAt: Date, limit: number): Promise<RunAlertSummary[]> {
+    return [...this.batches.values()]
+      .filter((batch) => batch.state === "PENDING")
+      .slice(0, limit)
+      .map((batch) => structuredClone(batch.summary));
+  }
+
+  private requireClaim(batch: ClaimedRunAlertBatch) {
+    const stored = [...this.batches.values()].find((candidate) => candidate.batchId === batch.batchId);
+    if (!stored || stored.state !== "SENDING" || stored.attemptToken !== batch.attemptToken) {
+      throw new Error("Acceptance notification claim is invalid");
+    }
+    return stored;
   }
 }
 
@@ -151,6 +202,16 @@ class AvailableLock implements CollectionLock {
 
 function selectedSkuText(input: CollectedOfferInput): string {
   return input.offer.skuOptions.find((sku) => sku.skuId === input.offer.selectedSkuId)?.label ?? input.offer.title;
+}
+
+function legacyCombinationSignature(model: ValidatedModelImport): string {
+  return `sku-combination-v1:${createHash("sha256")
+    .update(`legacy:${model.monitorCode}`)
+    .digest("hex")}`;
+}
+
+function legacyOwnSnapshotId(model: ValidatedModelImport, ownPriceFen: number): string {
+  return `legacy-own:${model.monitorCode}:${ownPriceFen}`;
 }
 
 function importedBundleItems(catalog: ValidatedCatalogImport, code: string): BundleComparableItem[] {
@@ -248,9 +309,12 @@ class PipelineCollectionRepository implements CollectionRepository {
 
   async saveOffer(input: CollectedOfferInput) {
     this.capturedAt = input.offer.capturedAt;
+    const combinationSignature = legacyCombinationSignature(this.importedModel);
+    const ownSnapshotId = legacyOwnSnapshotId(this.importedModel, this.ownPriceFen);
     const ownOffer: AlertOffer = {
       monitoredModelId: this.collectionModel.id,
-      snapshotId: `${input.runId}-own`,
+      snapshotId: ownSnapshotId,
+      combinationSignature,
       platformItemId: `own-${this.importedModel.monitorCode}`,
       skuId: `own-sku-${this.importedModel.monitorCode}`,
       brand: this.importedModel.brand,
@@ -268,6 +332,7 @@ class PipelineCollectionRepository implements CollectionRepository {
     const competitorOffer: AlertOffer = {
       monitoredModelId: this.collectionModel.id,
       snapshotId: `${input.runId}-competitor`,
+      combinationSignature,
       platformItemId: input.offer.platformItemId,
       skuId: input.offer.selectedSkuId,
       brand: this.importedModel.brand,
@@ -293,6 +358,11 @@ class PipelineCollectionRepository implements CollectionRepository {
       alertId: alert.id,
       severity: alert.severity,
       snapshotId: competitorOffer.snapshotId,
+      ownSnapshotId: ownOffer.snapshotId,
+      ownSkuText: ownOffer.skuText,
+      ownPayableFen: ownOffer.payableFen!,
+      combinationSignature,
+      combinationLabel: `legacy ${this.importedModel.monitorCode}`,
       rank: 1,
       shopName: competitorOffer.shopName,
       title: input.offer.title,
@@ -324,12 +394,15 @@ class PipelineCollectionRepository implements CollectionRepository {
       owner: this.importedModel.owner,
       completedAt: this.capturedAt,
       checkedItemCount: summary.searched,
+      positionCount: summary.searched,
+      shopCount: summary.fetched > 0 ? 1 : 0,
       searchLimit: 50,
       skuCount: summary.fetched,
       issueCount: summary.failed,
+      reviewCount: 0,
       reportUrl: `https://monitor.example.test/collection-runs/${runId}`,
       baseline: {
-        snapshotId: `${runId}-own`,
+        snapshotId: legacyOwnSnapshotId(this.importedModel, this.ownPriceFen),
         skuId: `own-sku-${this.importedModel.monitorCode}`,
         skuText: this.importedModel.ownSkuText,
         activityPriceFen: this.ownPriceFen,
@@ -337,7 +410,8 @@ class PipelineCollectionRepository implements CollectionRepository {
         payableFen: this.ownPriceFen
       },
       systemIssue: null,
-      alerts: [...this.runAlerts]
+      alerts: [...this.runAlerts],
+      missingOwnGroups: []
     };
     this.notificationRepository.ensureBatch(alertSummary);
     await this.runAlertNotifier.send(alertSummary);
@@ -450,7 +524,8 @@ async function catalogWorkbook(): Promise<Buffer> {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-export async function createMonitorHarness() {
+export async function createMonitorHarness(options: DesktopReportHarnessOptions = {}) {
+  const desktopHarness = createDesktopReportHarness(options);
   const catalogWriter = new RecordingCatalogWriter();
   const importResult = await new CatalogImportService(catalogWriter).importWorkbook(
     await catalogWorkbook(),
@@ -467,6 +542,7 @@ export async function createMonitorHarness() {
   const runAlertNotifier = new RunAlertNotifier(
     notificationRepository,
     async () => sender,
+    async () => true,
     () => new Date("2026-08-19T01:31:00.000Z")
   );
   const alertService = new AlertService(alertRepository);
@@ -476,6 +552,7 @@ export async function createMonitorHarness() {
     importResult: importResult as CatalogImportResult,
     alerts: alertRepository.alerts,
     notifications: sender.messages,
+    collectDesktopCombinationRun: desktopHarness.collectDesktopCombinationRun,
     async collect(options: CollectOptions) {
       runNumber += 1;
       const importedModel = catalog.models.find((model) => model.monitorCode === options.monitorCode);
