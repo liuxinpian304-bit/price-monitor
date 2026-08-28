@@ -29,6 +29,7 @@ function runFixture(overrides: Partial<CollectionReportRawRun> = {}): Collection
     searchLimit: 50,
     searchTerminationReason: null,
     ownBaselineSnapshotId: "own-snapshot",
+    claimedOwnListingIds: ["own-listing-7506"],
     searchedCount: 47,
     fetchedCount: 47,
     matchedCount: 2,
@@ -107,6 +108,21 @@ function snapshotFixture(
     comparable: true,
     matchConfidenceBps: 10_000,
     matchReasons: ["型号一致"],
+    attributes: { 型号: "MDR-7506" },
+    components: [{
+      role: "CORE",
+      accessoryType: "HEADPHONES",
+      brand: "Sony",
+      modelOrName: "MDR-7506",
+      quantity: 1
+    }],
+    promotions: [],
+    gifts: [],
+    combinationSignature: "signature-standard",
+    combinationLabel: "MDR-7506 标准版",
+    combinationState: "MATCHED",
+    combinationReasons: ["EXACT_SIGNATURE"],
+    comparisonOwnSnapshotId: "own-sku",
     evidenceKey: null,
     capturedAt,
     ...overrides
@@ -125,6 +141,8 @@ function fixtures() {
       payableFen: 69_800,
       listPriceFen: 69_800,
       activityPriceFen: 69_800,
+      combinationState: "OWN",
+      comparisonOwnSnapshotId: null,
       evidenceKey: `sha256:${"a".repeat(64)}`
     }),
     snapshotFixture("lower-sku", { evidenceKey: `sha256:${"b".repeat(64)}` }),
@@ -136,7 +154,12 @@ function fixtures() {
       matchDecision: "MANUAL",
       comparable: false,
       matchConfidenceBps: 5_000,
-      matchReasons: ["版本不确定"]
+      matchReasons: ["版本不确定"],
+      combinationSignature: null,
+      combinationLabel: null,
+      combinationState: "REVIEW",
+      combinationReasons: ["SKU_COMPONENTS_INCOMPLETE"],
+      comparisonOwnSnapshotId: null
     }),
     snapshotFixture("not-lower-sku", { payableFen: 70_000, listPriceFen: 70_000, activityPriceFen: 70_000 }),
     snapshotFixture("excluded-sku", {
@@ -147,7 +170,12 @@ function fixtures() {
       matchDecision: "REJECTED",
       comparable: false,
       matchConfidenceBps: 0,
-      matchReasons: ["排除二手"]
+      matchReasons: ["排除二手"],
+      combinationSignature: null,
+      combinationLabel: null,
+      combinationState: "EXCLUDED",
+      combinationReasons: ["PRODUCT_EXCLUDED"],
+      comparisonOwnSnapshotId: null
     })
   ];
   const issues: CollectionReportRawIssue[] = [{
@@ -226,25 +254,42 @@ class FixtureRepository implements CollectionReportDataRepository {
   async listSnapshots(
     run: CollectionReportRawRun,
     filters: CollectionRunReportFilters,
-    baseline: CollectionReportRawSnapshot | null,
     request: CollectionReportPageRequest
   ) {
     this.calls.push({ method: "listSnapshots", request, filters });
+    const byId = new Map(this.snapshots.map((snapshot) => [snapshot.id, snapshot]));
     const filtered = this.snapshots.filter((snapshot) => {
       const source = snapshot.ownListingId ? "OWN" : "COMPETITOR";
       const category = matchCategory(run, snapshot);
+      const combinationState = snapshot.combinationState ?? "REVIEW";
+      const selectedOwn = snapshot.comparisonOwnSnapshotId
+        ? byId.get(snapshot.comparisonOwnSnapshotId) ?? null
+        : null;
       const comparison = snapshot.ownListingId
         ? "OWN"
-        : !baseline || category !== "EXACT" || snapshot.stockState !== "IN_STOCK"
-          || snapshot.priceConfidence !== "CONFIRMED" || snapshot.payableFen === null
+        : combinationState !== "MATCHED" || !selectedOwn
+          || selectedOwn.payableFen === null || snapshot.payableFen === null
           ? "UNDECIDED"
-          : snapshot.payableFen < baseline.payableFen! ? "LOWER" : "NOT_LOWER";
+          : snapshot.payableFen < selectedOwn.payableFen ? "LOWER" : "NOT_LOWER";
       return (!filters.source || filters.source === source)
         && (!filters.match || filters.match === category)
         && (!filters.price || filters.price === comparison)
-        && (!filters.confidence || filters.confidence === snapshot.priceConfidence);
+        && (!filters.confidence || filters.confidence === snapshot.priceConfidence)
+        && (!filters.combinationState || filters.combinationState === combinationState);
     });
     return page(filtered, request);
+  }
+
+  async loadBusinessFacts(_runId: string) {
+    this.calls.push({ method: "loadBusinessFacts" });
+    return {
+      claimedOwnListingIds: [...(this.runs[0]?.claimedOwnListingIds ?? [])],
+      positions: this.positions,
+      snapshots: this.snapshots.map((snapshot) => ({
+        ...snapshot,
+        matchCategory: matchCategory(this.runs[0]!, snapshot)
+      }))
+    };
   }
 
   async listRanks(_runId: string, platformItemIds: string[]) {
@@ -272,6 +317,107 @@ class FixtureRepository implements CollectionReportDataRepository {
 function repository() {
   const data = fixtures();
   return new FixtureRepository([runFixture()], data.positions, data.snapshots, data.issues);
+}
+
+function businessRepository() {
+  const run = runFixture({
+    claimedOwnListingIds: ["listing-own-low", "listing-own-alt"],
+    positionCount: 4,
+    uniqueItemCount: 3,
+    snapshotCount: 8
+  });
+  const positions: CollectionReportRawPosition[] = [
+    { ...positionFixture(1, "item-a"), shopName: "Alpha Shop" },
+    { ...positionFixture(4, "item-a"), shopName: " alpha   shop " },
+    { ...positionFixture(2, "item-b"), shopName: "Beta Shop" },
+    { ...positionFixture(3, "item-c"), shopName: "ALPHA SHOP" }
+  ];
+  const snapshots = [
+    snapshotFixture("own-low", {
+      ownListingId: "listing-own-low",
+      searchCandidateId: null,
+      platformItemId: "own-low-item",
+      shopName: "Own Shop",
+      ownListingSkuText: "标准版",
+      url: "https://example.invalid/own/low",
+      payableFen: 69_800,
+      listPriceFen: 69_800,
+      activityPriceFen: 69_800,
+      combinationState: "OWN",
+      comparisonOwnSnapshotId: null
+    }),
+    snapshotFixture("own-alt", {
+      ownListingId: "listing-own-alt",
+      searchCandidateId: null,
+      platformItemId: "own-alt-item",
+      shopName: "Own Shop",
+      ownListingSkuText: "标准版",
+      url: "https://example.invalid/own/alt",
+      payableFen: 70_000,
+      listPriceFen: 70_000,
+      activityPriceFen: 70_000,
+      combinationState: "OWN",
+      comparisonOwnSnapshotId: null
+    }),
+    snapshotFixture("matched-low", {
+      platformItemId: "item-a",
+      shopName: "Alpha Shop",
+      payableFen: 69_799,
+      comparisonOwnSnapshotId: "own-low"
+    }),
+    snapshotFixture("review", {
+      platformItemId: "item-a",
+      shopName: "Alpha Shop",
+      matchDecision: "MANUAL",
+      comparable: false,
+      combinationSignature: null,
+      combinationLabel: null,
+      combinationState: "REVIEW",
+      combinationReasons: ["SKU_COMPONENTS_INCOMPLETE"],
+      comparisonOwnSnapshotId: null
+    }),
+    snapshotFixture("matched-not-lower", {
+      platformItemId: "item-b",
+      shopName: "Beta Shop",
+      payableFen: 70_100,
+      listPriceFen: 70_100,
+      activityPriceFen: 70_100,
+      comparisonOwnSnapshotId: "own-low"
+    }),
+    snapshotFixture("excluded", {
+      platformItemId: "item-b",
+      shopName: "Beta Shop",
+      matchDecision: "REJECTED",
+      comparable: false,
+      combinationSignature: null,
+      combinationLabel: null,
+      combinationState: "EXCLUDED",
+      combinationReasons: ["PRODUCT_EXCLUDED"],
+      comparisonOwnSnapshotId: null
+    }),
+    snapshotFixture("missing-one", {
+      platformItemId: "item-c",
+      shopName: "ALPHA SHOP",
+      combinationSignature: "signature-bundle",
+      combinationLabel: "MDR-7506 + stand",
+      combinationState: "MISSING_OWN",
+      combinationReasons: ["OWN_COMBINATION_ABSENT"],
+      comparisonOwnSnapshotId: null,
+      payableFen: 88_000
+    }),
+    snapshotFixture("missing-two", {
+      platformItemId: "item-c",
+      shopName: "ALPHA SHOP",
+      skuText: "标准版 + 支架（银色）",
+      combinationSignature: "signature-bundle",
+      combinationLabel: "MDR-7506 + stand",
+      combinationState: "MISSING_OWN",
+      combinationReasons: ["OWN_COMBINATION_ABSENT"],
+      comparisonOwnSnapshotId: null,
+      payableFen: 89_000
+    })
+  ];
+  return new FixtureRepository([run], positions, snapshots, []);
 }
 
 test("lists collection runs with bounded pagination and aggregate completion facts", async () => {
@@ -421,6 +567,63 @@ test("supports exact, review, excluded and not-lower database filter pages", asy
   assert.deepEqual((await service.getRun("run-7506", { match: "REVIEW" }))?.skus.map((row) => row.id), ["review-sku"]);
   assert.deepEqual((await service.getRun("run-7506", { match: "EXCLUDED" }))?.skus.map((row) => row.id), ["excluded-sku"]);
   assert.deepEqual((await service.getRun("run-7506", { price: "NOT_LOWER" }))?.skus.map((row) => row.id), ["not-lower-sku"]);
+});
+
+test("projects complete persisted business facts independently of the paged audit rows", async () => {
+  const repo = businessRepository();
+  const detail = await new CollectionReportQueryService(repo).getRun(
+    "run-7506",
+    { source: "COMPETITOR", combinationState: "MATCHED" },
+    { skuPage: 1, skuPageSize: 1 }
+  );
+
+  assert.ok(detail);
+  assert.equal(detail.skus.length, 1);
+  assert.deepEqual(detail.businessSummary, {
+    distinctShopCount: 2,
+    distinctItemCount: 3,
+    skuCount: 6,
+    matchedSkuCount: 2,
+    confirmedLowCount: 1,
+    missingCombinationCount: 1,
+    reviewCount: 1,
+    excludedCount: 1,
+    ownConfiguredListingCount: 2,
+    ownCollectedListingCount: 2,
+    ownCatalogComplete: true
+  });
+  assert.equal(detail.priceBoard.shops.flatMap((shop) => shop.items).flatMap((item) => item.skus).length, 6);
+  assert.equal(detail.confirmedLows[0]?.selectedOwnSnapshot.id, "own-low");
+  assert.deepEqual(detail.confirmedLows[0]?.alternativeOwnSnapshots.map((row) => row.id), ["own-alt"]);
+  assert.equal(detail.missingOwnGroups.length, 1);
+  assert.equal(detail.reviewRows.length, 1);
+  assert.ok(repo.calls.some((call) => call.method === "loadBusinessFacts"));
+});
+
+test("opens historical runs as legacy review without deriving lows or missing groups", async () => {
+  const repo = businessRepository();
+  for (const snapshot of repo.snapshots) {
+    snapshot.combinationSignature = null;
+    snapshot.combinationLabel = null;
+    snapshot.combinationState = null;
+    snapshot.combinationReasons = [];
+    snapshot.comparisonOwnSnapshotId = null;
+  }
+
+  const detail = await new CollectionReportQueryService(repo).getRun(
+    "run-7506",
+    {},
+    { skuPageSize: 100 }
+  );
+
+  assert.ok(detail);
+  assert.ok(detail.skus.every((row) => row.combination.state === "REVIEW"));
+  assert.ok(detail.skus.every((row) =>
+    row.combination.reasons.includes("LEGACY_COMBINATION_NOT_EVALUATED")));
+  assert.equal(detail.businessSummary.reviewCount, 6);
+  assert.equal(detail.reviewRows.length, 6);
+  assert.equal(detail.confirmedLows.length, 0);
+  assert.equal(detail.missingOwnGroups.length, 0);
 });
 
 test("Prisma list summaries select aggregates and clamp parent cardinality without child includes", async () => {

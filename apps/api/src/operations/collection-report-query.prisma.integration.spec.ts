@@ -53,6 +53,7 @@ test("bounds large report pages and keeps database-side filters and totals accur
       providerKey: "task14-desktop-fixture",
       status: "PARTIAL_FAILED" as const,
       scheduledFor: new Date(scheduledBase + index * 1_000),
+      claimedOwnListingIds: index === 0 || index === 204 ? [ownListingId] : [],
       searchLimit: 200,
       discoveredCount: 150,
       fetchedCount: 150,
@@ -109,6 +110,20 @@ test("bounds large report pages and keeps database-side filters and totals accur
       comparable: true,
       matchConfidenceBps: 10_000,
       matchReasons: ["fixture exact own"],
+      combinationSignature: "signature-standard",
+      combinationLabel: "MDR-7506 标准版",
+      combinationState: "OWN",
+      combinationReasons: { ruleVersion: "sku-combination-v1", codes: [] },
+      rawEvidence: {
+        attributes: { 型号: "MDR-7506", 版本: "标准版" },
+        components: [{
+          role: "CORE",
+          accessoryType: "HEADPHONES",
+          brand: "Sony",
+          modelOrName: "MDR-7506",
+          quantity: 1
+        }]
+      },
       ingestionKey: `${prefix}-ingestion-own`,
       capturedAt
     }
@@ -134,6 +149,35 @@ test("bounds large report pages and keeps database-side filters and totals accur
         comparable: exact,
         matchConfidenceBps: exact ? 10_000 : review ? 5_000 : 0,
         matchReasons: [exact ? "fixture exact" : review ? "fixture review" : "fixture excluded"],
+        combinationSignature: exact ? "signature-standard" : null,
+        combinationLabel: exact ? "MDR-7506 标准版" : null,
+        combinationState: exact ? "MATCHED" as const : review ? "REVIEW" as const : "EXCLUDED" as const,
+        combinationReasons: {
+          ruleVersion: "sku-combination-v1",
+          codes: [exact ? "EXACT_SIGNATURE" : review ? "SKU_COMPONENTS_INCOMPLETE" : "PRODUCT_EXCLUDED"]
+        },
+        comparisonOwnSnapshotId: exact ? `${prefix}-snapshot-own` : null,
+        rawEvidence: {
+          attributes: { 型号: "MDR-7506", 版本: exact ? "标准版" : review ? "未知" : "二手" },
+          components: exact ? [{
+            role: "CORE",
+            accessoryType: "HEADPHONES",
+            brand: "Sony",
+            modelOrName: "MDR-7506",
+            quantity: 1
+          }] : []
+        },
+        promotions: index === 0 ? [{
+          kind: "COUPON",
+          label: "公开券",
+          amountFen: 1_000,
+          thresholdFen: 60_000,
+          audience: "PUBLIC",
+          stackGroup: "shop-coupon",
+          includedInActivityPrice: false,
+          activityPriceInclusion: "EXCLUDED"
+        }] : [],
+        gifts: index === 0 ? [{ name: "音频线", quantity: 1 }] : [],
         ingestionKey: `${prefix}-ingestion-${index}`,
         capturedAt
       };
@@ -159,6 +203,10 @@ test("bounds large report pages and keeps database-side filters and totals accur
         comparable: true,
         matchConfidenceBps: 10_000,
         matchReasons: ["fixture zero own"],
+        combinationSignature: "signature-zero",
+        combinationLabel: "Zero 标准版",
+        combinationState: "OWN" as const,
+        combinationReasons: { ruleVersion: "sku-combination-v1", codes: [] },
         ingestionKey: `${prefix}-zero-own-ingestion`,
         capturedAt
       },
@@ -179,14 +227,15 @@ test("bounds large report pages and keeps database-side filters and totals accur
         comparable: true,
         matchConfidenceBps: 10_000,
         matchReasons: ["fixture zero competitor"],
+        combinationSignature: "signature-zero",
+        combinationLabel: "Zero 标准版",
+        combinationState: "MATCHED" as const,
+        combinationReasons: { ruleVersion: "sku-combination-v1", codes: ["EXACT_SIGNATURE"] },
+        comparisonOwnSnapshotId: `${prefix}-zero-own`,
         ingestionKey: `${prefix}-zero-competitor-ingestion`,
         capturedAt
       }
     ]
-  });
-  await prisma.collectionRun.update({
-    where: { id: mainRunId },
-    data: { ownBaselineSnapshotId: `${prefix}-snapshot-own` }
   });
   await prisma.collectionRun.update({
     where: { id: zeroBaselineRunId },
@@ -207,7 +256,13 @@ test("bounds large report pages and keeps database-side filters and totals accur
   const list = await service.listRuns({ page: 2, pageSize: 100 });
   const detail = await service.getRun(
     mainRunId,
-    { source: "COMPETITOR", match: "EXACT", price: "LOWER", confidence: "CONFIRMED" },
+    {
+      source: "COMPETITOR",
+      match: "EXACT",
+      price: "LOWER",
+      confidence: "CONFIRMED",
+      combinationState: "MATCHED"
+    },
     {
       positionPage: 2,
       positionPageSize: 40,
@@ -232,9 +287,38 @@ test("bounds large report pages and keeps database-side filters and totals accur
   assert.equal(detail.pagination.skus.total, 60);
   assert.equal(detail.totalSkuCount, 221);
   assert.equal(detail.completion.label, "151 / 200，未完成");
+  assert.deepEqual(detail.businessSummary, {
+    distinctShopCount: 1,
+    distinctItemCount: 150,
+    skuCount: 220,
+    matchedSkuCount: 120,
+    confirmedLowCount: 60,
+    missingCombinationCount: 0,
+    reviewCount: 50,
+    excludedCount: 50,
+    ownConfiguredListingCount: 1,
+    ownCollectedListingCount: 1,
+    ownCatalogComplete: true
+  });
+  assert.equal(detail.priceBoard.shops[0]?.itemCount, 150);
+  assert.equal(detail.priceBoard.shops[0]?.skuCount, 220);
+  assert.equal(detail.confirmedLows.length, 60);
+  assert.equal(detail.reviewRows.length, 50);
+  const projectedFirst = detail.priceBoard.shops[0]?.items
+    .find((item) => item.platformItemId === "item-1")?.skus
+    .find((sku) => sku.id === `${prefix}-snapshot-000`);
+  assert.deepEqual(projectedFirst?.ranks, [1, 151]);
+  assert.equal(projectedFirst?.url, "https://example.invalid/items/1");
+  assert.equal(projectedFirst?.prices.payableFen, 69_000);
+  assert.equal(projectedFirst?.selectedOwnSnapshot?.prices.payableFen, 70_000);
+  assert.equal(projectedFirst?.differenceFen, 1_000);
+  assert.equal(projectedFirst?.components?.[0]?.role, "CORE");
+  assert.equal(projectedFirst?.promotions[0]?.amountFen, 1_000);
+  assert.deepEqual(projectedFirst?.gifts, [{ name: "音频线", quantity: 1 }]);
   assert.ok(detail.skus.every((sku) => sku.source === "COMPETITOR"
     && sku.match.category === "EXACT"
     && sku.comparison.state === "LOWER"
+    && sku.combination.state === "MATCHED"
     && sku.confidence === "CONFIRMED"));
 
   const duplicateRankDetail = await service.getRun(
@@ -245,6 +329,10 @@ test("bounds large report pages and keeps database-side filters and totals accur
   assert.ok(duplicateRankDetail);
   assert.deepEqual(
     duplicateRankDetail.skus.find((sku) => sku.platformItemId === "item-1")?.ranks,
+    [1, 151]
+  );
+  assert.deepEqual(
+    duplicateRankDetail.priceBoard.shops[0]?.items.find((item) => item.platformItemId === "item-1")?.ranks,
     [1, 151]
   );
 
