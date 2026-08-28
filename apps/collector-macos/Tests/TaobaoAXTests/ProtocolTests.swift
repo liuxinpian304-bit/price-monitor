@@ -45,6 +45,31 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(HelperResponse.self, from: encoder.encode(response)), response)
     }
 
+    func testHelperErrorEncodesSanitizedTreeLimitDetails() throws {
+        let error = HelperError(
+            code: "TREE_LIMIT_REACHED",
+            message: "Accessibility tree limit reached.",
+            details: .object([
+                "reason": .string("nodeCount"),
+                "scope": .string("focusedWindow"),
+                "visitedNodeCount": .number(4_001),
+            ])
+        )
+
+        let decoded = try decoder.decode(HelperError.self, from: encoder.encode(error))
+
+        XCTAssertEqual(decoded, error)
+    }
+
+    func testHelperErrorWithoutDetailsRoundTripsWithNilDetails() throws {
+        let error = HelperError(code: "INVALID_REQUEST", message: "Invalid request.")
+
+        let decoded = try decoder.decode(HelperError.self, from: encoder.encode(error))
+
+        XCTAssertEqual(decoded, error)
+        XCTAssertNil(decoded.details)
+    }
+
     func testUnknownCommandReturnsUnsupportedCommandWithPreservedID() {
         let response = makeProtocol().response(for: """
         {"id":"unknown-7","command":"archive","bundleId":"com.taobao.pcdesktop"}

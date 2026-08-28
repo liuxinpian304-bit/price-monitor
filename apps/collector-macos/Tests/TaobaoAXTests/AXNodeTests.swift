@@ -40,9 +40,14 @@ final class AXNodeTests: XCTestCase {
             children: [first, second]
         )
 
-        let serializer = AXTreeSerializer(maxNodeCount: 10, maxDepth: 4)
-        let firstResult = try serializer.serialize(root: root)
-        let secondResult = try serializer.serialize(root: root)
+        let serializer = AXTreeSerializer(limits: AXTreeLimits(
+            maxNodeCount: 10,
+            maxDepth: 4,
+            maxDurationNanoseconds: 6_000_000_000,
+            maxEncodedBytes: 8 * 1_024 * 1_024
+        ))
+        let firstResult = try serializer.serialize(root: root, scope: .focusedWindow).node
+        let secondResult = try serializer.serialize(root: root, scope: .focusedWindow).node
 
         XCTAssertEqual(firstResult, secondResult)
         XCTAssertEqual(firstResult.children.map(\.title), ["First", "Second"])
@@ -64,7 +69,7 @@ final class AXNodeTests: XCTestCase {
             AXAttribute.url: "https://example.invalid/?webhook=private",
         ])
 
-        let node = try AXTreeSerializer().serialize(root: root)
+        let node = try AXTreeSerializer().serialize(root: root, scope: .focusedWindow).node
         let encoded = String(decoding: try JSONEncoder().encode(node), as: UTF8.self).lowercased()
 
         for sensitiveText in ["token", "cookie", "authorization", "webhook", "private"] {
@@ -79,7 +84,10 @@ final class AXNodeTests: XCTestCase {
     func testUnsupportedAXValueIsRepresentedAsNull() throws {
         let root = TestAXElement(attributes: [AXAttribute.value: Date(timeIntervalSince1970: 0)])
 
-        XCTAssertEqual(try AXTreeSerializer().serialize(root: root).value, .null)
+        XCTAssertEqual(
+            try AXTreeSerializer().serialize(root: root, scope: .focusedWindow).node.value,
+            .null
+        )
     }
 
     func testCycleIsSkippedWithoutChangingStableSiblingPaths() throws {
@@ -89,7 +97,7 @@ final class AXNodeTests: XCTestCase {
         root.children = [cyclicChild, sibling]
         cyclicChild.children = [root]
 
-        let node = try AXTreeSerializer().serialize(root: root)
+        let node = try AXTreeSerializer().serialize(root: root, scope: .focusedWindow).node
 
         XCTAssertEqual(node.children.count, 2)
         XCTAssertEqual(node.children[0].path, [0])
@@ -99,16 +107,100 @@ final class AXNodeTests: XCTestCase {
 
     func testNodeLimitFailsInsteadOfReturningAPartialTree() {
         let root = TestAXElement(children: [TestAXElement(), TestAXElement()])
+        let serializer = AXTreeSerializer(limits: AXTreeLimits(
+            maxNodeCount: 2,
+            maxDepth: 5,
+            maxDurationNanoseconds: 6_000_000_000,
+            maxEncodedBytes: 8 * 1_024 * 1_024
+        ))
 
-        assertTreeLimit(try AXTreeSerializer(maxNodeCount: 2, maxDepth: 5).serialize(root: root))
+        assertTreeLimit(
+            try serializer.serialize(root: root, scope: .focusedWindow),
+            reason: "nodeCount"
+        )
     }
 
     func testDepthLimitFailsInsteadOfReturningAPartialTree() {
         let grandchild = TestAXElement(attributes: [AXAttribute.title: "Too deep"])
         let child = TestAXElement(children: [grandchild])
         let root = TestAXElement(children: [child])
+        let serializer = AXTreeSerializer(limits: AXTreeLimits(
+            maxNodeCount: 10,
+            maxDepth: 1,
+            maxDurationNanoseconds: 6_000_000_000,
+            maxEncodedBytes: 8 * 1_024 * 1_024
+        ))
 
-        assertTreeLimit(try AXTreeSerializer(maxNodeCount: 10, maxDepth: 1).serialize(root: root))
+        assertTreeLimit(
+            try serializer.serialize(root: root, scope: .mainWindow),
+            reason: "depth"
+        )
+    }
+
+    func testDurationLimitFailsWithoutReturningAPartialTree() {
+        var clockReads = 0
+        let serializer = AXTreeSerializer(
+            limits: AXTreeLimits(
+                maxNodeCount: 10,
+                maxDepth: 5,
+                maxDurationNanoseconds: 6_000_000_000,
+                maxEncodedBytes: 8 * 1_024 * 1_024
+            ),
+            nowNanoseconds: {
+                defer { clockReads += 1 }
+                return clockReads < 2 ? 0 : 7_000_000_000
+            }
+        )
+
+        assertTreeLimit(
+            try serializer.serialize(
+                root: TestAXElement(children: [TestAXElement()]),
+                scope: .focusedWindow
+            ),
+            reason: "duration"
+        )
+    }
+
+    func testEncodedSizeLimitFailsWithoutReturningPayload() throws {
+        let serialization = AXTreeSerialization(
+            node: AXNode(
+                path: [],
+                role: "AXWindow",
+                subrole: nil,
+                identifier: nil,
+                title: String(repeating: "x", count: 500),
+                description: nil,
+                value: nil,
+                url: nil,
+                enabled: true,
+                selected: nil,
+                position: nil,
+                size: nil,
+                actions: [],
+                children: []
+            ),
+            visitedNodeCount: 1,
+            maximumDepth: 0,
+            elapsedMilliseconds: 1
+        )
+        let limits = AXTreeLimits(
+            maxNodeCount: 10,
+            maxDepth: 5,
+            maxDurationNanoseconds: 6_000_000_000,
+            maxEncodedBytes: 32
+        )
+
+        assertTreeLimit(
+            try AXSnapshotEncoder().encode(serialization, scope: .mainWindow, limits: limits),
+            reason: "encodedBytes"
+        )
+    }
+
+    func testStandardTreeLimitsUseTheRequiredDefaults() {
+        XCTAssertEqual(AXTreeLimits.standard.maxNodeCount, 4_000)
+        XCTAssertEqual(AXTreeLimits.standard.maxDepth, 28)
+        XCTAssertEqual(AXTreeLimits.standard.maxDurationNanoseconds, 6_000_000_000)
+        XCTAssertEqual(AXTreeLimits.standard.maxEncodedBytes, 8 * 1_024 * 1_024)
     }
 
     func testClipboardCaptureRestoresEveryItemAndTypeAfterSuccess() throws {
@@ -275,10 +367,18 @@ final class AXNodeTests: XCTestCase {
         )
     }
 
-    private func assertTreeLimit<T>(_ expression: @autoclosure () throws -> T) {
+    private func assertTreeLimit<T>(
+        _ expression: @autoclosure () throws -> T,
+        reason: String
+    ) {
         XCTAssertThrowsError(try expression()) { error in
-            XCTAssertEqual((error as? HelperError)?.code, "TREE_LIMIT_REACHED")
-            XCTAssertEqual((error as? HelperError)?.message, "Accessibility tree limit reached.")
+            let helperError = error as? HelperError
+            XCTAssertEqual(helperError?.code, "TREE_LIMIT_REACHED")
+            XCTAssertEqual(helperError?.message, "Accessibility tree limit reached.")
+            guard case .object(let details)? = helperError?.details else {
+                return XCTFail("Expected sanitized tree-limit details.")
+            }
+            XCTAssertEqual(details["reason"], .string(reason))
         }
     }
 }
