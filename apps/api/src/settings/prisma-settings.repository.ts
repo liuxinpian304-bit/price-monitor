@@ -62,7 +62,7 @@ export class PrismaSettingsRepository implements SettingsRepository {
   ): Promise<"APPROVED" | "ALREADY_APPROVED"> {
     return this.prisma.$transaction(async (transaction) => {
       await transaction.$queryRaw(Prisma.sql`
-        SELECT pg_advisory_xact_lock(hashtextextended(${input.setting.key}, 0))
+        SELECT pg_advisory_xact_lock(hashtextextended(${input.setting.key}, 0))::text
       `);
       const existing = await transaction.systemSetting.findUnique({
         where: { key: input.setting.key }
