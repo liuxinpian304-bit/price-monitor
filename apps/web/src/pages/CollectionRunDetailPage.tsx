@@ -20,6 +20,10 @@ import type {
 } from "../api/types.ts";
 import { PageToolbar } from "../components/PageToolbar.tsx";
 import { formatFen } from "../data/demo-data.ts";
+import { ConfirmedLowsSection } from "../features/collection-runs/ConfirmedLowsSection.tsx";
+import { MissingOwnSection } from "../features/collection-runs/MissingOwnSection.tsx";
+import { PriceBoardSection } from "../features/collection-runs/PriceBoardSection.tsx";
+import { RunBusinessSummary } from "../features/collection-runs/RunBusinessSummary.tsx";
 import { formatDateTime } from "../features/operations/table-tools.ts";
 
 function pauseGuidance(status: string): string | null {
@@ -193,6 +197,11 @@ export function CollectionRunDetailPage() {
       </Descriptions>
       {report.error ? <div className="run-error"><strong>{report.error.code}</strong>{report.error.message ? `：${report.error.message}` : ""}</div> : null}
     </section>
+
+    <RunBusinessSummary completion={report.completion} summary={report.businessSummary} />
+    <PriceBoardSection shops={report.priceBoard.shops} />
+    <ConfirmedLowsSection rows={report.confirmedLows} />
+    <MissingOwnSection groups={report.missingOwnGroups} />
 
     <section className="panel table-panel run-positions-panel">
       <div className="panel-heading"><h2>搜索位置</h2><span>已捕获 {report.completion.positionsCaptured} / {report.completion.requestedPositions}</span></div>
