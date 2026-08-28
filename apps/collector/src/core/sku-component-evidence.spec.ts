@@ -74,6 +74,74 @@ test("changes core quantity only for one unambiguous count token", () => {
 
   assert.equal(counted[0]?.quantity, 2);
   assert.equal(ambiguous[0]?.quantity, 1);
+  assert.equal(ambiguous.some((item) => item.role === "UNKNOWN"), true);
+});
+
+test("attributes package quantity to the identified paid accessory", () => {
+  const single = deriveSkuComponents({
+    brand: "RODE",
+    standardModel: "NT1S",
+    selectedLabels: { "套餐类型": "NT1S + AI-1声卡1个" },
+    explicitComponents: undefined
+  });
+  const pair = deriveSkuComponents({
+    brand: "RODE",
+    standardModel: "NT1S",
+    selectedLabels: { "套餐类型": "NT1S + AI-1声卡2个" },
+    explicitComponents: undefined
+  });
+
+  assert.equal(single.find((item) => item.modelOrName === "AI-1")?.quantity, 1);
+  assert.equal(pair.find((item) => item.modelOrName === "AI-1")?.quantity, 2);
+});
+
+test("marks a generic quantity dimension unknown when a bundle has multiple components", () => {
+  const result = deriveSkuComponents({
+    brand: "RODE",
+    standardModel: "NT1S",
+    selectedLabels: {
+      "套餐类型": "NT1S + AI-1声卡",
+      "数量": "2件"
+    },
+    explicitComponents: undefined
+  });
+
+  assert.equal(result.find((item) => item.role === "CORE")?.quantity, 1);
+  assert.equal(result.find((item) => item.modelOrName === "AI-1")?.quantity, 1);
+  assert.equal(result.some((item) => item.role === "UNKNOWN"), true);
+});
+
+test("marks malformed paid-accessory quantity evidence unknown", () => {
+  const result = deriveSkuComponents({
+    brand: "RODE",
+    standardModel: "NT1S",
+    selectedLabels: { "套餐类型": "NT1S + AI-1声卡2个或3个" },
+    explicitComponents: undefined
+  });
+
+  assert.equal(result.some((item) => item.role === "UNKNOWN"), true);
+});
+
+test("does not infer supported material attributes as components", () => {
+  const result = deriveSkuComponents({
+    brand: "RODE",
+    standardModel: "NT1S",
+    selectedLabels: {
+      "套餐类型": "单麦克风",
+      "版本": "国行",
+      "地区": "中国大陆",
+      "保修": "全国联保两年"
+    },
+    explicitComponents: undefined
+  });
+
+  assert.deepEqual(result, [{
+    role: "CORE",
+    accessoryType: "核心产品",
+    brand: "RODE",
+    modelOrName: "NT1S",
+    quantity: 1
+  }]);
 });
 
 test("rejects fractional and decimal quantity evidence", () => {
@@ -86,6 +154,7 @@ test("rejects fractional and decimal quantity evidence", () => {
     });
 
     assert.equal(result[0]?.quantity, 1, label);
+    assert.equal(result.some((item) => item.role === "UNKNOWN"), true, label);
   }
 });
 
@@ -99,6 +168,7 @@ test("rejects signed or otherwise ambiguous quantity evidence", () => {
     });
 
     assert.equal(result[0]?.quantity, 1, label);
+    assert.equal(result.some((item) => item.role === "UNKNOWN"), true, label);
   }
 });
 

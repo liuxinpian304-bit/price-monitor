@@ -573,6 +573,7 @@ test("transactionally ingests one concurrent report history and returns its orig
     assert.deepEqual(Reflect.get(storedRun, "claimedOwnListingIds"), [ownListing.id]);
     assert.match(storedRun.desktopReportDigest ?? "", /^sha256:[0-9a-f]{64}$/);
     assert.deepEqual(storedRun.desktopIngestionSummary, first);
+    assert.equal(Reflect.get(storedRun, "alertEvaluationVersion"), "sku-gap-report-v1");
 
     assert.equal(await prisma.collectionSearchPosition.count({ where: { collectionRunId: run.id } }), 50);
     assert.equal(await prisma.searchCandidate.count({

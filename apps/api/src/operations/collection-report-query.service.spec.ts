@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { PrismaClient } from "../../../../generated/prisma/client.ts";
+import { deriveOwnCatalogCompleteness } from "../collection/own-catalog-completeness.ts";
 import {
   COLLECTION_REPORT_MAX_PAGE_SIZE,
   CollectionReportQueryService,
@@ -293,8 +294,21 @@ class FixtureRepository implements CollectionReportDataRepository {
 
   async loadBusinessFacts(_runId: string) {
     this.calls.push({ method: "loadBusinessFacts" });
+    const claimedOwnListingIds = this.runs[0]?.claimedOwnListingIds ?? [];
     return {
-      claimedOwnListingIds: [...(this.runs[0]?.claimedOwnListingIds ?? [])],
+      ownCatalogCompleteness: deriveOwnCatalogCompleteness({
+        claimedOwnListings: claimedOwnListingIds.map((id) => ({
+          id,
+          platformItemId: this.snapshots.find((snapshot) => snapshot.ownListingId === id)
+            ?.platformItemId ?? null
+        })),
+        ownSnapshots: this.snapshots.map((snapshot) => ({
+          ownListingId: snapshot.ownListingId,
+          platformItemId: snapshot.platformItemId,
+          skuId: snapshot.skuId
+        })),
+        issues: this.issues
+      }),
       positions: this.positions,
       snapshots: this.snapshots.map((snapshot) => ({
         ...snapshot,

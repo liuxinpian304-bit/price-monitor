@@ -1,5 +1,9 @@
 import { Prisma, type PrismaClient } from "../../../../generated/prisma/client.ts";
 import {
+  deriveOwnCatalogCompleteness,
+  type OwnCatalogCompleteness
+} from "../collection/own-catalog-completeness.ts";
+import {
   aggregateCollectionRunReport,
   projectCollectionRunBusinessSkuRows,
   type CollectionRunBusinessAggregationInput,
@@ -127,7 +131,7 @@ export interface CollectionReportRawRank {
 }
 
 export interface CollectionReportCompleteFacts {
-  claimedOwnListingIds: string[];
+  ownCatalogCompleteness: OwnCatalogCompleteness;
   positions: CollectionReportRawPosition[];
   snapshots: CollectionReportRawSnapshot[];
 }
@@ -800,11 +804,11 @@ export class PrismaCollectionReportRepository implements CollectionReportDataRep
   }
 
   async loadBusinessFacts(runId: string): Promise<CollectionReportCompleteFacts> {
-    const [run, positions, snapshots] = await Promise.all([
-      this.prisma.collectionRun.findUniqueOrThrow({
-        where: { id: runId },
-        select: { claimedOwnListingIds: true }
-      }),
+    const run = await this.prisma.collectionRun.findUniqueOrThrow({
+      where: { id: runId },
+      select: { claimedOwnListingIds: true }
+    });
+    const [positions, snapshots, claimedOwnListings, issues] = await Promise.all([
       this.prisma.collectionSearchPosition.findMany({
         where: { collectionRunId: runId },
         select: {
@@ -824,10 +828,30 @@ export class PrismaCollectionReportRepository implements CollectionReportDataRep
         where: { collectionRunId: runId },
         select: snapshotSelect,
         orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+      }),
+      this.prisma.ownListing.findMany({
+        where: { id: { in: run.claimedOwnListingIds } },
+        select: { id: true, platformItemId: true }
+      }),
+      this.prisma.collectionIssue.findMany({
+        where: { collectionRunId: runId },
+        select: { code: true, platformItemId: true, skuId: true }
       })
     ]);
+    const claimedListingById = new Map(claimedOwnListings.map((listing) => [listing.id, listing]));
     return {
-      claimedOwnListingIds: [...run.claimedOwnListingIds],
+      ownCatalogCompleteness: deriveOwnCatalogCompleteness({
+        claimedOwnListings: run.claimedOwnListingIds.map((id) => ({
+          id,
+          platformItemId: claimedListingById.get(id)?.platformItemId ?? null
+        })),
+        ownSnapshots: snapshots.map((snapshot) => ({
+          ownListingId: snapshot.ownListingId,
+          platformItemId: snapshot.platformItemId,
+          skuId: snapshot.skuId
+        })),
+        issues
+      }),
       positions,
       snapshots: snapshots.map(toRawSnapshot)
     };
@@ -911,7 +935,7 @@ export class CollectionReportQueryService {
       ranks.set(row.platformItemId, row.ranks);
     }
     const aggregationInput: CollectionRunBusinessAggregationInput = {
-      claimedOwnListingIds: businessFacts.claimedOwnListingIds,
+      ownCatalogCompleteness: businessFacts.ownCatalogCompleteness,
       positions: businessFacts.positions,
       snapshots: businessFacts.snapshots.map((snapshot) => ({
         ...snapshot,

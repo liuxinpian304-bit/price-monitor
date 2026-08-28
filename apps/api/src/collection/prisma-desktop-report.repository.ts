@@ -7,6 +7,7 @@ import type {
   CollectorReport
 } from "../../../../packages/contracts/src/index.ts";
 import { Prisma, type PrismaClient } from "../../../../generated/prisma/client.ts";
+import { RUN_ALERT_EVALUATION_VERSION } from "../alerts/run-alert-evaluation-version.ts";
 
 import {
   desktopReportDigest,
@@ -241,6 +242,7 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
           searchTerminationReason: report.searchTerminationReason ?? null,
           ...counters,
           desktopReportDigest: reportDigest,
+          alertEvaluationVersion: RUN_ALERT_EVALUATION_VERSION,
           errorCode: null,
           errorMessage: null
         }

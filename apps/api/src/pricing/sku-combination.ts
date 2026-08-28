@@ -43,7 +43,9 @@ type NormalizedComponent = CanonicalComponent & {
   brand: string | null;
 };
 
-const CONDITION_EXCLUSIONS = ["二手", "样机", "展示机", "翻新", "租赁", "定金"];
+const MANDATORY_EXCLUSIONS = [
+  "二手", "样机", "展示机", "翻新", "租赁", "定金", "维修", "空盒", "单独配件"
+];
 const MATERIAL_ATTRIBUTE_KEY = /版本|区域|地区|国行|保修|质保/u;
 const COLOR_ATTRIBUTE_KEY = /颜色|色号/u;
 
@@ -73,7 +75,7 @@ function compareAttributes(left: { key: string; value: string }, right: { key: s
 
 function hasExcludedCondition(title: string, skuText: string): string | undefined {
   const searchable = `${title} ${skuText}`.normalize("NFKC");
-  return CONDITION_EXCLUSIONS.find((term) => searchable.includes(term));
+  return MANDATORY_EXCLUSIONS.find((term) => searchable.includes(term));
 }
 
 function normalizedAttributes(input: SkuCombinationInput): {
