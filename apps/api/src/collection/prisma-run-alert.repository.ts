@@ -14,6 +14,7 @@ import type {
   SnapshotCombinationPersistence,
   SnapshotMatchPersistence
 } from "./run-alert.service.ts";
+import { deriveOwnCatalogCompleteness } from "./own-catalog-completeness.ts";
 
 type Transaction = Prisma.TransactionClient;
 
@@ -274,9 +275,14 @@ export class PrismaRunAlertRepository implements RunAlertRepository {
       });
       const ownListings = await transaction.ownListing.findMany({
         where: {
-          id: { in: snapshots.flatMap((snapshot) => snapshot.ownListingId ? [snapshot.ownListingId] : []) }
+          id: {
+            in: [...new Set([
+              ...run.claimedOwnListingIds,
+              ...snapshots.flatMap((snapshot) => snapshot.ownListingId ? [snapshot.ownListingId] : [])
+            ])]
+          }
         },
-        select: { id: true, skuText: true, url: true }
+        select: { id: true, platformItemId: true, skuText: true, url: true }
       });
       const candidates = await transaction.searchCandidate.findMany({
         where: {
@@ -293,8 +299,9 @@ export class PrismaRunAlertRepository implements RunAlertRepository {
         select: { platformItemId: true, rank: true },
         orderBy: { rank: "asc" }
       });
-      const issueCount = await transaction.collectionIssue.count({
-        where: { collectionRunId: run.id }
+      const issues = await transaction.collectionIssue.findMany({
+        where: { collectionRunId: run.id },
+        select: { code: true, platformItemId: true, skuId: true }
       });
 
       const ranks = new Map<string, number[]>();
@@ -305,21 +312,28 @@ export class PrismaRunAlertRepository implements RunAlertRepository {
       }
       const ownListingById = new Map(ownListings.map((listing) => [listing.id, listing]));
       const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
-      const collectedOwnListingIds = new Set(
-        snapshots.flatMap((snapshot) => snapshot.ownListingId ? [snapshot.ownListingId] : [])
-      );
-      const ownCatalogComplete = run.claimedOwnListingIds.length > 0
-        && run.claimedOwnListingIds.every((id) => collectedOwnListingIds.has(id));
+      const ownCatalogCompleteness = deriveOwnCatalogCompleteness({
+        claimedOwnListings: run.claimedOwnListingIds.map((id) => {
+          const listing = ownListingById.get(id);
+          return { id, platformItemId: listing?.platformItemId ?? null };
+        }),
+        ownSnapshots: snapshots.map((snapshot) => ({
+          ownListingId: snapshot.ownListingId,
+          platformItemId: snapshot.platformItemId,
+          skuId: snapshot.skuId
+        })),
+        issues
+      });
       const data: RunAlertData = {
         runId: run.id,
         status: run.status,
         searchLimit: run.searchLimit,
         positionCount: positions.length,
         skuCount: run.skuCount,
-        issueCount,
+        issueCount: issues.length,
         completedAt: run.finishedAt ?? run.createdAt,
         claimedOwnListingIds: [...run.claimedOwnListingIds],
-        ownCatalogComplete,
+        ownCatalogComplete: ownCatalogCompleteness.complete,
         model: {
           id: model.id,
           brand: model.brand,

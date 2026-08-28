@@ -111,6 +111,7 @@ test("persists SKU combination evaluation without backfilling old-style snapshot
     include: { comparisonOwnSnapshot: true }
   });
   const storedOldStyle = await prisma.offerSnapshot.findUniqueOrThrow({ where: { id: oldStyle.id } });
+  const storedRun = await prisma.collectionRun.findUniqueOrThrow({ where: { id: run.id } });
 
   assert.equal(stored.comparisonOwnSnapshot?.id, own.id);
   assert.equal(stored.combinationSignature, `sku-combination-v1:${"a".repeat(64)}`);
@@ -125,6 +126,7 @@ test("persists SKU combination evaluation without backfilling old-style snapshot
   assert.equal(storedOldStyle.combinationState, null);
   assert.equal(storedOldStyle.combinationReasons, null);
   assert.equal(storedOldStyle.comparisonOwnSnapshotId, null);
+  assert.equal(Reflect.get(storedRun, "alertEvaluationVersion"), null);
 
   await prisma.offerSnapshot.delete({ where: { id: own.id } });
   const afterOwnDelete = await prisma.offerSnapshot.findUniqueOrThrow({ where: { id: competitor.id } });

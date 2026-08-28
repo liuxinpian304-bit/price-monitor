@@ -62,7 +62,11 @@ function snapshot(
 
 function reportFixture(): CollectionRunBusinessAggregationInput {
   return {
-    claimedOwnListingIds: ["listing-low", "listing-alt"],
+    ownCatalogCompleteness: {
+      complete: true,
+      configuredListingCount: 2,
+      collectedListingCount: 2
+    },
     positions: [
       {
         rank: 7,
@@ -214,6 +218,47 @@ test("groups complete displayed positions by normalized shop and preserves detai
   assert.equal(result.missingOwnGroups[0]?.minimumOfferSnapshotId, "missing-beta");
   assert.equal(result.missingOwnGroups[0]?.minimumOfferRank, 2);
   assert.deepEqual(result.missingOwnGroups[0]?.offers.map((row) => row.id), ["missing-beta", "missing-gamma"]);
+});
+
+test("uses the authoritative own catalog completeness result", () => {
+  const input = reportFixture();
+  input.ownCatalogCompleteness.complete = false;
+
+  const result = aggregateCollectionRunReport(input);
+  assert.equal(result.businessSummary.ownCatalogComplete, false);
+  assert.equal(result.missingOwnGroups.length, 0);
+  assert.deepEqual(result.reviewRows
+    .filter((row) => row.id === "missing-beta" || row.id === "missing-gamma")
+    .map((row) => [row.id, row.combination.reasons]), [
+    ["missing-beta", ["OWN_COMBINATION_ABSENT", "OWN_CATALOG_INCOMPLETE"]],
+    ["missing-gamma", ["OWN_COMBINATION_ABSENT", "OWN_CATALOG_INCOMPLETE"]]
+  ]);
+});
+
+test("includes ranked own SKUs in the price board but not competitor business lists", () => {
+  const input = reportFixture();
+  input.positions.push({
+    rank: 8,
+    platformItemId: "own-low-item",
+    url: "https://example.invalid/own/low",
+    shopName: "Own Shop",
+    title: "Sony MDR-7506 own ranked result",
+    displayPriceMinFen: 148_000,
+    displayPriceMaxFen: 148_000,
+    sponsored: false,
+    capturedAt
+  });
+
+  const result = aggregateCollectionRunReport(input);
+  const ownShop = result.priceBoard.shops.find((shop) => shop.shopName === "Own Shop");
+
+  assert.deepEqual(ownShop?.items[0]?.skus.map((row) => [row.id, row.source, row.ranks]), [
+    ["own-low", "OWN", [8]]
+  ]);
+  assert.equal(result.confirmedLows.some((row) => row.competitorSnapshot.source === "OWN"), false);
+  assert.equal(result.missingOwnGroups.some((group) =>
+    group.offers.some((row) => row.source === "OWN")), false);
+  assert.equal(result.reviewRows.some((row) => row.source === "OWN"), false);
 });
 
 test("orders confirmed lows by signed difference descending then earliest rank", () => {

@@ -143,7 +143,7 @@ function decision(
     label: candidate.combination.label,
     state,
     comparisonOwnSnapshotId,
-    reasons
+    reasons: [...reasons]
   };
 }
 

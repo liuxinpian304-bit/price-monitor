@@ -30,6 +30,10 @@ import {
 } from "../../../apps/api/src/collector-agent/collector-agent.service.ts";
 import { CollectionEvidenceStore } from "../../../apps/api/src/collection/collection-evidence-store.ts";
 import {
+  deriveOwnCatalogCompleteness,
+  type OwnCatalogCompleteness
+} from "../../../apps/api/src/collection/own-catalog-completeness.ts";
+import {
   desktopReportDigest,
   DesktopReportConflictError,
   DesktopReportIngestionService,
@@ -332,6 +336,7 @@ class InMemoryWorkflowStore implements DesktopReportRepository, RunAlertReposito
   private acceptedDigest: string | null = null;
   private ingestionSummary: IngestionSummary | null = null;
   private runData: RunAlertData | null = null;
+  private ownCatalogCompleteness: OwnCatalogCompleteness;
   private readonly positions: CollectionRunBusinessPositionFact[] = [];
   private readonly snapshots = new Map<string, CollectionRunBusinessSnapshotFact>();
   private readonly baselineIssues = new Set<BaselineIssueCode>();
@@ -340,6 +345,11 @@ class InMemoryWorkflowStore implements DesktopReportRepository, RunAlertReposito
     this.expectedReport = options.report;
     this.alertRepository = options.alertRepository;
     this.notificationRepository = options.notificationRepository;
+    this.ownCatalogCompleteness = {
+      complete: false,
+      configuredListingCount: options.claimedOwnListingIds.length,
+      collectedListingCount: 0
+    };
     this.claimedRun = {
       runId: options.report.runId,
       agentId: AGENT_ID,
@@ -410,7 +420,7 @@ class InMemoryWorkflowStore implements DesktopReportRepository, RunAlertReposito
 
   aggregationInput(): CollectionRunBusinessAggregationInput {
     return {
-      claimedOwnListingIds: [...this.claimedRun.ownListingIds],
+      ownCatalogCompleteness: { ...this.ownCatalogCompleteness },
       positions: this.positions.map((position) => ({ ...position })),
       snapshots: [...this.snapshots.values()].map((snapshot) => structuredClone(snapshot))
     };
@@ -441,8 +451,23 @@ class InMemoryWorkflowStore implements DesktopReportRepository, RunAlertReposito
       }
     }
 
-    const collectedOwnListingIds = new Set(runSnapshots.flatMap((snapshot) =>
-      snapshot.ownListingId ? [snapshot.ownListingId] : []));
+    const ownItemByListingId = new Map(report.ownItems.map((item) => [item.ownListingId, item]));
+    this.ownCatalogCompleteness = deriveOwnCatalogCompleteness({
+      claimedOwnListings: this.claimedRun.ownListingIds.map((id) => ({
+        id,
+        platformItemId: ownItemByListingId.get(id)?.platformItemId ?? null
+      })),
+      ownSnapshots: runSnapshots.map((snapshot) => ({
+        ownListingId: snapshot.ownListingId,
+        platformItemId: snapshot.platformItemId,
+        skuId: snapshot.skuId
+      })),
+      issues: report.issues.map((issue) => ({
+        code: issue.code,
+        platformItemId: issue.platformItemId ?? null,
+        skuId: issue.skuId ?? null
+      }))
+    });
     this.runData = {
       runId: report.runId,
       status: report.status as RunAlertData["status"],
@@ -452,8 +477,7 @@ class InMemoryWorkflowStore implements DesktopReportRepository, RunAlertReposito
       issueCount: report.issues.length,
       completedAt: new Date(report.completedAt),
       claimedOwnListingIds: [...this.claimedRun.ownListingIds],
-      ownCatalogComplete: this.claimedRun.ownListingIds.length > 0
-        && this.claimedRun.ownListingIds.every((id) => collectedOwnListingIds.has(id)),
+      ownCatalogComplete: this.ownCatalogCompleteness.complete,
       model: {
         id: this.claimedRun.monitoredModelId,
         brand: "RODE",

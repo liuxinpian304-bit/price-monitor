@@ -305,6 +305,28 @@ test("combination EXCLUDED and REVIEW decisions outrank all stock price and own-
   });
 });
 
+test("returns mutation-isolated decision reason arrays", () => {
+  const sharedCombination: SkuCombinationBuildResult = {
+    kind: "REVIEW",
+    signature: null,
+    label: "待复核组合",
+    reasons: ["UNKNOWN_COMPONENT"]
+  };
+  const result = evaluateRunSkuCombinations(runInput({
+    competitors: [
+      competitor("review-a", 50_000, { combination: sharedCombination }),
+      competitor("review-b", 50_000, { combination: sharedCombination })
+    ]
+  }));
+  const firstReasons = result.bySnapshotId.get("review-a")!.reasons;
+  const secondReasons = result.bySnapshotId.get("review-b")!.reasons;
+
+  firstReasons.push("CALLER_MUTATION");
+
+  assert.deepEqual(secondReasons, ["UNKNOWN_COMPONENT"]);
+  assert.deepEqual(sharedCombination.reasons, ["UNKNOWN_COMPONENT"]);
+});
+
 test("an eligible own baseline outranks another same-signature unconfirmed own row", () => {
   const result = evaluateRunSkuCombinations(runInput({
     own: [

@@ -5,6 +5,7 @@ import type {
   ClaimedRunAlertEvaluation,
   RunAlertEvaluationRepository
 } from "./run-alert-reconciler.ts";
+import { RUN_ALERT_EVALUATION_VERSION } from "./run-alert-evaluation-version.ts";
 
 const CLAIM_LEASE_MILLISECONDS = 5 * 60 * 1_000;
 const MAX_EVALUATION_ATTEMPTS = 3;
@@ -32,6 +33,7 @@ export class PrismaRunAlertEvaluationRepository implements RunAlertEvaluationRep
       const candidate = await transaction.collectionRun.findFirst({
         where: {
           ...(runId ? { id: runId } : {}),
+          alertEvaluationVersion: RUN_ALERT_EVALUATION_VERSION,
           desktopReportDigest: { not: null },
           alertEvaluatedAt: null,
           alertEvaluationAttempts: { lt: MAX_EVALUATION_ATTEMPTS },
@@ -55,6 +57,7 @@ export class PrismaRunAlertEvaluationRepository implements RunAlertEvaluationRep
       const claimed = await transaction.collectionRun.updateMany({
         where: {
           id: candidate.id,
+          alertEvaluationVersion: RUN_ALERT_EVALUATION_VERSION,
           alertEvaluatedAt: null,
           alertEvaluationAttempts: { lt: MAX_EVALUATION_ATTEMPTS },
           OR: [
@@ -103,6 +106,7 @@ export class PrismaRunAlertEvaluationRepository implements RunAlertEvaluationRep
     const completed = await this.prisma.collectionRun.updateMany({
       where: {
         id: claim.runId,
+        alertEvaluationVersion: RUN_ALERT_EVALUATION_VERSION,
         alertEvaluationToken: claim.attemptToken,
         alertEvaluatedAt: null
       },

@@ -137,6 +137,24 @@ test("returns EXCLUDED for rejected products and non-new-condition text", () => 
   }
 });
 
+test("always excludes mandatory non-new and accessory-only terms from title or selected SKU", () => {
+  for (const term of ["维修", "空盒", "单独配件"]) {
+    const titleResult = buildSkuCombination(baseInput({
+      productDecision: "BARE",
+      title: `森海塞尔 HD 650 ${term}`,
+      skuText: "标准版"
+    }));
+    const skuResult = buildSkuCombination(baseInput({
+      productDecision: "BARE",
+      title: "森海塞尔 HD 650",
+      skuText: `${term}专拍`
+    }));
+
+    assert.equal(titleResult.kind, "EXCLUDED", `title:${term}`);
+    assert.equal(skuResult.kind, "EXCLUDED", `sku:${term}`);
+  }
+});
+
 test("requires and hashes color only when color comparison is enabled", () => {
   const review = buildSkuCombination(baseInput({ colorComparable: true }));
   assert.equal(review.kind, "REVIEW");

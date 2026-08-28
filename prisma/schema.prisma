@@ -213,6 +213,7 @@ model CollectionRun {
   claimedJob         Json?
   desktopReportDigest String?                     @db.VarChar(80)
   desktopIngestionSummary Json?
+  alertEvaluationVersion String?                   @db.VarChar(80)
   alertEvaluationToken String?                    @db.VarChar(80)
   alertEvaluationStartedAt DateTime?
   alertEvaluationLastAttemptAt DateTime?
@@ -249,6 +250,7 @@ model CollectionRun {
   @@index([collectorAgentId])
   @@index([coalescedIntoRunId])
   @@index([alertEvaluatedAt, alertEvaluationLastAttemptAt])
+  @@index([alertEvaluationVersion, alertEvaluatedAt, alertEvaluationLastAttemptAt], map: "CollectionRun_alertEvaluationVersion_alertEvaluatedAt_alertEval")
   @@index([ownBaselineSnapshotId])
 }
 

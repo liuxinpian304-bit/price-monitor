@@ -77,7 +77,11 @@ export interface CollectionRunBusinessSnapshotFact {
 }
 
 export interface CollectionRunBusinessAggregationInput {
-  claimedOwnListingIds: string[];
+  ownCatalogCompleteness: {
+    complete: boolean;
+    configuredListingCount: number;
+    collectedListingCount: number;
+  };
   positions: CollectionRunBusinessPositionFact[];
   snapshots: CollectionRunBusinessSnapshotFact[];
 }
@@ -382,6 +386,7 @@ function projectedRows(input: CollectionRunBusinessAggregationInput): Collection
   for (const rows of ownBySignature.values()) rows.sort(compareOwn);
 
   return input.snapshots.map((snapshot): CollectionRunBusinessSkuRow => {
+    const source: CollectionRunBusinessSource = snapshot.ownListingId ? "OWN" : "COMPETITOR";
     const legacy = snapshot.combinationState === null;
     const selectedCandidate = snapshot.comparisonOwnSnapshotId
       ? ownById.get(snapshot.comparisonOwnSnapshotId) ?? null
@@ -391,14 +396,20 @@ function projectedRows(input: CollectionRunBusinessAggregationInput): Collection
       && selectedCandidate.combinationSignature !== null
       && selectedCandidate.combinationSignature === snapshot.combinationSignature;
     const invalidMatchedRelation = snapshot.combinationState === "MATCHED" && !validComparisonOwnRelation;
+    const incompleteCatalogMissing = source === "COMPETITOR"
+      && snapshot.combinationState === "MISSING_OWN"
+      && !input.ownCatalogCompleteness.complete;
     const persistedCombinationState = snapshot.combinationState ?? "REVIEW";
-    const combinationState: CollectionRunCombinationState = legacy || invalidMatchedRelation
+    const combinationState: CollectionRunCombinationState = legacy
+      || invalidMatchedRelation
+      || incompleteCatalogMissing
       ? "REVIEW"
       : persistedCombinationState;
     const combinationReasons = uniqueStrings([
       ...snapshot.combinationReasons,
       ...(legacy ? ["LEGACY_COMBINATION_NOT_EVALUATED"] : []),
-      ...(invalidMatchedRelation ? ["INVALID_COMPARISON_OWN_SNAPSHOT"] : [])
+      ...(invalidMatchedRelation ? ["INVALID_COMPARISON_OWN_SNAPSHOT"] : []),
+      ...(incompleteCatalogMissing ? ["OWN_CATALOG_INCOMPLETE"] : [])
     ]);
     const selectedOwnSnapshot = validComparisonOwnRelation
       ? { ...selectedCandidate }
@@ -413,7 +424,6 @@ function projectedRows(input: CollectionRunBusinessAggregationInput): Collection
       && nonNegativeFen(snapshot.payableFen)
       ? selectedOwnSnapshot.prices.payableFen - snapshot.payableFen
       : null;
-    const source: CollectionRunBusinessSource = snapshot.ownListingId ? "OWN" : "COMPETITOR";
     const eligibleComparison = source === "COMPETITOR"
       && combinationState === "MATCHED"
       && selectedOwnSnapshot !== null
@@ -642,13 +652,11 @@ export function aggregateCollectionRunReport(
   input: CollectionRunBusinessAggregationInput
 ): CollectionRunBusinessSections {
   const allRows = projectedRows(input);
+  const rankedRows = allRows.filter((row) => row.ranks.length > 0);
   const businessRows = allRows.filter((row) => row.source === "COMPETITOR" && row.ranks.length > 0);
   const lows = confirmedLows(businessRows);
   const missing = missingGroups(businessRows);
-  const board = priceBoard(input.positions, businessRows);
-  const claimedOwnListingIds = new Set(input.claimedOwnListingIds);
-  const collectedOwnListingIds = new Set(input.snapshots.flatMap((snapshot) =>
-    snapshot.ownListingId ? [snapshot.ownListingId] : []));
+  const board = priceBoard(input.positions, rankedRows);
   return {
     businessSummary: {
       distinctShopCount: board.shops.length,
@@ -659,10 +667,9 @@ export function aggregateCollectionRunReport(
       missingCombinationCount: missing.length,
       reviewCount: businessRows.filter((row) => row.combination.state === "REVIEW").length,
       excludedCount: businessRows.filter((row) => row.combination.state === "EXCLUDED").length,
-      ownConfiguredListingCount: claimedOwnListingIds.size,
-      ownCollectedListingCount: collectedOwnListingIds.size,
-      ownCatalogComplete: claimedOwnListingIds.size > 0
-        && [...claimedOwnListingIds].every((id) => collectedOwnListingIds.has(id))
+      ownConfiguredListingCount: input.ownCatalogCompleteness.configuredListingCount,
+      ownCollectedListingCount: input.ownCatalogCompleteness.collectedListingCount,
+      ownCatalogComplete: input.ownCatalogCompleteness.complete
     },
     priceBoard: board,
     confirmedLows: lows,

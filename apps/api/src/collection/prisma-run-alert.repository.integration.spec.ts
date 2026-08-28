@@ -461,6 +461,77 @@ test("commits per-combination baselines, alerts, missing groups, and one batch a
   }
 });
 
+test("fails closed when an own listing is only partially enumerated", async () => {
+  const suffix = randomUUID().replaceAll("-", "");
+  const model = await prisma.monitoredModel.create({
+    data: {
+      monitorCode: `T5-PARTIAL-${suffix.slice(0, 14)}`,
+      brand: "Sony",
+      standardModel: "MDR-7506",
+      category: "headphones",
+      searchQuery: "Sony MDR-7506",
+      comparisonType: "BARE",
+      owner: "final-fix-wave"
+    }
+  });
+  const ownListing = await prisma.ownListing.create({
+    data: {
+      monitoredModelId: model.id,
+      platform: "TAOBAO",
+      shopName: "星空乐器专营店",
+      platformItemId: "own-item",
+      url: `https://item.taobao.com/item.htm?id=own-${suffix.slice(0, 8)}`,
+      skuText: "MDR-7506 单机"
+    }
+  });
+
+  try {
+    const run = await seedRun({
+      modelId: model.id,
+      ownListingId: ownListing.id,
+      index: 7,
+      prices: [{
+        key: `missing-bundle-${suffix.slice(0, 8)}`,
+        payableFen: 65_000,
+        components: [coreComponent, {
+          role: "PAID_ACCESSORY",
+          accessoryType: "耳机架",
+          brand: null,
+          modelOrName: "HPS-1",
+          quantity: 1
+        }]
+      }]
+    });
+    await prisma.collectionIssue.create({
+      data: {
+        collectionRunId: run.id,
+        issueKey: `sha256:${suffix.padEnd(64, "0").slice(0, 64)}`,
+        code: "SKU_ENUMERATION_INCOMPLETE",
+        platformItemId: "own-item",
+        message: "One own SKU selection was not collected",
+        capturedAt: run.finishedAt!
+      }
+    });
+    const service = new RunAlertService(
+      new PrismaRunAlertRepository(prisma),
+      (runId) => `https://monitor.example.test/collection-runs/${runId}`
+    );
+
+    const summary = await service.evaluateRun(run.id);
+    const competitor = await prisma.offerSnapshot.findFirstOrThrow({
+      where: { collectionRunId: run.id, searchCandidateId: { not: null } }
+    });
+    const reasonPayload = competitor.combinationReasons as { codes?: unknown } | null;
+
+    assert.equal(competitor.combinationState, "REVIEW");
+    assert.deepEqual(reasonPayload?.codes, ["OWN_CATALOG_INCOMPLETE"]);
+    assert.equal(summary.missingOwnGroups.length, 0);
+    assert.equal(await prisma.priceAlert.count({ where: { competitorSnapshotId: competitor.id } }), 0);
+  } finally {
+    await prisma.monitoredModel.delete({ where: { id: model.id } });
+  }
+});
+
 test("serializes run evaluation, persists decisions, deduplicates prices, and retries one durable batch", async () => {
   const suffix = randomUUID().replaceAll("-", "");
   const model = await prisma.monitoredModel.create({
