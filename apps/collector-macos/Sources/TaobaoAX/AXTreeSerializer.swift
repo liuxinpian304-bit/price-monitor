@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 
 enum AXAttribute {
     static let focusedWindow = "AXFocusedWindow"
@@ -65,33 +66,109 @@ struct AXScopedRootResolver {
     }
 }
 
-struct AXTreeSerializer {
-    static let defaultMaxNodeCount = 2_000
-    static let defaultMaxDepth = 25
+struct AXTreeLimits: Equatable {
+    static let standard = AXTreeLimits(
+        maxNodeCount: 4_000,
+        maxDepth: 28,
+        maxDurationNanoseconds: 6_000_000_000,
+        maxEncodedBytes: 8 * 1_024 * 1_024
+    )
 
     let maxNodeCount: Int
     let maxDepth: Int
+    let maxDurationNanoseconds: UInt64
+    let maxEncodedBytes: Int
+}
+
+struct AXTreeSerialization: Equatable {
+    let node: AXNode
+    let visitedNodeCount: Int
+    let maximumDepth: Int
+    let elapsedMilliseconds: Int
+}
+
+struct AXTreeSerializer {
+    let limits: AXTreeLimits
+    let nowNanoseconds: () -> UInt64
 
     init(
-        maxNodeCount: Int = Self.defaultMaxNodeCount,
-        maxDepth: Int = Self.defaultMaxDepth
+        limits: AXTreeLimits = .standard,
+        nowNanoseconds: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
     ) {
-        self.maxNodeCount = maxNodeCount
-        self.maxDepth = maxDepth
+        self.limits = limits
+        self.nowNanoseconds = nowNanoseconds
     }
 
-    func serialize(root: any AXElementReading) throws -> AXNode {
-        guard maxNodeCount > 0, maxDepth >= 0 else {
-            throw treeLimitError()
+    func serialize(
+        root: any AXElementReading,
+        scope: AXRootScope
+    ) throws -> AXTreeSerialization {
+        if limits.maxNodeCount <= 0 {
+            throw axTreeLimitError(
+                reason: "nodeCount",
+                scope: scope,
+                visitedNodeCount: 0,
+                maximumDepth: 0,
+                elapsedMilliseconds: 0
+            )
+        }
+        if limits.maxDepth <= 0 {
+            throw axTreeLimitError(
+                reason: "depth",
+                scope: scope,
+                visitedNodeCount: 0,
+                maximumDepth: 0,
+                elapsedMilliseconds: 0
+            )
+        }
+        if limits.maxDurationNanoseconds == 0 {
+            throw axTreeLimitError(
+                reason: "duration",
+                scope: scope,
+                visitedNodeCount: 0,
+                maximumDepth: 0,
+                elapsedMilliseconds: 0
+            )
+        }
+        if limits.maxEncodedBytes <= 0 {
+            throw axTreeLimitError(
+                reason: "encodedBytes",
+                scope: scope,
+                visitedNodeCount: 0,
+                maximumDepth: 0,
+                elapsedMilliseconds: 0
+            )
         }
 
-        var nodeCount = 0
-        return try serialize(
+        let startedAt = nowNanoseconds()
+        var visitedNodeCount = 0
+        var maximumDepth = 0
+        let node = try serialize(
             element: root,
             path: [],
             depth: 0,
             ancestors: [],
-            nodeCount: &nodeCount
+            scope: scope,
+            startedAt: startedAt,
+            visitedNodeCount: &visitedNodeCount,
+            maximumDepth: &maximumDepth
+        )
+        let elapsedNanoseconds = elapsedNanoseconds(since: startedAt)
+        let elapsedMilliseconds = milliseconds(from: elapsedNanoseconds)
+        guard elapsedNanoseconds <= limits.maxDurationNanoseconds else {
+            throw axTreeLimitError(
+                reason: "duration",
+                scope: scope,
+                visitedNodeCount: visitedNodeCount,
+                maximumDepth: maximumDepth,
+                elapsedMilliseconds: elapsedMilliseconds
+            )
+        }
+        return AXTreeSerialization(
+            node: node,
+            visitedNodeCount: visitedNodeCount,
+            maximumDepth: maximumDepth,
+            elapsedMilliseconds: elapsedMilliseconds
         )
     }
 
@@ -100,15 +177,42 @@ struct AXTreeSerializer {
         path: [Int],
         depth: Int,
         ancestors: [any AXElementReading],
-        nodeCount: inout Int
+        scope: AXRootScope,
+        startedAt: UInt64,
+        visitedNodeCount: inout Int,
+        maximumDepth: inout Int
     ) throws -> AXNode {
-        guard depth <= maxDepth else {
-            throw treeLimitError()
+        maximumDepth = max(maximumDepth, depth)
+        let elapsedNanoseconds = elapsedNanoseconds(since: startedAt)
+        let elapsedMilliseconds = milliseconds(from: elapsedNanoseconds)
+        guard elapsedNanoseconds <= limits.maxDurationNanoseconds else {
+            throw axTreeLimitError(
+                reason: "duration",
+                scope: scope,
+                visitedNodeCount: visitedNodeCount,
+                maximumDepth: maximumDepth,
+                elapsedMilliseconds: elapsedMilliseconds
+            )
+        }
+        guard depth <= limits.maxDepth else {
+            throw axTreeLimitError(
+                reason: "depth",
+                scope: scope,
+                visitedNodeCount: visitedNodeCount,
+                maximumDepth: maximumDepth,
+                elapsedMilliseconds: elapsedMilliseconds
+            )
         }
 
-        nodeCount += 1
-        guard nodeCount <= maxNodeCount else {
-            throw treeLimitError()
+        visitedNodeCount += 1
+        guard visitedNodeCount <= limits.maxNodeCount else {
+            throw axTreeLimitError(
+                reason: "nodeCount",
+                scope: scope,
+                visitedNodeCount: visitedNodeCount,
+                maximumDepth: maximumDepth,
+                elapsedMilliseconds: elapsedMilliseconds
+            )
         }
 
         var attributes: [String: Any] = [:]
@@ -132,7 +236,10 @@ struct AXTreeSerializer {
                 path: path + [index],
                 depth: depth + 1,
                 ancestors: nextAncestors,
-                nodeCount: &nodeCount
+                scope: scope,
+                startedAt: startedAt,
+                visitedNodeCount: &visitedNodeCount,
+                maximumDepth: &maximumDepth
             ))
         }
 
@@ -201,7 +308,59 @@ struct AXTreeSerializer {
         return (value as? NSNumber)?.boolValue
     }
 
-    private func treeLimitError() -> HelperError {
-        HelperError(code: "TREE_LIMIT_REACHED", message: "Accessibility tree limit reached.")
+    private func elapsedNanoseconds(since startedAt: UInt64) -> UInt64 {
+        let current = nowNanoseconds()
+        return current >= startedAt ? current - startedAt : 0
+    }
+
+    private func milliseconds(from nanoseconds: UInt64) -> Int {
+        let value = nanoseconds / 1_000_000
+        return value > UInt64(Int.max) ? Int.max : Int(value)
+    }
+}
+
+func axTreeLimitError(
+    reason: String,
+    scope: AXRootScope,
+    visitedNodeCount: Int,
+    maximumDepth: Int,
+    elapsedMilliseconds: Int,
+    encodedBytes: Int? = nil
+) -> HelperError {
+    var details: [String: JSONValue] = [
+        "reason": .string(reason),
+        "scope": .string(scope.rawValue),
+        "visitedNodeCount": .number(Double(visitedNodeCount)),
+        "maximumDepth": .number(Double(maximumDepth)),
+        "elapsedMilliseconds": .number(Double(elapsedMilliseconds)),
+    ]
+    if let encodedBytes {
+        details["encodedBytes"] = .number(Double(encodedBytes))
+    }
+    return HelperError(
+        code: "TREE_LIMIT_REACHED",
+        message: "Accessibility tree limit reached.",
+        details: .object(details)
+    )
+}
+
+struct AXSnapshotEncoder {
+    func encode(
+        _ serialization: AXTreeSerialization,
+        scope: AXRootScope,
+        limits: AXTreeLimits
+    ) throws -> JSONValue {
+        let data = try JSONEncoder().encode(serialization.node)
+        guard data.count <= limits.maxEncodedBytes else {
+            throw axTreeLimitError(
+                reason: "encodedBytes",
+                scope: scope,
+                visitedNodeCount: serialization.visitedNodeCount,
+                maximumDepth: serialization.maximumDepth,
+                elapsedMilliseconds: serialization.elapsedMilliseconds,
+                encodedBytes: data.count
+            )
+        }
+        return try JSONDecoder().decode(JSONValue.self, from: data)
     }
 }

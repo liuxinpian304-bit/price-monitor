@@ -60,7 +60,12 @@ final class AccessibilityApplication {
 
     func snapshot() throws -> JSONValue {
         let root = try freshRoot()
-        return try encode(treeSerializer.serialize(root: root.element))
+        let serialization = try treeSerializer.serialize(root: root.element, scope: root.scope)
+        return try AXSnapshotEncoder().encode(
+            serialization,
+            scope: root.scope,
+            limits: treeSerializer.limits
+        )
     }
 
     func perform(path: [Int], action: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue {
@@ -206,11 +211,6 @@ final class AccessibilityApplication {
             shortVersion: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
             build: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         )
-    }
-
-    private func encode<T: Encodable>(_ value: T) throws -> JSONValue {
-        let data = try JSONEncoder().encode(value)
-        return try JSONDecoder().decode(JSONValue.self, from: data)
     }
 
     private func mappedActionError(_ error: AXError) -> HelperError {

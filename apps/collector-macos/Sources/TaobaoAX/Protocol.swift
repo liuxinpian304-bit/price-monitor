@@ -102,6 +102,13 @@ struct HelperResponse: Codable, Equatable {
 struct HelperError: Codable, Equatable, Error {
     let code: String
     let message: String
+    let details: JSONValue?
+
+    init(code: String, message: String, details: JSONValue? = nil) {
+        self.code = code
+        self.message = message
+        self.details = details
+    }
 }
 
 protocol CommandHandling {
