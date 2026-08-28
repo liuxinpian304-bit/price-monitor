@@ -77,6 +77,9 @@ export class RunAlertNotificationApprovalService {
     if (input.previewDigest !== current.previewDigest) {
       throw new RunAlertNotificationApprovalValidationError("企业微信预览已变化，请刷新后重新确认");
     }
+    if (!current.liveSendingApproved && current.state !== "PENDING") {
+      throw new RunAlertNotificationApprovalValidationError("首次企业微信发送只能确认待发送批次");
+    }
 
     await this.settings.approveWecomLiveSending({
       previewRunId: current.runId,

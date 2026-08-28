@@ -330,6 +330,25 @@ describe("CollectionRunDetailPage", () => {
     expect(screen.queryByRole("button", { name: "预览企业微信消息" })).not.toBeInTheDocument();
   });
 
+  it("disables first confirmation when the durable notification is not PENDING", async () => {
+    vi.mocked(useApiData).mockReturnValue({ data: report("SUCCEEDED"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
+    vi.mocked(getCollectionRunNotificationPreview).mockResolvedValue({
+      runId: "run-1",
+      state: "FAILED",
+      markdown: "### 不可确认的企业微信摘要",
+      previewDigest: `sha256:${"a".repeat(64)}`,
+      liveSendingApproved: false
+    });
+
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "预览企业微信消息" }));
+
+    const confirm = await screen.findByRole("button", { name: "确认发送并启用后续自动提醒" });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(confirmCollectionRunNotification).not.toHaveBeenCalled();
+  });
+
   it("does not render a synthetic report while the first detail request is loading", () => {
     vi.mocked(useApiData).mockReturnValue({ data: null, loading: true, error: null, errorStatus: null, hasSuccessfulData: false, refresh: vi.fn(), setData: vi.fn() });
     renderPage();

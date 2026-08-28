@@ -6,6 +6,7 @@ import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { PATH_METADATA } from "@nestjs/common/constants.js";
 import type { Request, Response } from "express";
 
+import { RunAlertNotificationApprovalValidationError } from "../alerts/run-alert-notification-approval.service.ts";
 import { ROLES_METADATA_KEY } from "../auth/roles.guard.ts";
 import { setVerifiedPrincipal } from "../auth/verified-principal.ts";
 import {
@@ -63,6 +64,7 @@ class EvidenceStore implements CollectionEvidenceReader {
 
 class NotificationApproval implements RunAlertNotificationApprovalApi {
   previewCalls: string[] = [];
+  approvalError: Error | null = null;
   approvalCalls: Array<{
     input: { runId: string; previewDigest: string; confirmation: string };
     actorId: string;
@@ -86,6 +88,7 @@ class NotificationApproval implements RunAlertNotificationApprovalApi {
     role: "ADMIN" | "OPERATOR"
   ) {
     this.approvalCalls.push({ input, actorId, role });
+    if (this.approvalError) throw this.approvalError;
   }
 }
 
@@ -251,4 +254,28 @@ test("rejects malformed notification run IDs before preview or confirmation work
   );
   assert.equal(approval.previewCalls.length, 0);
   assert.equal(approval.approvalCalls.length, 0);
+});
+
+test("returns a bad request when first confirmation targets a non-PENDING batch", async () => {
+  const approval = new NotificationApproval();
+  approval.approvalError = new RunAlertNotificationApprovalValidationError(
+    "首次企业微信发送只能确认待发送批次"
+  );
+  const controller = new OperationsCollectionRunsHttpController(
+    new QueryService(),
+    new EvidenceStore(),
+    approval
+  );
+  const request = {} as Request;
+  setVerifiedPrincipal(request, { actorId: "admin-7", role: "ADMIN" });
+
+  await assert.rejects(
+    () => controller.notificationConfirm(
+      "run-1",
+      { previewDigest: `sha256:${"a".repeat(64)}`, confirmation: "SEND_TO_WECOM" },
+      request
+    ),
+    BadRequestException
+  );
+  assert.equal(approval.approvalCalls.length, 1);
 });

@@ -492,7 +492,8 @@ test("transactionally ingests one concurrent report history and returns its orig
     const notificationRepository = new PrismaRunAlertNotificationRepository(prisma);
     const notifier = new RunAlertNotifier(
       notificationRepository,
-      async () => failingSender
+      async () => failingSender,
+      async () => true
     );
     const evaluator = {
       async evaluateRun(runId: string) {

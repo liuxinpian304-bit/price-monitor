@@ -527,7 +527,8 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     const restartedNotificationRepository = new PrismaRunAlertNotificationRepository(prisma);
     const restartedNotifier = new RunAlertNotifier(
       restartedNotificationRepository,
-      async () => restartedSender
+      async () => restartedSender,
+      async () => true
     );
     const restartedReconciler = new RunAlertReconciler(
       {
@@ -583,7 +584,8 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     const ambiguousSender = new AmbiguousSender();
     const ambiguousNotifier = new RunAlertNotifier(
       new PrismaRunAlertNotificationRepository(prisma),
-      async () => ambiguousSender
+      async () => ambiguousSender,
+      async () => true
     );
     await ambiguousNotifier.send(lowerSummary);
     await ambiguousNotifier.send(lowerSummary);
@@ -606,7 +608,8 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     const sender = new RecordingSender();
     const notifier = new RunAlertNotifier(
       new PrismaRunAlertNotificationRepository(prisma),
-      async () => sender
+      async () => sender,
+      async () => true
     );
     await notifier.send(retrySummary);
 
@@ -646,7 +649,8 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     abandonedSender.fail = false;
     await new RunAlertNotifier(
       new PrismaRunAlertNotificationRepository(prisma),
-      async () => abandonedSender
+      async () => abandonedSender,
+      async () => true
     ).send(abandonedSummary);
     assert.equal(abandonedSender.messages.length, 0);
     const retryable = await new PrismaRunAlertNotificationRepository(prisma)
