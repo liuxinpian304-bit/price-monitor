@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { RawOffer } from "../collection/providers/commerce-provider.ts";
-import { MatcherService } from "./matcher.service.ts";
+import { MatcherService, normalizeText } from "./matcher.service.ts";
 import type { MonitoredProductRule } from "./matcher.types.ts";
 
 const rule: MonitoredProductRule = {
@@ -43,6 +43,19 @@ function offer(title: string, skuLabel = "Babyface Pro FS 单机"): RawOffer {
     rawEvidence: {}
   };
 }
+
+test("normalizes Turkish-sensitive I with locale-independent Unicode lowercase", () => {
+  assert.equal("I".toLocaleLowerCase("tr"), "ı");
+  const original = String.prototype.toLocaleLowerCase;
+  String.prototype.toLocaleLowerCase = function (this: string): string {
+    return original.call(this, "tr");
+  };
+  try {
+    assert.equal(normalizeText("I-7506"), "i 7506");
+  } finally {
+    String.prototype.toLocaleLowerCase = original;
+  }
+});
 
 test("accepts an exact Babyface Pro FS bare SKU with explainable reasons", () => {
   const decision = new MatcherService().match(
