@@ -4,15 +4,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { PATH_METADATA } from "@nestjs/common/constants.js";
-import type { Response } from "express";
+import type { Request, Response } from "express";
 
 import { ROLES_METADATA_KEY } from "../auth/roles.guard.ts";
+import { setVerifiedPrincipal } from "../auth/verified-principal.ts";
 import {
   COLLECTION_EVIDENCE_STORE,
   COLLECTION_REPORT_QUERY_SERVICE,
   OperationsCollectionRunsHttpController,
   type CollectionEvidenceReader,
-  type CollectionRunsOperationsService
+  type CollectionRunsOperationsService,
+  type RunAlertNotificationApprovalApi
 } from "./operations-collection-runs-http.controller.ts";
 import type {
   CollectionReportPaginationInput,
@@ -56,6 +58,34 @@ class EvidenceStore implements CollectionEvidenceReader {
   async read(runId: string, sha256: string) {
     this.calls.push({ runId, sha256 });
     return this.result;
+  }
+}
+
+class NotificationApproval implements RunAlertNotificationApprovalApi {
+  previewCalls: string[] = [];
+  approvalCalls: Array<{
+    input: { runId: string; previewDigest: string; confirmation: string };
+    actorId: string;
+    role: "ADMIN" | "OPERATOR";
+  }> = [];
+
+  async preview(runId: string) {
+    this.previewCalls.push(runId);
+    return {
+      runId,
+      state: "PENDING" as const,
+      markdown: "### 企业微信预览",
+      previewDigest: `sha256:${"a".repeat(64)}`,
+      liveSendingApproved: false
+    };
+  }
+
+  async approve(
+    input: { runId: string; previewDigest: string; confirmation: string },
+    actorId: string,
+    role: "ADMIN" | "OPERATOR"
+  ) {
+    this.approvalCalls.push({ input, actorId, role });
   }
 }
 
@@ -170,4 +200,55 @@ test("verifies evidence ownership before reading and serves only private PNG byt
   assert.equal(reply.headers.get("content-type"), "image/png");
   assert.equal(reply.headers.get("cache-control"), "private, no-store");
   assert.ok(reply.body);
+});
+
+test("previews and confirms the exact durable notification as the verified admin", async () => {
+  const approval = new NotificationApproval();
+  const controller = new OperationsCollectionRunsHttpController(
+    new QueryService(),
+    new EvidenceStore(),
+    approval
+  );
+  const request = {} as Request;
+  setVerifiedPrincipal(request, { actorId: "admin-7", role: "ADMIN" });
+  const previewDigest = `sha256:${"a".repeat(64)}`;
+
+  const preview = await controller.notificationPreview("run-1");
+  const result = await controller.notificationConfirm(
+    "run-1",
+    { previewDigest, confirmation: "SEND_TO_WECOM" },
+    request
+  );
+
+  assert.equal(preview.markdown, "### 企业微信预览");
+  assert.deepEqual(approval.previewCalls, ["run-1"]);
+  assert.deepEqual(approval.approvalCalls, [{
+    input: { runId: "run-1", previewDigest, confirmation: "SEND_TO_WECOM" },
+    actorId: "admin-7",
+    role: "ADMIN"
+  }]);
+  assert.deepEqual(result, { confirmed: true });
+});
+
+test("rejects malformed notification run IDs before preview or confirmation work", async () => {
+  const approval = new NotificationApproval();
+  const controller = new OperationsCollectionRunsHttpController(
+    new QueryService(),
+    new EvidenceStore(),
+    approval
+  );
+  const request = {} as Request;
+  setVerifiedPrincipal(request, { actorId: "admin-7", role: "ADMIN" });
+
+  await assert.rejects(() => controller.notificationPreview("../run-1"), BadRequestException);
+  await assert.rejects(
+    () => controller.notificationConfirm(
+      "../run-1",
+      { previewDigest: `sha256:${"a".repeat(64)}`, confirmation: "SEND_TO_WECOM" },
+      request
+    ),
+    BadRequestException
+  );
+  assert.equal(approval.previewCalls.length, 0);
+  assert.equal(approval.approvalCalls.length, 0);
 });

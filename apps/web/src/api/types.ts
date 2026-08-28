@@ -415,3 +415,11 @@ export interface CollectionRunReportList {
   runs: CollectionRunReportSummary[];
   pagination: CollectionReportPageMeta;
 }
+
+export interface RunAlertNotificationPreview {
+  runId: string;
+  state: "PENDING" | "SENDING" | "NOTIFIED" | "AMBIGUOUS" | "FAILED";
+  markdown: string;
+  previewDigest: string;
+  liveSendingApproved: boolean;
+}

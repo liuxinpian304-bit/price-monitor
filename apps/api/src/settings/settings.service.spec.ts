@@ -25,13 +25,18 @@ class MemorySettingsRepository implements SettingsRepository {
 
 class MemoryAuditRepository {
   readonly entries: AuditEntryInput[] = [];
+  failure: Error | null = null;
 
   async create(entry: AuditEntryInput) {
+    if (this.failure) throw this.failure;
     this.entries.push(entry);
   }
 }
 
-function createService(onScheduleSettingsChanged?: () => Promise<void>) {
+function createService(
+  onScheduleSettingsChanged?: () => Promise<void>,
+  now: () => Date = () => new Date("2026-08-28T02:30:00.000Z")
+) {
   const repository = new MemorySettingsRepository();
   const auditRepository = new MemoryAuditRepository();
   const secretStore = new SecretStore("test-only-master-key");
@@ -39,7 +44,8 @@ function createService(onScheduleSettingsChanged?: () => Promise<void>) {
     repository,
     secretStore,
     new AuditService(auditRepository),
-    onScheduleSettingsChanged
+    onScheduleSettingsChanged,
+    now
   );
   return { service, repository, auditRepository, secretStore };
 }
@@ -106,4 +112,78 @@ test("schedule and provider mutations immediately reconcile persisted clock sche
   await service.updateProvider("manual", "admin-1", "ADMIN");
 
   assert.equal(reconciliations, 2);
+});
+
+test("defaults WeCom live sending to denied and persists one audited admin approval", async () => {
+  const { service, repository, auditRepository } = createService();
+  const previewDigest = `sha256:${"a".repeat(64)}`;
+
+  assert.equal(await service.isWecomLiveSendingApproved(), false);
+  await assert.rejects(
+    () => service.approveWecomLiveSending(
+      { previewRunId: "run-1", previewDigest },
+      "operator-1",
+      "OPERATOR"
+    ),
+    RoleForbiddenError
+  );
+
+  await service.approveWecomLiveSending(
+    { previewRunId: "run-1", previewDigest },
+    "admin-1",
+    "ADMIN"
+  );
+  await service.approveWecomLiveSending(
+    { previewRunId: "run-2", previewDigest: `sha256:${"b".repeat(64)}` },
+    "admin-2",
+    "ADMIN"
+  );
+
+  assert.equal(await service.isWecomLiveSendingApproved(), true);
+  assert.deepEqual(repository.records.get("WECOM_LIVE_SEND_APPROVAL"), {
+    key: "WECOM_LIVE_SEND_APPROVAL",
+    valueJson: {
+      approved: true,
+      actorId: "admin-1",
+      approvedAt: "2026-08-28T02:30:00.000Z",
+      previewRunId: "run-1",
+      previewDigest
+    },
+    encryptedValue: null,
+    secret: false,
+    updatedBy: "admin-1"
+  });
+  assert.equal(auditRepository.entries.length, 1);
+  assert.deepEqual(auditRepository.entries[0], {
+    actorId: "admin-1",
+    action: "wecom.live-send.approved",
+    entityType: "SystemSetting",
+    entityId: "WECOM_LIVE_SEND_APPROVAL",
+    before: null,
+    after: {
+      approved: true,
+      actorId: "admin-1",
+      approvedAt: "2026-08-28T02:30:00.000Z",
+      previewRunId: "run-1",
+      previewDigest
+    }
+  });
+});
+
+test("keeps WeCom live sending denied when the approval audit cannot be recorded", async () => {
+  const { service, repository, auditRepository } = createService();
+  auditRepository.failure = new Error("audit unavailable");
+
+  await assert.rejects(
+    () => service.approveWecomLiveSending(
+      { previewRunId: "run-1", previewDigest: `sha256:${"a".repeat(64)}` },
+      "admin-1",
+      "ADMIN"
+    ),
+    /audit unavailable/
+  );
+
+  assert.equal(await service.isWecomLiveSendingApproved(), false);
+  assert.equal(repository.records.get("WECOM_LIVE_SEND_APPROVAL")?.secret, false);
+  assert.equal(auditRepository.entries.length, 0);
 });

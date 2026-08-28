@@ -1,12 +1,14 @@
 import { ExportOutlined, ReloadOutlined } from "@ant-design/icons";
-import { Alert, Button, Descriptions, Result, Select, Space, Spin, Table, Tag, message } from "antd";
+import { Alert, Button, Descriptions, Modal, Result, Select, Space, Spin, Table, Tag, message } from "antd";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { useApiData } from "../api/client.ts";
 import {
   collectionRunDetailReportPath,
+  confirmCollectionRunNotification,
   fetchCollectionEvidence,
+  getCollectionRunNotificationPreview,
   requeueCollectionRun
 } from "../api/collection-runs.ts";
 import type {
@@ -16,7 +18,8 @@ import type {
   CollectionRunReportMatch,
   CollectionRunReportPrice,
   CollectionRunReportSku,
-  CollectionRunReportSource
+  CollectionRunReportSource,
+  RunAlertNotificationPreview
 } from "../api/types.ts";
 import { PageToolbar } from "../components/PageToolbar.tsx";
 import { formatFen } from "../data/demo-data.ts";
@@ -111,6 +114,11 @@ export function CollectionRunDetailPage() {
   const [issuePage, setIssuePage] = useState(1);
   const [skuPage, setSkuPage] = useState(1);
   const [requeueing, setRequeueing] = useState(false);
+  const [notificationPreviewOpen, setNotificationPreviewOpen] = useState(false);
+  const [notificationPreview, setNotificationPreview] = useState<RunAlertNotificationPreview | null>(null);
+  const [notificationPreviewLoading, setNotificationPreviewLoading] = useState(false);
+  const [notificationPreviewError, setNotificationPreviewError] = useState<string | null>(null);
+  const [notificationConfirming, setNotificationConfirming] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
   const path = useMemo(() => collectionRunDetailReportPath(runId, filters, {
     positionPage,
@@ -158,12 +166,118 @@ export function CollectionRunDetailPage() {
     }
   };
 
+  const loadNotificationPreview = async (): Promise<void> => {
+    setNotificationPreviewLoading(true);
+    setNotificationPreviewError(null);
+    try {
+      setNotificationPreview(await getCollectionRunNotificationPreview(report.id));
+    } catch (previewError) {
+      setNotificationPreviewError(
+        previewError instanceof Error ? previewError.message : "企业微信消息预览加载失败"
+      );
+    } finally {
+      setNotificationPreviewLoading(false);
+    }
+  };
+
+  const openNotificationPreview = () => {
+    setNotificationPreview(null);
+    setNotificationPreviewOpen(true);
+    void loadNotificationPreview();
+  };
+
+  const confirmNotification = async () => {
+    if (!notificationPreview || notificationPreview.liveSendingApproved) return;
+    setNotificationConfirming(true);
+    try {
+      await confirmCollectionRunNotification(report.id, {
+        previewDigest: notificationPreview.previewDigest,
+        confirmation: "SEND_TO_WECOM"
+      });
+      await Promise.all([refresh(), loadNotificationPreview()]);
+      messageApi.success("企业微信消息已确认，后续自动提醒已启用。");
+    } catch (confirmationError) {
+      messageApi.error(
+        confirmationError instanceof Error ? confirmationError.message : "企业微信消息确认失败"
+      );
+    } finally {
+      setNotificationConfirming(false);
+    }
+  };
+
   return <>
     {contextHolder}
+    <Modal
+      title="企业微信消息预览"
+      open={notificationPreviewOpen}
+      onCancel={() => {
+        if (!notificationConfirming) setNotificationPreviewOpen(false);
+      }}
+      footer={<Space>
+        <Button
+          disabled={notificationConfirming}
+          onClick={() => setNotificationPreviewOpen(false)}
+        >
+          关闭
+        </Button>
+        {notificationPreview?.liveSendingApproved ? null : <Button
+          type="primary"
+          loading={notificationConfirming}
+          disabled={!notificationPreview || notificationPreviewLoading}
+          onClick={() => void confirmNotification()}
+        >
+          确认发送并启用后续自动提醒
+        </Button>}
+      </Space>}
+      width={760}
+    >
+      {notificationPreviewLoading && !notificationPreview
+        ? <div className="collection-report-state"><Spin /><span>正在读取耐久通知批次</span></div>
+        : null}
+      {notificationPreviewError
+        ? <Alert type="error" showIcon title="企业微信消息预览失败" description={notificationPreviewError} />
+        : null}
+      {notificationPreview ? <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
+        <Space wrap>
+          <Tag>{notificationPreview.state}</Tag>
+          <span>{notificationPreview.previewDigest}</span>
+        </Space>
+        {notificationPreview.liveSendingApproved
+          ? <Alert type="success" showIcon title="后续自动提醒已启用" />
+          : <Alert
+            type="warning"
+            showIcon
+            title="首次实时发送尚未批准"
+            description="确认后将发送本次预览，并启用后续批次自动提醒。"
+          />}
+        <pre
+          aria-label="企业微信 Markdown 预览"
+          tabIndex={0}
+          style={{
+            margin: 0,
+            maxHeight: 420,
+            overflow: "auto",
+            padding: 12,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            background: "#f5f5f5",
+            border: "1px solid #d9d9d9",
+            borderRadius: 6
+          }}
+        >
+          {notificationPreview.markdown}
+        </pre>
+      </Space> : null}
+    </Modal>
     <PageToolbar
       title={report.model.label}
       description={`${report.model.monitorCode} · ${report.id}`}
-      actions={<Link to="/runs">返回报告列表</Link>}
+      actions={<Space>
+        {report.notification.state === "NOT_CREATED" ? null : <Button onClick={openNotificationPreview}>
+          预览企业微信消息
+        </Button>}
+        <Link to="/runs">返回报告列表</Link>
+      </Space>}
     />
     {error ? <Alert className="data-warning" type="warning" showIcon title="采集报告刷新失败，当前显示上次成功数据。" description={error} /> : null}
     {guidance ? <Alert

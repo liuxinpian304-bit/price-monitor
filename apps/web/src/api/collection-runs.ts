@@ -4,7 +4,8 @@ import type {
   CollectionReportPaginationInput,
   CollectionRunDetailPaginationInput,
   CollectionRunReportFilters,
-  CollectionRunReportList
+  CollectionRunReportList,
+  RunAlertNotificationPreview
 } from "./types.ts";
 import { getAdminSessionToken, requireAdminUnlock } from "../auth/admin-session.ts";
 
@@ -76,6 +77,29 @@ export function getCollectionRun(
   return apiRequest<CollectionRunReportDetail>(
     collectionRunDetailReportPath(runId, filters, pagination),
     { role: "ADMIN" }
+  );
+}
+
+export function getCollectionRunNotificationPreview(
+  runId: string
+): Promise<RunAlertNotificationPreview> {
+  return apiRequest<RunAlertNotificationPreview>(
+    `/api/operations/collection-runs/${encodeURIComponent(runId)}/notification-preview`,
+    { role: "ADMIN" }
+  );
+}
+
+export function confirmCollectionRunNotification(
+  runId: string,
+  input: { previewDigest: string; confirmation: "SEND_TO_WECOM" }
+): Promise<{ confirmed: true }> {
+  return apiRequest<{ confirmed: true }>(
+    `/api/operations/collection-runs/${encodeURIComponent(runId)}/notification-confirm`,
+    {
+      method: "POST",
+      role: "ADMIN",
+      body: JSON.stringify(input)
+    }
   );
 }
 
