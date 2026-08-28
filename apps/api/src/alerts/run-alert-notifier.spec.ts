@@ -270,3 +270,17 @@ test("returns before claiming a durable batch while live sending is unapproved",
   assert.equal(repository.batches.get("run-unapproved")?.state, "PENDING");
   assert.equal(sender.messages.length, 0);
 });
+
+test("defaults an omitted live-send approval dependency to denied", async () => {
+  const repository = new FakeBatchRepository();
+  const sender = new RecordingSender();
+  const input = summary("run-no-approval-dependency");
+  repository.seed(input);
+  const notifier = new RunAlertNotifier(repository, async () => sender);
+
+  await notifier.send(input);
+
+  assert.equal(repository.claimCount, 0);
+  assert.equal(repository.batches.get(input.runId)?.state, "PENDING");
+  assert.equal(sender.messages.length, 0);
+});

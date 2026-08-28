@@ -1,5 +1,9 @@
 import { CHECK_TIMES, TIME_ZONE } from "../../../../packages/config/src/schedule.ts";
-import { AuditService, type JsonValue } from "../audit/audit.service.ts";
+import {
+  AuditService,
+  type AuditEntryInput,
+  type JsonValue
+} from "../audit/audit.service.ts";
 import { SecretStore } from "./secret-store.ts";
 
 export type UserRole = "ADMIN" | "OPERATOR";
@@ -13,9 +17,17 @@ export interface SettingRecord {
   updatedBy: string;
 }
 
+export interface AtomicWecomLiveSendApprovalInput {
+  setting: SettingRecord;
+  audit: Omit<AuditEntryInput, "before" | "after">;
+}
+
 export interface SettingsRepository {
   get(key: string): Promise<SettingRecord | null>;
   set(record: SettingRecord): Promise<void>;
+  compareAndSetWecomLiveSendApproval(
+    input: AtomicWecomLiveSendApprovalInput
+  ): Promise<"APPROVED" | "ALREADY_APPROVED">;
 }
 
 export interface ScheduleInput {
@@ -67,7 +79,7 @@ interface WecomLiveSendApproval {
   previewDigest: string;
 }
 
-function wecomApprovalFrom(record: SettingRecord | null): WecomLiveSendApproval | null {
+export function wecomApprovalFrom(record: SettingRecord | null): WecomLiveSendApproval | null {
   if (!record || record.secret || record.encryptedValue !== null) return null;
   if (typeof record.valueJson !== "object" || record.valueJson === null || Array.isArray(record.valueJson)) {
     return null;
@@ -226,39 +238,27 @@ export class SettingsService {
       throw new SettingsValidationError("企业微信预览确认信息无效");
     }
 
-    const before = await this.repository.get(WECOM_LIVE_SEND_APPROVAL);
-    if (wecomApprovalFrom(before)) return;
-    const approvalMetadata = {
+    const valueJson: JsonValue = {
+      approved: true,
       actorId,
       approvedAt: this.now().toISOString(),
       previewRunId: input.previewRunId,
       previewDigest: input.previewDigest
     };
-    const valueJson: JsonValue = {
-      approved: true,
-      ...approvalMetadata
-    };
-    await this.repository.set({
-      key: WECOM_LIVE_SEND_APPROVAL,
-      valueJson: { approved: false, ...approvalMetadata },
-      encryptedValue: null,
-      secret: false,
-      updatedBy: actorId
-    });
-    await this.audit.record({
-      actorId,
-      action: "wecom.live-send.approved",
-      entityType: "SystemSetting",
-      entityId: WECOM_LIVE_SEND_APPROVAL,
-      before: before?.valueJson ?? null,
-      after: valueJson
-    });
-    await this.repository.set({
-      key: WECOM_LIVE_SEND_APPROVAL,
-      valueJson,
-      encryptedValue: null,
-      secret: false,
-      updatedBy: actorId
+    await this.repository.compareAndSetWecomLiveSendApproval({
+      setting: {
+        key: WECOM_LIVE_SEND_APPROVAL,
+        valueJson,
+        encryptedValue: null,
+        secret: false,
+        updatedBy: actorId
+      },
+      audit: {
+        actorId,
+        action: "wecom.live-send.approved",
+        entityType: "SystemSetting",
+        entityId: WECOM_LIVE_SEND_APPROVAL
+      }
     });
   }
 }

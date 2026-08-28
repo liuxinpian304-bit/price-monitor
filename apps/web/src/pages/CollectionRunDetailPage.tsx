@@ -187,7 +187,11 @@ export function CollectionRunDetailPage() {
   };
 
   const confirmNotification = async () => {
-    if (!notificationPreview || notificationPreview.liveSendingApproved) return;
+    if (
+      !notificationPreview
+      || notificationPreview.liveSendingApproved
+      || notificationPreview.state !== "PENDING"
+    ) return;
     setNotificationConfirming(true);
     try {
       await confirmCollectionRunNotification(report.id, {
@@ -223,7 +227,11 @@ export function CollectionRunDetailPage() {
         {notificationPreview?.liveSendingApproved ? null : <Button
           type="primary"
           loading={notificationConfirming}
-          disabled={!notificationPreview || notificationPreviewLoading}
+          disabled={
+            !notificationPreview
+            || notificationPreviewLoading
+            || notificationPreview.state !== "PENDING"
+          }
           onClick={() => void confirmNotification()}
         >
           确认发送并启用后续自动提醒
@@ -244,6 +252,13 @@ export function CollectionRunDetailPage() {
         </Space>
         {notificationPreview.liveSendingApproved
           ? <Alert type="success" showIcon title="后续自动提醒已启用" />
+          : notificationPreview.state !== "PENDING"
+            ? <Alert
+              type="error"
+              showIcon
+              title="当前批次不能用于首次发送确认"
+              description="首次确认只允许待发送批次，请选择状态为 PENDING 的企业微信预览。"
+            />
           : <Alert
             type="warning"
             showIcon

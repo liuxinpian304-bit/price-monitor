@@ -45,7 +45,7 @@ export class RunAlertNotifier {
   constructor(
     repository: RunAlertNotificationRepository,
     senderFactory: WecomSenderFactory,
-    isLiveSendingApproved: () => Promise<boolean> = async () => true,
+    isLiveSendingApproved: () => Promise<boolean> = async () => false,
     now: () => Date = () => new Date()
   ) {
     this.repository = repository;

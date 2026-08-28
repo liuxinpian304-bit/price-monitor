@@ -8,6 +8,8 @@ import { SecretStore } from "../settings/secret-store.ts";
 import {
   RoleForbiddenError,
   SettingsService,
+  wecomApprovalFrom,
+  type AtomicWecomLiveSendApprovalInput,
   type SettingRecord,
   type SettingsRepository
 } from "../settings/settings.service.ts";
@@ -150,31 +152,52 @@ class MemoryBatchRepository implements RunAlertNotificationRepository {
   }
 }
 
-class MemorySettingsRepository implements SettingsRepository {
-  readonly records = new Map<string, SettingRecord>();
-  async get(key: string) { return this.records.get(key) ?? null; }
-  async set(record: SettingRecord) { this.records.set(record.key, structuredClone(record)); }
-}
-
 class MemoryAuditRepository {
   readonly entries: AuditEntryInput[] = [];
   async create(entry: AuditEntryInput) { this.entries.push(structuredClone(entry)); }
 }
 
+class MemorySettingsRepository implements SettingsRepository {
+  readonly records = new Map<string, SettingRecord>();
+  private readonly audit: MemoryAuditRepository;
+
+  constructor(audit: MemoryAuditRepository) {
+    this.audit = audit;
+  }
+
+  async get(key: string) { return this.records.get(key) ?? null; }
+  async set(record: SettingRecord) { this.records.set(record.key, structuredClone(record)); }
+  async compareAndSetWecomLiveSendApproval(
+    input: AtomicWecomLiveSendApprovalInput
+  ): Promise<"APPROVED" | "ALREADY_APPROVED"> {
+    const before = this.records.get(input.setting.key) ?? null;
+    if (wecomApprovalFrom(before)) return "ALREADY_APPROVED";
+    await this.audit.create({
+      ...input.audit,
+      before: before?.valueJson ?? null,
+      after: input.setting.valueJson
+    });
+    this.records.set(input.setting.key, structuredClone(input.setting));
+    return "APPROVED";
+  }
+}
+
 class RecordingSender implements WecomMarkdownSender {
   readonly messages: string[] = [];
   beforeSend: (() => Promise<void>) | null = null;
+  failure: Error | null = null;
 
   async sendMarkdown(message: string): Promise<void> {
     if (this.beforeSend) await this.beforeSend();
     this.messages.push(message);
+    if (this.failure) throw this.failure;
   }
 }
 
 function fixture() {
   const batches = new MemoryBatchRepository();
-  const settingsRepository = new MemorySettingsRepository();
   const auditRepository = new MemoryAuditRepository();
+  const settingsRepository = new MemorySettingsRepository(auditRepository);
   const settings = new SettingsService(
     settingsRepository,
     new SecretStore("test-only-master-key"),
@@ -245,6 +268,29 @@ test("rejects wrong confirmation, stale digest, and non-admin approval before an
   assert.equal(sender.messages.length, 0);
 });
 
+test("rejects first approval unless the durable batch is still PENDING", async () => {
+  for (const state of ["SENDING", "NOTIFIED", "AMBIGUOUS", "FAILED"] as const) {
+    const { approval, auditRepository, batches, sender, settings } = fixture();
+    batches.seed(summary());
+    batches.batches.get("run-1")!.state = state;
+    const preview = await approval.preview("run-1");
+
+    await assert.rejects(
+      () => approval.approve({
+        runId: "run-1",
+        previewDigest: preview.previewDigest,
+        confirmation: "SEND_TO_WECOM"
+      }, "admin-1", "ADMIN"),
+      RunAlertNotificationApprovalValidationError
+    );
+
+    assert.equal(await settings.isWecomLiveSendingApproved(), false, state);
+    assert.equal(auditRepository.entries.length, 0, state);
+    assert.equal(batches.claimCount, 0, state);
+    assert.equal(sender.messages.length, 0, state);
+  }
+});
+
 test("persists and audits approval before one exact send, then enables future batches", async () => {
   const {
     approval,
@@ -287,4 +333,33 @@ test("persists and audits approval before one exact send, then enables future ba
   await notifier.send(next);
   assert.equal(sender.messages.length, 2);
   assert.equal(batches.batches.get("run-2")?.state, "NOTIFIED");
+});
+
+test("retries a failed first send after approval without another approval audit", async () => {
+  const { approval, auditRepository, batches, sender, settings } = fixture();
+  batches.seed(summary());
+  const preview = await approval.preview("run-1");
+  sender.failure = new Error("fake delivery failure");
+
+  await approval.approve({
+    runId: "run-1",
+    previewDigest: preview.previewDigest,
+    confirmation: "SEND_TO_WECOM"
+  }, "admin-1", "ADMIN");
+
+  assert.equal(await settings.isWecomLiveSendingApproved(), true);
+  assert.equal(auditRepository.entries.length, 1);
+  assert.equal(batches.batches.get("run-1")?.state, "PENDING");
+
+  sender.failure = null;
+  await approval.approve({
+    runId: "run-1",
+    previewDigest: preview.previewDigest,
+    confirmation: "SEND_TO_WECOM"
+  }, "admin-2", "ADMIN");
+
+  assert.equal(auditRepository.entries.length, 1);
+  assert.equal(sender.messages.length, 2);
+  assert.equal(sender.messages[0], sender.messages[1]);
+  assert.equal(batches.batches.get("run-1")?.state, "NOTIFIED");
 });
