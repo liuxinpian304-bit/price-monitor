@@ -120,13 +120,31 @@ interface StoredBatchRecord {
   attemptToken: string | null;
 }
 
-class InMemoryNotificationRepository implements RunAlertNotificationRepository {
+interface InMemoryNotificationRepositoryOptions {
+  alertRepository?: AlertRepository;
+  fixturePrefix?: string;
+  skipEmptyBatches?: boolean;
+}
+
+export class InMemoryRunAlertNotificationRepository implements RunAlertNotificationRepository {
   readonly batches = new Map<string, StoredBatchRecord>();
+  private readonly alertRepository: AlertRepository | undefined;
+  private readonly fixturePrefix: string;
+  private readonly skipEmptyBatches: boolean;
+  private nextBatch = 1;
+  private nextAttempt = 1;
+
+  constructor(options: InMemoryNotificationRepositoryOptions = {}) {
+    this.alertRepository = options.alertRepository;
+    this.fixturePrefix = options.fixturePrefix ?? "desktop";
+    this.skipEmptyBatches = options.skipEmptyBatches ?? false;
+  }
 
   ensureBatch(summary: RunAlertSummary): void {
+    if (this.skipEmptyBatches && summary.alerts.length === 0 && summary.systemIssue === null) return;
     if (this.batches.has(summary.runId)) return;
     this.batches.set(summary.runId, {
-      batchId: `desktop-batch-${this.batches.size + 1}`,
+      batchId: `${this.fixturePrefix}-batch-${this.nextBatch++}`,
       state: "PENDING",
       summary: structuredClone(summary),
       attemptToken: null
@@ -143,11 +161,11 @@ class InMemoryNotificationRepository implements RunAlertNotificationRepository {
     } : null;
   }
 
-  async claimBatch(runId: string): Promise<ClaimedRunAlertBatch | null> {
+  async claimBatch(runId: string, _attemptedAt: Date): Promise<ClaimedRunAlertBatch | null> {
     const batch = this.batches.get(runId);
     if (!batch || batch.state !== "PENDING") return null;
     batch.state = "SENDING";
-    batch.attemptToken = `desktop-attempt-${runId}`;
+    batch.attemptToken = `${this.fixturePrefix}-attempt-${runId}-${this.nextAttempt++}`;
     return {
       batchId: batch.batchId,
       attemptToken: batch.attemptToken,
@@ -156,19 +174,28 @@ class InMemoryNotificationRepository implements RunAlertNotificationRepository {
     };
   }
 
-  async markBatchNotified(batch: ClaimedRunAlertBatch): Promise<void> {
+  async markBatchNotified(batch: ClaimedRunAlertBatch, notifiedAt: Date): Promise<void> {
     const stored = this.requireClaim(batch);
     stored.state = "NOTIFIED";
     stored.attemptToken = null;
+    await this.alertRepository?.markBatchNotified(batch.alertIds, notifiedAt);
   }
 
-  async recordBatchNotificationFailure(batch: ClaimedRunAlertBatch): Promise<void> {
+  async recordBatchNotificationFailure(
+    batch: ClaimedRunAlertBatch,
+    message: "WECOM_NOT_CONFIGURED" | "WECOM_DELIVERY_FAILED",
+    _failedAt: Date
+  ): Promise<void> {
     const stored = this.requireClaim(batch);
     stored.state = "PENDING";
     stored.attemptToken = null;
+    await this.alertRepository?.recordBatchNotificationFailure(batch.alertIds, message);
   }
 
-  async recordBatchNotificationAmbiguous(batch: ClaimedRunAlertBatch): Promise<void> {
+  async recordBatchNotificationAmbiguous(
+    batch: ClaimedRunAlertBatch,
+    _failedAt: Date
+  ): Promise<void> {
     const stored = this.requireClaim(batch);
     stored.state = "AMBIGUOUS";
     stored.attemptToken = null;
@@ -184,7 +211,7 @@ class InMemoryNotificationRepository implements RunAlertNotificationRepository {
   private requireClaim(batch: ClaimedRunAlertBatch): StoredBatchRecord {
     const stored = [...this.batches.values()].find((candidate) => candidate.batchId === batch.batchId);
     if (!stored || stored.state !== "SENDING" || stored.attemptToken !== batch.attemptToken) {
-      throw new Error("Desktop fixture notification claim is invalid");
+      throw new Error("Fixture notification claim is invalid");
     }
     return stored;
   }
@@ -234,38 +261,57 @@ class InMemoryCollectorAgentRepository implements CollectorAgentRepository {
   }
 }
 
-class InMemoryEvaluationRepository implements RunAlertEvaluationRepository {
+export class InMemoryRunAlertEvaluationRepository implements RunAlertEvaluationRepository {
   private readonly runId: string;
   private readonly isReady: () => boolean;
-  private inFlight = false;
+  private activeAttemptToken: string | null = null;
   private evaluated = false;
+  private nextAttempt = 1;
 
   constructor(runId: string, isReady: () => boolean) {
     this.runId = runId;
     this.isReady = isReady;
   }
 
-  async claimRun(runId: string | null): Promise<ClaimedRunAlertEvaluation | null> {
-    if (!this.isReady() || this.inFlight || this.evaluated || (runId !== null && runId !== this.runId)) {
+  async claimRun(
+    runId: string | null,
+    _attemptedAt: Date
+  ): Promise<ClaimedRunAlertEvaluation | null> {
+    if (
+      !this.isReady()
+      || this.activeAttemptToken !== null
+      || this.evaluated
+      || (runId !== null && runId !== this.runId)
+    ) {
       return null;
     }
-    this.inFlight = true;
-    return { runId: this.runId, attemptToken: `desktop-evaluation-${this.runId}` };
+    this.activeAttemptToken = `desktop-evaluation-${this.runId}-${this.nextAttempt++}`;
+    return { runId: this.runId, attemptToken: this.activeAttemptToken };
   }
 
-  async markEvaluated(claim: ClaimedRunAlertEvaluation): Promise<void> {
+  async markEvaluated(
+    claim: ClaimedRunAlertEvaluation,
+    _completedAt: Date
+  ): Promise<void> {
     this.assertClaim(claim);
-    this.inFlight = false;
+    this.activeAttemptToken = null;
     this.evaluated = true;
   }
 
-  async recordEvaluationFailure(claim: ClaimedRunAlertEvaluation): Promise<void> {
+  async recordEvaluationFailure(
+    claim: ClaimedRunAlertEvaluation,
+    _failedAt: Date
+  ): Promise<void> {
     this.assertClaim(claim);
-    this.inFlight = false;
+    this.activeAttemptToken = null;
   }
 
   private assertClaim(claim: ClaimedRunAlertEvaluation): void {
-    if (!this.inFlight || claim.runId !== this.runId) {
+    if (
+      this.activeAttemptToken === null
+      || claim.runId !== this.runId
+      || claim.attemptToken !== this.activeAttemptToken
+    ) {
       throw new Error("Desktop fixture evaluation claim is invalid");
     }
   }
@@ -275,13 +321,13 @@ interface WorkflowStoreOptions {
   report: CollectorReport;
   claimedOwnListingIds: string[];
   alertRepository: InMemoryAlertRepository;
-  notificationRepository: InMemoryNotificationRepository;
+  notificationRepository: InMemoryRunAlertNotificationRepository;
 }
 
 class InMemoryWorkflowStore implements DesktopReportRepository, RunAlertRepository {
   private readonly claimedRun: ClaimedDesktopRun;
   private readonly alertRepository: InMemoryAlertRepository;
-  private readonly notificationRepository: InMemoryNotificationRepository;
+  private readonly notificationRepository: InMemoryRunAlertNotificationRepository;
   private readonly expectedReport: CollectorReport;
   private acceptedDigest: string | null = null;
   private ingestionSummary: IngestionSummary | null = null;
@@ -663,7 +709,9 @@ export function createDesktopReportHarness(options: DesktopReportHarnessOptions 
       runNumber += 1;
       const fixture = desktopUiFixture(runNumber, input);
       const alerts = new InMemoryAlertRepository();
-      const notifications = new InMemoryNotificationRepository();
+      const notifications = new InMemoryRunAlertNotificationRepository({
+        alertRepository: alerts
+      });
       const sender = new RecordingSender();
       const store = new InMemoryWorkflowStore({
         report: fixture.report,
@@ -681,7 +729,7 @@ export function createDesktopReportHarness(options: DesktopReportHarnessOptions 
         async () => wecomLiveSendingApproved,
         () => new Date(COMPLETED_AT)
       );
-      const evaluationRepository = new InMemoryEvaluationRepository(
+      const evaluationRepository = new InMemoryRunAlertEvaluationRepository(
         fixture.report.runId,
         () => store.hasTerminalData()
       );
