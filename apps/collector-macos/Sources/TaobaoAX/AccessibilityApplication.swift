@@ -29,7 +29,7 @@ final class AccessibilityApplication {
         let frontWindowAvailable: Bool
         if trusted, let runningApplication {
             let root = LiveAXElement(element: AXUIElementCreateApplication(runningApplication.processIdentifier))
-            frontWindowAvailable = try root.hasValue(for: kAXFocusedWindowAttribute as String)
+            frontWindowAvailable = (try? AXScopedRootResolver().resolve(applicationRoot: root)) != nil
         } else {
             frontWindowAvailable = false
         }
@@ -49,7 +49,7 @@ final class AccessibilityApplication {
 
     func snapshot() throws -> JSONValue {
         let root = try freshRoot()
-        return try encode(treeSerializer.serialize(root: root))
+        return try encode(treeSerializer.serialize(root: root.element))
     }
 
     func perform(path: [Int], action: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue {
@@ -82,7 +82,7 @@ final class AccessibilityApplication {
             throw HelperError(code: "KEY_NOT_ALLOWED", message: "Keyboard action is not allowed.")
         }
 
-        _ = try freshRoot()
+        _ = try freshRoot().element
         guard let application = runningApplication(),
               NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier else {
             throw HelperError(code: "APP_NOT_FRONTMOST", message: "Application is not frontmost.")
@@ -127,7 +127,7 @@ final class AccessibilityApplication {
         return application.processIdentifier
     }
 
-    private func freshRoot() throws -> LiveAXElement {
+    private func freshRoot() throws -> (element: LiveAXElement, scope: AXRootScope) {
         guard AXIsProcessTrusted() else {
             throw HelperError(
                 code: "ACCESSIBILITY_PERMISSION_REQUIRED",
@@ -137,7 +137,14 @@ final class AccessibilityApplication {
         guard let application = runningApplication() else {
             throw HelperError(code: "APP_NOT_RUNNING", message: "Application is not running.")
         }
-        return LiveAXElement(element: AXUIElementCreateApplication(application.processIdentifier))
+        let applicationRoot = LiveAXElement(
+            element: AXUIElementCreateApplication(application.processIdentifier)
+        )
+        let scoped = try AXScopedRootResolver().resolve(applicationRoot: applicationRoot)
+        guard let element = scoped.element as? LiveAXElement else {
+            throw HelperError(code: "ACCESSIBILITY_READ_FAILED", message: "Window root is invalid.")
+        }
+        return (element, scoped.scope)
     }
 
     private func resolve(path: [Int], fingerprint: AXNodeFingerprint?) throws -> LiveAXElement {
@@ -145,7 +152,7 @@ final class AccessibilityApplication {
             throw HelperError(code: "INVALID_NODE_PATH", message: "Invalid accessibility node path.")
         }
 
-        var current = try freshRoot()
+        var current = try freshRoot().element
         for index in path {
             let children = try current.liveChildren()
             guard children.indices.contains(index) else {
@@ -309,6 +316,19 @@ final class LiveAXElement: AXElementReading {
             return AXSize(width: size.width, height: size.height)
         }
         return copiedValue
+    }
+
+    func referencedElement(for attribute: String) throws -> (any AXElementReading)? {
+        var copiedValue: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &copiedValue)
+        if result == .noValue || result == .attributeUnsupported {
+            return nil
+        }
+        guard result == .success else { throw mappedReadError(result) }
+        guard let copiedValue, CFGetTypeID(copiedValue) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        return LiveAXElement(element: copiedValue as! AXUIElement)
     }
 
     func actionNames() throws -> [String] {
