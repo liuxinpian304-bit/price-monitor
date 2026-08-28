@@ -21,19 +21,14 @@ export interface SkuCombinationInput {
 }
 
 export interface CanonicalSkuCombination {
+  version: "sku-combination-v1";
   brand: string;
-  standardModel: string;
-  version: string | null;
+  model: string;
   condition: "new";
+  core: Array<{ model: string; quantity: number }>;
+  paidAccessories: Array<{ model: string; quantity: number }>;
+  materialAttributes: Record<string, string>;
   color: string | null;
-  attributes: Array<{ key: string; value: string }>;
-  components: Array<{
-    role: "CORE" | "PAID_ACCESSORY";
-    accessoryType: string;
-    brand: string | null;
-    modelOrName: string;
-    quantity: number;
-  }>;
 }
 
 export type SkuCombinationBuildResult =
@@ -41,7 +36,12 @@ export type SkuCombinationBuildResult =
   | { kind: "REVIEW"; signature: null; label: string | null; reasons: string[] }
   | { kind: "EXCLUDED"; signature: null; label: null; reasons: string[] };
 
-type IncludedComponent = CanonicalSkuCombination["components"][number];
+type CanonicalComponent = CanonicalSkuCombination["core"][number];
+type NormalizedComponent = CanonicalComponent & {
+  role: "CORE" | "PAID_ACCESSORY";
+  accessoryType: string;
+  brand: string | null;
+};
 
 const CONDITION_EXCLUSIONS = ["二手", "样机", "展示机", "翻新", "租赁", "定金"];
 const MATERIAL_ATTRIBUTE_KEY = /版本|区域|地区|国行|保修|质保/u;
@@ -55,16 +55,16 @@ function excluded(reason: string): SkuCombinationBuildResult {
   return { kind: "EXCLUDED", signature: null, label: null, reasons: [reason] };
 }
 
+function normalizeIdentifier(value: string): string {
+  return normalizeText(value).replace(/\s+/g, "");
+}
+
 function compareText(left: string, right: string): number {
   return left === right ? 0 : (left < right ? -1 : 1);
 }
 
-function compareComponents(left: IncludedComponent, right: IncludedComponent): number {
-  return compareText(left.role, right.role)
-    || compareText(left.accessoryType, right.accessoryType)
-    || compareText(left.brand ?? "", right.brand ?? "")
-    || compareText(left.modelOrName, right.modelOrName)
-    || left.quantity - right.quantity;
+function compareCanonicalComponents(left: CanonicalComponent, right: CanonicalComponent): number {
+  return compareText(left.model, right.model) || left.quantity - right.quantity;
 }
 
 function compareAttributes(left: { key: string; value: string }, right: { key: string; value: string }): number {
@@ -78,30 +78,41 @@ function hasExcludedCondition(title: string, skuText: string): string | undefine
 
 function normalizedAttributes(input: SkuCombinationInput): {
   color: string | null;
-  attributes: CanonicalSkuCombination["attributes"];
+  materialAttributes: CanonicalSkuCombination["materialAttributes"];
 } | SkuCombinationBuildResult {
   const entries = Object.entries(input.attributes).map(([key, value]) => ({
     key: normalizeText(key),
     value: normalizeText(value)
   }));
-  const material = entries.filter(({ key }) => MATERIAL_ATTRIBUTE_KEY.test(key));
-  if (material.some(({ value }) => value === "")) {
+  const materialEntries = entries
+    .filter(({ key }) => !COLOR_ATTRIBUTE_KEY.test(key) && MATERIAL_ATTRIBUTE_KEY.test(key))
+    .sort(compareAttributes);
+  if (materialEntries.some(({ value }) => value === "")) {
     return review("关键规格属性为空，无法可靠比较");
   }
 
+  const materialAttributes: Record<string, string> = {};
+  for (const attribute of materialEntries) {
+    const existing = materialAttributes[attribute.key];
+    if (existing !== undefined && existing !== attribute.value) {
+      return review("关键规格属性冲突，无法可靠比较");
+    }
+    materialAttributes[attribute.key] = attribute.value;
+  }
+
   if (!input.colorComparable) {
-    return { color: null, attributes: material.sort(compareAttributes) };
+    return { color: null, materialAttributes };
   }
 
   const color = entries.find(({ key }) => COLOR_ATTRIBUTE_KEY.test(key));
   if (!color || color.value === "") {
     return review("颜色可比但未提供明确颜色");
   }
-  return { color: color.value, attributes: material.sort(compareAttributes) };
+  return { color: color.value, materialAttributes };
 }
 
 function normalizedComponents(input: SkuCombinationInput): {
-  components: IncludedComponent[];
+  components: NormalizedComponent[];
   giftOrServiceIncluded: boolean;
 } | SkuCombinationBuildResult {
   if (!input.components) {
@@ -112,15 +123,15 @@ function normalizedComponents(input: SkuCombinationInput): {
     return review("组件角色未知，无法可靠比较");
   }
 
-  const components: IncludedComponent[] = [];
+  const components: NormalizedComponent[] = [];
   let giftOrServiceIncluded = false;
   for (const component of input.components) {
     if (!Number.isSafeInteger(component.quantity) || component.quantity <= 0) {
       return review("组件数量无效，无法可靠比较");
     }
     const accessoryType = normalizeText(component.accessoryType);
-    const modelOrName = normalizeText(component.modelOrName);
-    if (accessoryType === "" || modelOrName === "") {
+    const model = normalizeIdentifier(component.modelOrName);
+    if (accessoryType === "" || model === "") {
       return review("组件名称为空，无法可靠比较");
     }
     if (component.role === "GIFT_OR_SERVICE") {
@@ -131,12 +142,11 @@ function normalizedComponents(input: SkuCombinationInput): {
       return review("组件角色未知，无法可靠比较");
     }
 
-    const brand = component.brand === null ? null : normalizeText(component.brand) || null;
     components.push({
       role: component.role,
       accessoryType,
-      brand,
-      modelOrName,
+      brand: component.brand === null ? null : normalizeIdentifier(component.brand) || null,
+      model,
       quantity: component.quantity
     });
   }
@@ -144,31 +154,35 @@ function normalizedComponents(input: SkuCombinationInput): {
   if (!components.some((component) => component.role === "CORE")) {
     return review("缺少核心组件，无法可靠比较");
   }
-  return { components: components.sort(compareComponents), giftOrServiceIncluded };
+  return { components, giftOrServiceIncluded };
 }
 
 function isBuildResult(
-  value: { color: string | null; attributes: CanonicalSkuCombination["attributes"] } | SkuCombinationBuildResult
+  value: { color: string | null; materialAttributes: CanonicalSkuCombination["materialAttributes"] } | SkuCombinationBuildResult
 ): value is SkuCombinationBuildResult {
   return "kind" in value;
 }
 
-function buildLabel(canonical: CanonicalSkuCombination): string {
-  const core = canonical.components
+function buildLabel(
+  canonical: CanonicalSkuCombination,
+  components: NormalizedComponent[],
+  version: string | null
+): string {
+  const core = components
     .filter((component) => component.role === "CORE")
-    .map((component) => `${component.modelOrName}x${component.quantity}`)
+    .map((component) => `${component.accessoryType}${component.model}x${component.quantity}`)
     .join("、");
-  const paidAccessories = canonical.components
+  const paidAccessories = components
     .filter((component) => component.role === "PAID_ACCESSORY")
-    .map((component) => `${component.accessoryType}${component.modelOrName}x${component.quantity}`)
+    .map((component) => `${component.accessoryType}${component.model}x${component.quantity}`)
     .join("、");
   const parts = [
-    `${canonical.brand} ${canonical.standardModel}`,
+    `${canonical.brand} ${canonical.model}`,
     "新品",
     `核心${core}`,
     paidAccessories ? `付费配件${paidAccessories}` : "",
-    canonical.version ?? "",
-    ...canonical.attributes.map((attribute) => `${attribute.key}${attribute.value}`),
+    version ?? "",
+    ...Object.entries(canonical.materialAttributes).map(([key, value]) => `${key}${value}`),
     canonical.color ? `颜色${canonical.color}` : ""
   ];
   return parts.filter(Boolean).join(" ");
@@ -187,9 +201,9 @@ export function buildSkuCombination(input: SkuCombinationInput): SkuCombinationB
     return excluded(`商品包含${excludedCondition}状态，排除比较`);
   }
 
-  const brand = normalizeText(input.brand);
-  const standardModel = normalizeText(input.standardModel);
-  if (brand === "" || standardModel === "") {
+  const brand = normalizeIdentifier(input.brand);
+  const model = normalizeIdentifier(input.standardModel);
+  if (brand === "" || model === "") {
     return review("监控品牌或标准型号为空，无法可靠比较");
   }
 
@@ -202,17 +216,24 @@ export function buildSkuCombination(input: SkuCombinationInput): SkuCombinationB
     return components;
   }
 
-  const version = input.version === null ? null : normalizeText(input.version) || null;
   const canonical: CanonicalSkuCombination = {
+    version: "sku-combination-v1",
     brand,
-    standardModel,
-    version,
+    model,
     condition: "new",
-    color: attributes.color,
-    attributes: attributes.attributes,
-    components: components.components
+    core: components.components
+      .filter((component) => component.role === "CORE")
+      .map(({ model: componentModel, quantity }) => ({ model: componentModel, quantity }))
+      .sort(compareCanonicalComponents),
+    paidAccessories: components.components
+      .filter((component) => component.role === "PAID_ACCESSORY")
+      .map(({ model: componentModel, quantity }) => ({ model: componentModel, quantity }))
+      .sort(compareCanonicalComponents),
+    materialAttributes: attributes.materialAttributes,
+    color: attributes.color
   };
   const signature = `sku-combination-v1:${createHash("sha256").update(JSON.stringify(canonical), "utf8").digest("hex")}`;
   const reasons = components.giftOrServiceIncluded ? ["赠品或服务未计入组合签名"] : [];
-  return { kind: "SIGNED", signature, label: buildLabel(canonical), canonical, reasons };
+  const version = input.version === null ? null : normalizeText(input.version) || null;
+  return { kind: "SIGNED", signature, label: buildLabel(canonical, components.components, version), canonical, reasons };
 }
