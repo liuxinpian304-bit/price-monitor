@@ -33,18 +33,43 @@ final class AccessibilityApplicationTests: XCTestCase {
             XCTAssertEqual((error as? HelperError)?.code, "FRONT_WINDOW_NOT_AVAILABLE")
         }
     }
+
+    func testDiagnoseFrontWindowAvailabilityReturnsFalseWhenNoWindowExists() throws {
+        let application = ReferencedTestAXElement()
+
+        let result = try AccessibilityApplication.frontWindowAvailable(applicationRoot: application)
+
+        XCTAssertFalse(result)
+    }
+
+    func testDiagnoseFrontWindowAvailabilityPropagatesReadError() {
+        let readError = HelperError(
+            code: "ACCESSIBILITY_READ_FAILED",
+            message: "Accessibility data could not be read."
+        )
+        let application = ReferencedTestAXElement(referenceReadError: readError)
+
+        XCTAssertThrowsError(
+            try AccessibilityApplication.frontWindowAvailable(applicationRoot: application)
+        ) { error in
+            XCTAssertEqual(error as? HelperError, readError)
+        }
+    }
 }
 
 private final class ReferencedTestAXElement: AXElementReading {
     private let title: String?
     private let references: [String: any AXElementReading]
+    private let referenceReadError: HelperError?
 
     init(
         title: String? = nil,
-        references: [String: any AXElementReading] = [:]
+        references: [String: any AXElementReading] = [:],
+        referenceReadError: HelperError? = nil
     ) {
         self.title = title
         self.references = references
+        self.referenceReadError = referenceReadError
     }
 
     func value(for attribute: String) throws -> Any? {
@@ -52,6 +77,9 @@ private final class ReferencedTestAXElement: AXElementReading {
     }
 
     func referencedElement(for attribute: String) throws -> (any AXElementReading)? {
+        if let referenceReadError {
+            throw referenceReadError
+        }
         references[attribute]
     }
 

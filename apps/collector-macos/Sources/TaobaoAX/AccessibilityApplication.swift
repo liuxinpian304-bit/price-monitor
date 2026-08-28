@@ -29,7 +29,7 @@ final class AccessibilityApplication {
         let frontWindowAvailable: Bool
         if trusted, let runningApplication {
             let root = LiveAXElement(element: AXUIElementCreateApplication(runningApplication.processIdentifier))
-            frontWindowAvailable = (try? AXScopedRootResolver().resolve(applicationRoot: root)) != nil
+            frontWindowAvailable = try Self.frontWindowAvailable(applicationRoot: root)
         } else {
             frontWindowAvailable = false
         }
@@ -45,6 +45,17 @@ final class AccessibilityApplication {
             "build": metadata.build.map(JSONValue.string) ?? .null,
             "frontWindowAvailable": .boolean(frontWindowAvailable),
         ])
+    }
+
+    static func frontWindowAvailable(applicationRoot: any AXElementReading) throws -> Bool {
+        do {
+            _ = try AXScopedRootResolver().resolve(applicationRoot: applicationRoot)
+            return true
+        } catch let error as HelperError where error.code == "FRONT_WINDOW_NOT_AVAILABLE" {
+            return false
+        } catch {
+            throw error
+        }
     }
 
     func snapshot() throws -> JSONValue {
