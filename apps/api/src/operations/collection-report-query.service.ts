@@ -627,8 +627,17 @@ function snapshotFilterSql(
     clauses.push(Prisma.sql`s."ownListingId" IS NULL`);
     clauses.push(Prisma.sql`s."combinationState"::text = 'MATCHED'`);
     clauses.push(Prisma.sql`s."comparisonOwnSnapshotId" IS NOT NULL`);
+    clauses.push(Prisma.sql`s."combinationSignature" IS NOT NULL`);
+    clauses.push(Prisma.sql`selected_own."ownListingId" IS NOT NULL`);
+    clauses.push(Prisma.sql`selected_own."combinationSignature" = s."combinationSignature"`);
+    clauses.push(Prisma.sql`s."priceConfidence"::text = 'CONFIRMED'`);
+    clauses.push(Prisma.sql`selected_own."priceConfidence"::text = 'CONFIRMED'`);
+    clauses.push(Prisma.sql`s."stockState"::text = 'IN_STOCK'`);
+    clauses.push(Prisma.sql`selected_own."stockState"::text = 'IN_STOCK'`);
     clauses.push(Prisma.sql`s."payableFen" IS NOT NULL`);
+    clauses.push(Prisma.sql`s."payableFen" >= 0`);
     clauses.push(Prisma.sql`selected_own."payableFen" IS NOT NULL`);
+    clauses.push(Prisma.sql`selected_own."payableFen" >= 0`);
     clauses.push(filters.price === "LOWER"
       ? Prisma.sql`s."payableFen" < selected_own."payableFen"`
       : Prisma.sql`s."payableFen" >= selected_own."payableFen"`);

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { createPrismaClient } from "../database/prisma.service.ts";
+import type { CollectionRunBusinessSkuRow } from "./collection-report-aggregation.ts";
 import { CollectionReportQueryService, PrismaCollectionReportRepository } from "./collection-report-query.service.ts";
 
 const prisma = createPrismaClient();
@@ -186,6 +187,62 @@ test("bounds large report pages and keeps database-side filters and totals accur
   await prisma.offerSnapshot.createMany({
     data: [
       {
+        id: `${prefix}-corrupt-cross-signature`,
+        collectionRunId: mainRunId,
+        platformItemId: "item-1",
+        skuId: "corrupt-cross-signature",
+        shopName: "合成同行店",
+        title: "Sony MDR-7506 corrupt cross signature",
+        skuText: "标准版",
+        listPriceFen: 60_000,
+        activityPriceFen: 60_000,
+        payableFen: 60_000,
+        priceConfidence: "CONFIRMED" as const,
+        stockState: "IN_STOCK" as const,
+        matchDecision: "BARE" as const,
+        comparable: true,
+        matchConfidenceBps: 10_000,
+        matchReasons: ["corrupt relation fixture"],
+        combinationSignature: "signature-other",
+        combinationLabel: "Other combination",
+        combinationState: "MATCHED" as const,
+        combinationReasons: { ruleVersion: "sku-combination-v1", codes: ["EXACT_SIGNATURE"] },
+        comparisonOwnSnapshotId: `${prefix}-snapshot-own`,
+        rawEvidence: { attributes: { 型号: "MDR-7506" }, components: [] },
+        ingestionKey: `${prefix}-corrupt-cross-signature-ingestion`,
+        capturedAt
+      },
+      {
+        id: `${prefix}-corrupt-non-own`,
+        collectionRunId: mainRunId,
+        platformItemId: "item-2",
+        skuId: "corrupt-non-own",
+        shopName: "合成同行店",
+        title: "Sony MDR-7506 corrupt non-own reference",
+        skuText: "标准版",
+        listPriceFen: 60_000,
+        activityPriceFen: 60_000,
+        payableFen: 60_000,
+        priceConfidence: "CONFIRMED" as const,
+        stockState: "IN_STOCK" as const,
+        matchDecision: "BARE" as const,
+        comparable: true,
+        matchConfidenceBps: 10_000,
+        matchReasons: ["corrupt relation fixture"],
+        combinationSignature: "signature-standard",
+        combinationLabel: "MDR-7506 标准版",
+        combinationState: "MATCHED" as const,
+        combinationReasons: { ruleVersion: "sku-combination-v1", codes: ["EXACT_SIGNATURE"] },
+        comparisonOwnSnapshotId: `${prefix}-snapshot-001`,
+        rawEvidence: { attributes: { 型号: "MDR-7506" }, components: [] },
+        ingestionKey: `${prefix}-corrupt-non-own-ingestion`,
+        capturedAt
+      }
+    ]
+  });
+  await prisma.offerSnapshot.createMany({
+    data: [
+      {
         id: `${prefix}-zero-own`,
         collectionRunId: zeroBaselineRunId,
         ownListingId,
@@ -285,25 +342,25 @@ test("bounds large report pages and keeps database-side filters and totals accur
   assert.equal(detail.pagination.issues.total, 140);
   assert.equal(detail.skus.length, 25);
   assert.equal(detail.pagination.skus.total, 60);
-  assert.equal(detail.totalSkuCount, 221);
+  assert.equal(detail.totalSkuCount, 223);
   assert.equal(detail.completion.label, "151 / 200，未完成");
   assert.deepEqual(detail.businessSummary, {
     distinctShopCount: 1,
     distinctItemCount: 150,
-    skuCount: 220,
+    skuCount: 222,
     matchedSkuCount: 120,
     confirmedLowCount: 60,
     missingCombinationCount: 0,
-    reviewCount: 50,
+    reviewCount: 52,
     excludedCount: 50,
     ownConfiguredListingCount: 1,
     ownCollectedListingCount: 1,
     ownCatalogComplete: true
   });
   assert.equal(detail.priceBoard.shops[0]?.itemCount, 150);
-  assert.equal(detail.priceBoard.shops[0]?.skuCount, 220);
+  assert.equal(detail.priceBoard.shops[0]?.skuCount, 222);
   assert.equal(detail.confirmedLows.length, 60);
-  assert.equal(detail.reviewRows.length, 50);
+  assert.equal(detail.reviewRows.length, 52);
   const projectedFirst = detail.priceBoard.shops[0]?.items
     .find((item) => item.platformItemId === "item-1")?.skus
     .find((sku) => sku.id === `${prefix}-snapshot-000`);
@@ -315,6 +372,14 @@ test("bounds large report pages and keeps database-side filters and totals accur
   assert.equal(projectedFirst?.components?.[0]?.role, "CORE");
   assert.equal(projectedFirst?.promotions[0]?.amountFen, 1_000);
   assert.deepEqual(projectedFirst?.gifts, [{ name: "音频线", quantity: 1 }]);
+  for (const id of [`${prefix}-corrupt-cross-signature`, `${prefix}-corrupt-non-own`]) {
+    const corrupt: CollectionRunBusinessSkuRow | undefined = detail.priceBoard.shops[0]?.items
+      .flatMap((item) => item.skus)
+      .find((sku) => sku.id === id);
+    assert.equal(corrupt?.selectedOwnSnapshot, null);
+    assert.equal(corrupt?.combination.state, "REVIEW");
+    assert.ok(corrupt?.combination.reasons.includes("INVALID_COMPARISON_OWN_SNAPSHOT"));
+  }
   assert.ok(detail.skus.every((sku) => sku.source === "COMPETITOR"
     && sku.match.category === "EXACT"
     && sku.comparison.state === "LOWER"
