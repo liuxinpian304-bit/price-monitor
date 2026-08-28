@@ -242,7 +242,11 @@ describe("CollectionRunDetailPage", () => {
     expect(screen.getByText("我方目录采集不完整")).toBeInTheDocument();
     expect(screen.getByText("部分覆盖：已捕获 47 / 50 个搜索位置")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "展开店铺 索尼聚鑫数码商城" }));
+    const shopDisclosure = screen.getByRole("button", { name: "展开店铺 索尼聚鑫数码商城" });
+    expect(shopDisclosure).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(shopDisclosure);
+    expect(screen.getByRole("button", { name: "收起店铺 索尼聚鑫数码商城" }))
+      .toHaveAttribute("aria-expanded", "true");
     expect(screen.getAllByRole("link", { name: "https://item.taobao.com/item.htm?id=competitor-business" }).length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: "https://item.taobao.com/item.htm?id=empty-item" }))
       .toHaveAttribute("href", "https://item.taobao.com/item.htm?id=empty-item");

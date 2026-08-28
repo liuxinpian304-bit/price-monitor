@@ -127,6 +127,7 @@ function shopExpandIcon({ expanded, onExpand, record }: Parameters<NonNullable<N
   const label = `${expanded ? "收起" : "展开"}店铺 ${record.shopName}`;
   return <Tooltip title={label}>
     <Button
+      aria-expanded={expanded}
       aria-label={label}
       icon={expanded ? <DownOutlined /> : <RightOutlined />}
       onClick={(event) => onExpand(record, event)}
