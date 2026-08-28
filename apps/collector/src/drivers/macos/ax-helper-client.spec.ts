@@ -182,6 +182,49 @@ test("surfaces typed helper errors without restarting or leaking unsafe messages
   client.close();
 });
 
+test("preserves allowlisted tree-limit diagnostics without restarting the helper", async () => {
+  const process = new FakeProcess();
+  let spawns = 0;
+  const client = new AxHelperClient({ spawn: () => { spawns += 1; return process; } });
+  process.stdin.once("data", (chunk) => {
+    const request = JSON.parse(String(chunk)) as { id: string };
+    process.stdout.write(`${JSON.stringify({
+      id: request.id,
+      ok: false,
+      error: {
+        code: "TREE_LIMIT_REACHED",
+        message: "Accessibility tree limit reached.",
+        details: {
+          reason: "nodeCount",
+          scope: "focusedWindow",
+          visitedNodeCount: 4001,
+          maximumDepth: 18,
+          elapsedMilliseconds: 420,
+          encodedBytes: 0,
+          unexpected: "must-not-propagate"
+        }
+      }
+    })}\n`);
+  });
+
+  await assert.rejects(client.snapshot(), (error: unknown) => {
+    assert.equal(error instanceof AxHelperResponseError, true);
+    const response = error as AxHelperResponseError;
+    assert.equal(response.code, "TREE_LIMIT_REACHED");
+    assert.deepEqual(response.details, {
+      reason: "nodeCount",
+      scope: "focusedWindow",
+      visitedNodeCount: 4001,
+      maximumDepth: 18,
+      elapsedMilliseconds: 420,
+      encodedBytes: 0
+    });
+    return true;
+  });
+  assert.equal(spawns, 1);
+  client.close();
+});
+
 test("shares one clean restart across concurrent commands after process failure", async () => {
   const processes = [new FakeProcess(), new FakeProcess()];
   let spawns = 0;

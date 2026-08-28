@@ -89,6 +89,12 @@ pnpm collector:worker
 | `PAUSED_LOGIN` 或 `PAUSED_CHALLENGE` | 按第 5 节手动恢复，再由管理员重新入队。 |
 | API/配对失败 | 检查 API、PostgreSQL、Redis 和本地 token；不得在错误反馈中粘贴 token。 |
 
+### AX 快照限制恢复
+
+`TREE_LIMIT_REACHED` now identifies one of `nodeCount`, `depth`, `duration`, or `encodedBytes`. The helper reads only `AXFocusedWindow` or `AXMainWindow`. Operators should bring the intended Taobao window to the front and retry once; repeated failures indicate a UI contract change and must not be worked around by removing limits.
+
+快照路径相对于当前窗口；过期路径会被指纹验证拒绝。
+
 ## 9. 自动化页面回归
 
 以下命令使用仓库内脱敏 fixture 验证 `/runs` 和 `/runs/:runId` 的桌面端及 `390px` 布局、管理员解锁恢复、表格横向滚动和控制台错误。它只启动本地预览站点并拦截本地 `/api` 请求，不会运行淘宝桌面版，也不会发送企业微信消息。

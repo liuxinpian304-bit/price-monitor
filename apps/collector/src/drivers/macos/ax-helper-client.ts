@@ -39,6 +39,15 @@ export interface AxHelperDiagnosticPayload {
   frontWindowAvailable: boolean;
 }
 
+export interface AxHelperErrorDetails {
+  reason?: string;
+  scope?: string;
+  visitedNodeCount?: number;
+  maximumDepth?: number;
+  elapsedMilliseconds?: number;
+  encodedBytes?: number;
+}
+
 export interface AxHelperProcess {
   stdin: Writable;
   stdout: Readable;
@@ -54,7 +63,7 @@ interface AxHelperResponse {
   id: string;
   ok: boolean;
   payload?: AxJsonValue;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; details?: unknown };
 }
 
 interface Pending {
@@ -67,11 +76,13 @@ class HelperTransportError extends Error {}
 
 export class AxHelperResponseError extends Error {
   readonly code: string;
+  readonly details: AxHelperErrorDetails | null;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, details: AxHelperErrorDetails | null = null) {
     super(sanitizeDiagnostic(message) || "Taobao Accessibility helper command failed.");
     this.name = "AxHelperResponseError";
     this.code = sanitizeCode(code);
+    this.details = details;
   }
 }
 
@@ -103,6 +114,29 @@ function sanitizeDiagnostic(message: string): string {
     .replace(/[\r\n]+/g, " ")
     .trim()
     .slice(0, 500);
+}
+
+function sanitizeErrorDetails(value: unknown): AxHelperErrorDetails | null {
+  if (typeof value !== "object" || value === null) return null;
+  const source = value as Record<string, unknown>;
+  const details: AxHelperErrorDetails = {};
+
+  const copyString = (key: "reason" | "scope"): void => {
+    if (!Object.hasOwn(source, key) || typeof source[key] !== "string") return;
+    details[key] = source[key].replace(/[^A-Za-z0-9]/g, "").slice(0, 80);
+  };
+  const copyNumber = (key: "visitedNodeCount" | "maximumDepth" | "elapsedMilliseconds" | "encodedBytes"): void => {
+    if (!Object.hasOwn(source, key) || typeof source[key] !== "number") return;
+    if (Number.isFinite(source[key]) && source[key] >= 0) details[key] = source[key];
+  };
+
+  copyString("reason");
+  copyString("scope");
+  copyNumber("visitedNodeCount");
+  copyNumber("maximumDepth");
+  copyNumber("elapsedMilliseconds");
+  copyNumber("encodedBytes");
+  return Object.keys(details).length > 0 ? details : null;
 }
 
 function isResponse(value: unknown): value is AxHelperResponse {
@@ -233,7 +267,8 @@ export class AxHelperClient {
       } else {
         pending.reject(new AxHelperResponseError(
           decoded.error?.code ?? "HELPER_ERROR",
-          decoded.error?.message ?? "Taobao Accessibility helper command failed."
+          decoded.error?.message ?? "Taobao Accessibility helper command failed.",
+          sanitizeErrorDetails(decoded.error?.details)
         ));
       }
     }
