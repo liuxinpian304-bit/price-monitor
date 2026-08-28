@@ -78,6 +78,18 @@ test("changes a signature when a paid accessory model changes", () => {
   assert.notEqual(first.signature, changed.signature);
 });
 
+test("ignores component type and brand context when model and quantity are identical", () => {
+  const first = signed(buildSkuCombination(baseInput({ components: [core, paidAccessory] })));
+  const changedContext = signed(buildSkuCombination(baseInput({
+    components: [
+      { ...core, accessoryType: "开放式监听耳机", brand: "Acme" },
+      { ...paidAccessory, accessoryType: "平衡线", brand: null }
+    ]
+  })));
+
+  assert.equal(first.signature, changedContext.signature);
+});
+
 test("ignores gifts and services in the signature while recording a display reason", () => {
   const first = signed(buildSkuCombination(baseInput({ components: [core, paidAccessory] })));
   const giftChanged = signed(buildSkuCombination(baseInput({
@@ -169,21 +181,79 @@ test("hashes normalized material version region and warranty attributes", () => 
   })));
 
   assert.notEqual(first.signature, changed.signature);
-  assert.deepEqual(first.canonical.attributes, [
-    { key: "地区", value: "中国大陆" },
-    { key: "版本", value: "国行版" },
-    { key: "质保", value: "2 年" }
-  ]);
+  assert.deepEqual(first.canonical.materialAttributes, {
+    "地区": "中国大陆",
+    "版本": "国行版",
+    "质保": "2 年"
+  });
 });
 
-test("emits the versioned lowercase SHA-256 signature from normalized text", () => {
+test("normalizes resolved identifiers with compact matcher formatting semantics", () => {
   const first = signed(buildSkuCombination(baseInput({
     brand: "ＳＥＮＮＨＥＩＳＥＲ",
     standardModel: "HD－650",
-    components: [{ ...core, brand: "SENNHEISER", modelOrName: "HD－650" }]
+    components: [{ ...core, modelOrName: "HD－650" }]
   })));
-  const normalized = signed(buildSkuCombination(baseInput()));
+  const equivalent = signed(buildSkuCombination(baseInput({
+    brand: "sennheiser",
+    standardModel: " h d 6 5 0 ",
+    components: [{ ...core, modelOrName: "h d 6 5 0" }]
+  })));
 
-  assert.equal(first.signature, normalized.signature);
+  assert.equal(first.signature, equivalent.signature);
+  assert.equal(first.canonical.brand, "sennheiser");
+  assert.equal(first.canonical.model, "hd650");
   assert.match(first.signature, /^sku-combination-v1:[a-f0-9]{64}$/);
+});
+
+test("treats overlapping color-version attributes as color only", () => {
+  const withoutColorComparison = signed(buildSkuCombination(baseInput()));
+  const overlappingDisabled = signed(buildSkuCombination(baseInput({
+    attributes: { "颜色版本": "珍珠白" }
+  })));
+  assert.equal(withoutColorComparison.signature, overlappingDisabled.signature);
+  assert.equal(overlappingDisabled.canonical.color, null);
+  assert.deepEqual(overlappingDisabled.canonical.materialAttributes, {});
+
+  const overlappingEnabled = signed(buildSkuCombination(baseInput({
+    colorComparable: true,
+    attributes: { "颜色版本": "珍珠白" }
+  })));
+  assert.equal(overlappingEnabled.canonical.color, "珍珠白");
+  assert.deepEqual(overlappingEnabled.canonical.materialAttributes, {});
+});
+
+test("refuses malformed quantities and empty material or color values", () => {
+  for (const quantity of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const result = buildSkuCombination(baseInput({ components: [{ ...core, quantity }] }));
+    assert.equal(result.kind, "REVIEW", String(quantity));
+    assert.equal(result.signature, null);
+  }
+
+  for (const attributes of [{ "版本": "  " }, { "颜色": " " }]) {
+    const result = buildSkuCombination(baseInput({ colorComparable: true, attributes }));
+    assert.equal(result.kind, "REVIEW");
+    assert.equal(result.signature, null);
+  }
+});
+
+test("matches the documented fixed canonical JSON and SHA-256 golden vector", () => {
+  const result = signed(buildSkuCombination(baseInput({
+    productDecision: "BARE",
+    brand: "RODE",
+    standardModel: "NT1S",
+    components: [{ ...core, modelOrName: "NT1S" }]
+  })));
+
+  assert.deepEqual(result.canonical, {
+    version: "sku-combination-v1",
+    brand: "rode",
+    model: "nt1s",
+    condition: "new",
+    core: [{ model: "nt1s", quantity: 1 }],
+    paidAccessories: [],
+    materialAttributes: {},
+    color: null
+  });
+  assert.equal(result.signature, "sku-combination-v1:1da55ef5c6dc23f37296842567c5167f85a8d2ce106dea66667aa87ef7eae21b");
 });
