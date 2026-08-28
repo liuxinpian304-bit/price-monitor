@@ -62,6 +62,7 @@ export function collectionRunDetailReportPath(
   if (filters.match) query.set("match", filters.match);
   if (filters.price) query.set("price", filters.price);
   if (filters.confidence) query.set("confidence", filters.confidence);
+  if (filters.combinationState) query.set("combinationState", filters.combinationState);
   appendPagination(query, pagination);
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   return `/api/operations/collection-runs/${encodeURIComponent(runId)}${suffix}`;

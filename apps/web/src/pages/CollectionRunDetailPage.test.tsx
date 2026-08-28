@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useApiData } from "../api/client.ts";
 import { fetchCollectionEvidence, requeueCollectionRun } from "../api/collection-runs.ts";
+import type { CollectionRunReportDetail } from "../api/types.ts";
 import { CollectionRunDetailPage } from "./CollectionRunDetailPage.tsx";
 
 vi.mock("../api/client.ts", () => ({ useApiData: vi.fn() }));
@@ -13,7 +14,98 @@ vi.mock("../api/collection-runs.ts", async (importOriginal) => ({
   requeueCollectionRun: vi.fn()
 }));
 
-function report(status: string) {
+const prices = {
+  listPriceFen: 69_800,
+  activityPriceFen: 67_900,
+  couponDiscountFen: 1_000,
+  fullReductionFen: 0,
+  directDiscountFen: 0,
+  mandatoryFeeFen: 0,
+  publicDiscountFen: 1_000,
+  payableFen: 66_900
+};
+
+const selectedOwnSnapshot = {
+  id: "own-selected",
+  ownListingId: "listing-selected",
+  platformItemId: "own-1",
+  skuId: "own-standard",
+  shopName: "我方旗舰店",
+  title: "Sony MDR-7506",
+  skuText: "黑色 / 标准版",
+  url: "https://detail.tmall.com/item.htm?id=own-selected",
+  attributes: { color: "黑色" },
+  components: [{ role: "CORE" as const, accessoryType: "HEADPHONE", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 }],
+  promotions: [],
+  gifts: [],
+  prices: { ...prices, activityPriceFen: 69_000, couponDiscountFen: 0, publicDiscountFen: 0, payableFen: 69_000 },
+  stockState: "IN_STOCK" as const,
+  confidence: "CONFIRMED" as const,
+  combinationSignature: "sony-7506-black",
+  combinationLabel: "黑色 / 标准版"
+};
+
+const alternativeOwnSnapshot = {
+  ...selectedOwnSnapshot,
+  id: "own-alternative",
+  ownListingId: "listing-alternative",
+  platformItemId: "own-2",
+  skuId: "own-alt",
+  skuText: "黑色 / 标准版（备用链接）",
+  url: "https://detail.tmall.com/item.htm?id=own-alternative",
+  prices: { ...selectedOwnSnapshot.prices, payableFen: 70_000 }
+};
+
+const competitorBusinessSku = {
+  id: "competitor-business-sku",
+  source: "COMPETITOR" as const,
+  platformItemId: "item-1",
+  skuId: "competitor-standard",
+  shopName: "索尼聚鑫数码商城",
+  title: "Sony MDR-7506 监听耳机",
+  skuText: "黑色 / 标准版",
+  url: "https://item.taobao.com/item.htm?id=competitor-business",
+  ranks: [1, 4],
+  positions: [
+    { rank: 1, platformItemId: "item-1", url: "https://item.taobao.com/item.htm?id=competitor-business", shopName: "索尼聚鑫数码商城", title: "Sony MDR-7506 监听耳机", displayPriceMinFen: 66_900, displayPriceMaxFen: 67_900, sponsored: false, capturedAt: "2026-08-25T01:30:00.000Z" },
+    { rank: 4, platformItemId: "item-1", url: "https://item.taobao.com/item.htm?id=competitor-business", shopName: "索尼聚鑫数码商城", title: "Sony MDR-7506 监听耳机", displayPriceMinFen: 66_900, displayPriceMaxFen: 67_900, sponsored: true, capturedAt: "2026-08-25T01:30:05.000Z" }
+  ],
+  attributes: { color: "黑色" },
+  components: [{ role: "CORE" as const, accessoryType: "HEADPHONE", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 }],
+  promotions: [{ kind: "COUPON", label: "店铺券 ¥10", amountFen: 1_000, thresholdFen: null, audience: "PUBLIC", stackGroup: null, includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" as const }],
+  gifts: [],
+  prices,
+  stockState: "IN_STOCK" as const,
+  confidence: "CONFIRMED" as const,
+  match: { category: "EXACT" as const, decision: "BARE" as const, comparable: true, confidenceBps: 10_000, reasons: ["型号与组合一致"] },
+  combination: { state: "MATCHED" as const, signature: "sony-7506-black", label: "黑色 / 标准版", reasons: [] },
+  selectedOwnSnapshot,
+  alternativeOwnSnapshots: [alternativeOwnSnapshot],
+  differenceFen: 2_100,
+  comparison: { state: "LOWER" as const, ownPayableFen: 69_000, differenceFen: 2_100 },
+  evidenceSha256: "c".repeat(64),
+  capturedAt: "2026-08-25T01:30:10.000Z"
+};
+
+const missingBusinessSku = {
+  ...competitorBusinessSku,
+  id: "missing-business-sku",
+  platformItemId: "item-missing",
+  skuId: "missing-white",
+  shopName: "同行缺货对照店",
+  title: "Sony MDR-7506 白色套装",
+  skuText: "白色 / 收纳包套装",
+  url: "https://item.taobao.com/item.htm?id=missing-business",
+  ranks: [8],
+  positions: [],
+  combination: { state: "MISSING_OWN" as const, signature: "sony-7506-white-kit", label: "白色 / 收纳包套装", reasons: ["OWN_COMBINATION_ABSENT"] },
+  selectedOwnSnapshot: null,
+  alternativeOwnSnapshots: [],
+  differenceFen: null,
+  comparison: { state: "UNDECIDED" as const, ownPayableFen: null, differenceFen: null }
+};
+
+function report(status: string): CollectionRunReportDetail {
   return {
     id: "run-1",
     status,
@@ -26,6 +118,23 @@ function report(status: string) {
     completion: { positionsCaptured: 47, requestedPositions: 50, discoveredCount: 47, fetchedCount: 47, matchedCount: 2, failedCount: 3, uniqueItemCount: 47, skuCount: 2, incompleteCount: 3, terminationReason: null, complete: false, label: "47 / 50，未完成" },
     notification: { state: "FAILED", attempts: 2, notifiedAt: null, lastError: "WECOM_DELIVERY_FAILED" },
     error: { code: "LOGIN_REQUIRED", message: "淘宝登录已失效" },
+    businessSummary: { distinctShopCount: 2, distinctItemCount: 2, skuCount: 3, matchedSkuCount: 1, confirmedLowCount: 1, missingCombinationCount: 2, reviewCount: 1, excludedCount: 0, ownConfiguredListingCount: 3, ownCollectedListingCount: 2, ownCatalogComplete: false },
+    priceBoard: {
+      shops: [{
+        shopName: "索尼聚鑫数码商城", earliestRank: 1, ranks: [1, 4, 7], positionCount: 3, itemCount: 2, skuCount: 1,
+        minimumConfirmedPayableFen: 66_900, confirmedLowCount: 1, missingCombinationCount: 0,
+        items: [
+          { platformItemId: "item-1", shopName: "索尼聚鑫数码商城", title: "Sony MDR-7506 监听耳机", url: "https://item.taobao.com/item.htm?id=competitor-business", earliestRank: 1, ranks: [1, 4], positions: competitorBusinessSku.positions, skuCount: 1, skus: [competitorBusinessSku] },
+          { platformItemId: "item-empty", shopName: "索尼聚鑫数码商城", title: "Sony MDR-7506 待补采商品", url: "https://item.taobao.com/item.htm?id=empty-item", earliestRank: 7, ranks: [7], positions: [], skuCount: 0, skus: [] }
+        ]
+      }]
+    },
+    confirmedLows: [{ competitorSnapshot: competitorBusinessSku, selectedOwnSnapshot, alternativeOwnSnapshots: [alternativeOwnSnapshot], combinationSignature: "sony-7506-black", combinationLabel: "黑色 / 标准版", differenceFen: 2_100, ranks: [1, 4], reasons: ["CONFIRMED_LOWER"] }],
+    missingOwnGroups: [
+      { combinationSignature: "sony-7506-white-kit", combinationLabel: "白色 / 收纳包套装", missingReason: "OWN_COMBINATION_ABSENT", earliestRank: 8, minimumConfirmedPayableFen: 66_900, minimumOfferSnapshotId: "missing-business-sku", minimumOfferRank: 8, shops: ["同行缺货对照店"], offers: [missingBusinessSku] },
+      { combinationSignature: "sony-7506-blue", combinationLabel: "蓝色 / 标准版", missingReason: "OWN_OUT_OF_STOCK_ONLY", earliestRank: 12, minimumConfirmedPayableFen: null, minimumOfferSnapshotId: null, minimumOfferRank: null, shops: ["同行库存店"], offers: [{ ...missingBusinessSku, id: "out-of-stock-business-sku", shopName: "同行库存店", skuText: "蓝色 / 标准版", ranks: [12], prices: { ...prices, payableFen: null } }] }
+    ],
+    reviewRows: [{ ...competitorBusinessSku, id: "review-business-sku", combination: { state: "REVIEW", signature: null, label: null, reasons: ["MANUAL_REVIEW"] }, selectedOwnSnapshot: null, alternativeOwnSnapshots: [], differenceFen: null, comparison: { state: "UNDECIDED", ownPayableFen: null, differenceFen: null } }],
     positions: [{ rank: 1, platformItemId: "item-1", url: "https://item.taobao.com/item.htm?id=1", shopName: "同行店", title: "Sony MDR-7506", displayPriceMinFen: 65_800, displayPriceMaxFen: 65_800, sponsored: false, capturedAt: "2026-08-25T01:30:00.000Z" }],
     issues: [{ id: "issue-1", code: "LOGIN_REQUIRED", platformItemId: null, skuId: null, message: "淘宝登录已失效", evidenceSha256: null, capturedAt: "2026-08-25T01:31:00.000Z" }],
     filters: {},
@@ -38,13 +147,19 @@ function report(status: string) {
     skus: [
       {
         id: "own-sku", source: "OWN", platformItemId: "own-1", skuId: "own-standard", shopName: "星空乐器专营店", title: "Sony MDR-7506", skuText: "标准版", url: "https://detail.tmall.com/item.htm?id=own-1", ranks: [1],
+        positions: [], attributes: {}, components: null, promotions: [], gifts: [],
         prices: { listPriceFen: 69_800, activityPriceFen: 69_800, couponDiscountFen: 0, fullReductionFen: 0, directDiscountFen: 0, mandatoryFeeFen: 0, publicDiscountFen: 0, payableFen: 69_800 },
-        stockState: "IN_STOCK", confidence: "CONFIRMED", match: { category: "EXACT", decision: "BARE", comparable: true, confidenceBps: 10_000, reasons: ["型号一致"] }, comparison: { state: "OWN", ownPayableFen: 69_800, differenceFen: null }, evidenceSha256: "a".repeat(64), capturedAt: "2026-08-25T01:30:00.000Z"
+        stockState: "IN_STOCK", confidence: "CONFIRMED", match: { category: "EXACT", decision: "BARE", comparable: true, confidenceBps: 10_000, reasons: ["型号一致"] },
+        combination: { state: "OWN", signature: "sony-7506-standard", label: "标准版", reasons: [] }, selectedOwnSnapshot, alternativeOwnSnapshots: [], differenceFen: null,
+        comparison: { state: "OWN", ownPayableFen: 69_800, differenceFen: null }, evidenceSha256: "a".repeat(64), capturedAt: "2026-08-25T01:30:00.000Z"
       },
       {
         id: "competitor-sku", source: "COMPETITOR", platformItemId: "item-1", skuId: "competitor-standard", shopName: "同行店", title: "Sony MDR-7506", skuText: "标准版", url: "https://item.taobao.com/item.htm?id=1", ranks: [1],
+        positions: [], attributes: {}, components: null, promotions: [], gifts: [],
         prices: { listPriceFen: 69_799, activityPriceFen: 69_799, couponDiscountFen: 0, fullReductionFen: 0, directDiscountFen: 0, mandatoryFeeFen: 0, publicDiscountFen: 0, payableFen: 69_799 },
-        stockState: "IN_STOCK", confidence: "CONFIRMED", match: { category: "EXACT", decision: "BARE", comparable: true, confidenceBps: 10_000, reasons: ["型号一致"] }, comparison: { state: "LOWER", ownPayableFen: 69_800, differenceFen: 1 }, evidenceSha256: "b".repeat(64), capturedAt: "2026-08-25T01:30:00.000Z"
+        stockState: "IN_STOCK", confidence: "CONFIRMED", match: { category: "EXACT", decision: "BARE", comparable: true, confidenceBps: 10_000, reasons: ["型号一致"] },
+        combination: { state: "MATCHED", signature: "sony-7506-standard", label: "标准版", reasons: [] }, selectedOwnSnapshot, alternativeOwnSnapshots: [], differenceFen: 1,
+        comparison: { state: "LOWER", ownPayableFen: 69_800, differenceFen: 1 }, evidenceSha256: "b".repeat(64), capturedAt: "2026-08-25T01:30:00.000Z"
       }
     ]
   };
@@ -103,6 +218,43 @@ describe("CollectionRunDetailPage", () => {
     expect(requeueCollectionRun).toHaveBeenCalledWith("run-1");
   });
 
+  it("renders authoritative business sections and expands a shop into full item and SKU facts", () => {
+    vi.mocked(useApiData).mockReturnValue({ data: report("SUCCEEDED"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
+    renderPage();
+
+    expect(screen.getByText("前 50 价盘")).toBeInTheDocument();
+    expect(screen.getByText("确认低价同行")).toBeInTheDocument();
+    expect(screen.getByText("我方缺失组合")).toBeInTheDocument();
+    expect(screen.getByText("索尼聚鑫数码商城")).toBeInTheDocument();
+    expect(screen.getByText("低 ¥21.00")).toBeInTheDocument();
+    expect(screen.getAllByText("无同组合我方基准，不属于低价告警")).toHaveLength(2);
+    expect(screen.getAllByText("排名 1、4").length).toBeGreaterThan(0);
+    expect(screen.getByText("我方有组合但当前无库存")).toBeInTheDocument();
+    expect(screen.getByText("我方目录采集不完整")).toBeInTheDocument();
+    expect(screen.getByText("部分覆盖：已捕获 47 / 50 个搜索位置")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "展开店铺 索尼聚鑫数码商城" }));
+    expect(screen.getAllByRole("link", { name: "https://item.taobao.com/item.htm?id=competitor-business" }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: "https://item.taobao.com/item.htm?id=empty-item" }))
+      .toHaveAttribute("href", "https://item.taobao.com/item.htm?id=empty-item");
+    expect(screen.getAllByText("黑色 / 标准版").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("店铺券 ¥10").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("有库存").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("我方 ¥690.00").length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: "https://detail.tmall.com/item.htm?id=own-alternative" }).length).toBeGreaterThan(0);
+  });
+
+  it("keeps all three business tables horizontally scrollable at narrow widths", () => {
+    vi.mocked(useApiData).mockReturnValue({ data: report("SUCCEEDED"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
+    const { container } = renderPage();
+
+    const wrappers = container.querySelectorAll(".run-business-table-scroll");
+    expect(wrappers).toHaveLength(3);
+    wrappers.forEach((wrapper) => expect(wrapper).toHaveClass("collection-runs-scroll"));
+    expect(container.querySelector(".run-business-table-scroll .ant-table-content"))
+      .toHaveStyle({ overflowX: "auto" });
+  });
+
   it("does not surface requeue controls for a running report", () => {
     vi.mocked(useApiData).mockReturnValue({ data: report("RUNNING"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
     renderPage();
@@ -145,6 +297,10 @@ describe("CollectionRunDetailPage", () => {
     empty.positions = [];
     empty.issues = [];
     empty.skus = [];
+    empty.businessSummary = { distinctShopCount: 0, distinctItemCount: 0, skuCount: 0, matchedSkuCount: 0, confirmedLowCount: 0, missingCombinationCount: 0, reviewCount: 0, excludedCount: 0, ownConfiguredListingCount: 0, ownCollectedListingCount: 0, ownCatalogComplete: true };
+    empty.priceBoard = { shops: [] };
+    empty.confirmedLows = [];
+    empty.missingOwnGroups = [];
     empty.totalSkuCount = 0;
     empty.pagination = {
       positions: { page: 1, pageSize: 50, total: 0, totalPages: 0, hasPrevious: false, hasNext: false },
@@ -158,5 +314,8 @@ describe("CollectionRunDetailPage", () => {
     expect(screen.getByText("暂无搜索位置")).toBeInTheDocument();
     expect(screen.getByText("暂无 SKU")).toBeInTheDocument();
     expect(screen.getByText("暂无问题")).toBeInTheDocument();
+    expect(screen.getByText("暂无价盘数据")).toBeInTheDocument();
+    expect(screen.getByText("暂无确认低价同行")).toBeInTheDocument();
+    expect(screen.getByText("暂无我方缺失组合")).toBeInTheDocument();
   });
 });

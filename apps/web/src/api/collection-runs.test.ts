@@ -44,7 +44,8 @@ describe("collection run API", () => {
       source: "COMPETITOR",
       match: "EXACT",
       price: "LOWER",
-      confidence: "CONFIRMED"
+      confidence: "CONFIRMED",
+      combinationState: "REVIEW"
     }, {
       positionPage: 2,
       positionPageSize: 20,
@@ -57,7 +58,7 @@ describe("collection run API", () => {
     expect(apiRequest).toHaveBeenNthCalledWith(1, "/api/operations/collection-runs?page=2&pageSize=25", { role: "ADMIN" });
     expect(apiRequest).toHaveBeenNthCalledWith(
       2,
-      "/api/operations/collection-runs/run%20one?source=COMPETITOR&match=EXACT&price=LOWER&confidence=CONFIRMED&positionPage=2&positionPageSize=20&issuePage=3&issuePageSize=30&skuPage=4&skuPageSize=40",
+      "/api/operations/collection-runs/run%20one?source=COMPETITOR&match=EXACT&price=LOWER&confidence=CONFIRMED&combinationState=REVIEW&positionPage=2&positionPageSize=20&issuePage=3&issuePageSize=30&skuPage=4&skuPageSize=40",
       { role: "ADMIN" }
     );
   });
