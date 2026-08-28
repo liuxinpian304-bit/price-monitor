@@ -1,17 +1,29 @@
 import {
   BadRequestException,
+  Body,
   Controller,
+  ForbiddenException,
   Get,
   Inject,
   NotFoundException,
   Param,
+  Post,
   Query,
+  Req,
   Res,
   ServiceUnavailableException
 } from "@nestjs/common";
-import type { Response } from "express";
+import type { Request, Response } from "express";
 
+import {
+  RunAlertNotificationApprovalValidationError,
+  RunAlertNotificationBatchNotFoundError,
+  type RunAlertNotificationApprovalInput,
+  type RunAlertNotificationPreview
+} from "../alerts/run-alert-notification-approval.service.ts";
 import { Roles } from "../auth/roles.guard.ts";
+import { RoleForbiddenError, type UserRole } from "../settings/settings.service.ts";
+import { requestIdentity } from "./identity.ts";
 import type {
   CollectionReportPaginationInput,
   CollectionRunDetailPaginationInput,
@@ -41,6 +53,15 @@ export interface CollectionRunsOperationsService {
 
 export interface CollectionEvidenceReader {
   read(runId: string, sha256: string): Promise<Buffer | null>;
+}
+
+export interface RunAlertNotificationApprovalApi {
+  preview(runId: string): Promise<RunAlertNotificationPreview>;
+  approve(
+    input: RunAlertNotificationApprovalInput,
+    actorId: string,
+    role: UserRole
+  ): Promise<void>;
 }
 
 export const COLLECTION_REPORT_QUERY_SERVICE = Symbol("collection-report-query-service");
@@ -122,13 +143,36 @@ function validRunId(runId: string): boolean {
   return runIdPattern.test(runId) && runId !== "." && runId !== "..";
 }
 
+async function asNotificationRequest<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof RunAlertNotificationBatchNotFoundError) {
+      throw new NotFoundException(error.message);
+    }
+    if (error instanceof RunAlertNotificationApprovalValidationError) {
+      throw new BadRequestException(error.message);
+    }
+    if (error instanceof RoleForbiddenError) {
+      throw new ForbiddenException(error.message);
+    }
+    throw error;
+  }
+}
+
 export class OperationsCollectionRunsHttpController {
   private readonly reports: CollectionRunsOperationsService;
   private readonly evidenceStore: CollectionEvidenceReader;
+  private readonly notificationApproval: RunAlertNotificationApprovalApi | undefined;
 
-  constructor(reports: CollectionRunsOperationsService, evidenceStore: CollectionEvidenceReader) {
+  constructor(
+    reports: CollectionRunsOperationsService,
+    evidenceStore: CollectionEvidenceReader,
+    notificationApproval?: RunAlertNotificationApprovalApi
+  ) {
     this.reports = reports;
     this.evidenceStore = evidenceStore;
+    this.notificationApproval = notificationApproval;
   }
 
   list(query: Record<string, unknown>) {
@@ -167,6 +211,37 @@ export class OperationsCollectionRunsHttpController {
     response.setHeader("Cache-Control", "private, no-store");
     response.type("image/png").send(bytes);
   }
+
+  async notificationPreview(runId: string): Promise<RunAlertNotificationPreview> {
+    if (!validRunId(runId)) throw new BadRequestException("runId 无效");
+    const approval = await this.notificationApprovalService();
+    return asNotificationRequest(() => approval.preview(runId));
+  }
+
+  async notificationConfirm(
+    runId: string,
+    body: { previewDigest?: unknown; confirmation?: unknown },
+    request: Request
+  ): Promise<{ confirmed: true }> {
+    if (!validRunId(runId)) throw new BadRequestException("runId 无效");
+    if (
+      typeof body?.previewDigest !== "string"
+      || typeof body.confirmation !== "string"
+    ) throw new BadRequestException("企业微信确认参数无效");
+    const identity = requestIdentity(request);
+    const approval = await this.notificationApprovalService();
+    await asNotificationRequest(() => approval.approve({
+      runId,
+      previewDigest: body.previewDigest as string,
+      confirmation: body.confirmation as string
+    }, identity.actorId, identity.role));
+    return { confirmed: true };
+  }
+
+  private async notificationApprovalService(): Promise<RunAlertNotificationApprovalApi> {
+    if (this.notificationApproval) return this.notificationApproval;
+    return (await import("../runtime.ts")).runAlertNotificationApprovalService;
+  }
 }
 
 const controllerPrototype = OperationsCollectionRunsHttpController.prototype;
@@ -189,4 +264,20 @@ Get(":runId/evidence/:sha256")(
   controllerPrototype,
   "evidence",
   Object.getOwnPropertyDescriptor(controllerPrototype, "evidence")!
+);
+
+Param("runId")(controllerPrototype, "notificationPreview", 0);
+Get(":runId/notification-preview")(
+  controllerPrototype,
+  "notificationPreview",
+  Object.getOwnPropertyDescriptor(controllerPrototype, "notificationPreview")!
+);
+
+Param("runId")(controllerPrototype, "notificationConfirm", 0);
+Body()(controllerPrototype, "notificationConfirm", 1);
+Req()(controllerPrototype, "notificationConfirm", 2);
+Post(":runId/notification-confirm")(
+  controllerPrototype,
+  "notificationConfirm",
+  Object.getOwnPropertyDescriptor(controllerPrototype, "notificationConfirm")!
 );

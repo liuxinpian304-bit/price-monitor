@@ -8,7 +8,8 @@ import { WecomDeliveryAmbiguousError } from "./wecom/wecom.client.ts";
 import {
   RunAlertNotifier,
   type ClaimedRunAlertBatch,
-  type RunAlertNotificationRepository
+  type RunAlertNotificationRepository,
+  type StoredRunAlertNotificationBatch
 } from "./run-alert-notifier.ts";
 
 function summary(runId = "run-1"): RunAlertSummary {
@@ -72,6 +73,7 @@ interface StoredBatch {
 class FakeBatchRepository implements RunAlertNotificationRepository {
   readonly batches = new Map<string, StoredBatch>();
   readonly notified: Array<{ alertIds: string[]; notifiedAt: Date }> = [];
+  claimCount = 0;
 
   seed(input: RunAlertSummary): void {
     this.batches.set(input.runId, {
@@ -83,7 +85,18 @@ class FakeBatchRepository implements RunAlertNotificationRepository {
     });
   }
 
+  async getBatch(runId: string): Promise<StoredRunAlertNotificationBatch | null> {
+    const stored = this.batches.get(runId);
+    return stored ? {
+      batchId: stored.id,
+      runId,
+      state: stored.state,
+      summary: structuredClone(stored.summary)
+    } : null;
+  }
+
   async claimBatch(runId: string, _attemptedAt: Date): Promise<ClaimedRunAlertBatch | null> {
+    this.claimCount += 1;
     const stored = this.batches.get(runId);
     if (!stored) return null;
     if (stored.state !== "PENDING") return null;
@@ -153,7 +166,7 @@ test("sends and marks every new run alert in one logical batch", async () => {
   const input = summary();
   input.alerts.push({ ...input.alerts[0]!, alertId: "alert-2", snapshotId: "snapshot-2" });
   repository.seed(input);
-  const notifier = new RunAlertNotifier(repository, async () => sender);
+  const notifier = new RunAlertNotifier(repository, async () => sender, async () => true);
 
   await notifier.send(input);
 
@@ -169,7 +182,7 @@ test("keeps a failed batch and retries the exact original logical summary once",
   );
   const original = summary();
   repository.seed(original);
-  const notifier = new RunAlertNotifier(repository, async () => sender);
+  const notifier = new RunAlertNotifier(repository, async () => sender, async () => true);
 
   await notifier.send(original);
 
@@ -192,7 +205,7 @@ test("keeps a failed batch and retries the exact original logical summary once",
 test("never constructs a notification batch after evaluation", async () => {
   const repository = new FakeBatchRepository();
   const sender = new RecordingSender();
-  const notifier = new RunAlertNotifier(repository, async () => sender);
+  const notifier = new RunAlertNotifier(repository, async () => sender, async () => true);
 
   await notifier.send(summary("missing-outbox"));
 
@@ -208,7 +221,7 @@ test("sends one baseline system summary even when the batch has no alert IDs", a
   input.baseline = null;
   input.systemIssue = "OWN_BASELINE_MISSING";
   repository.seed(input);
-  const notifier = new RunAlertNotifier(repository, async () => sender);
+  const notifier = new RunAlertNotifier(repository, async () => sender, async () => true);
 
   await notifier.send(input);
 
@@ -221,7 +234,7 @@ test("records a missing webhook without throwing or exposing configuration", asy
   const repository = new FakeBatchRepository();
   const input = summary();
   repository.seed(input);
-  const notifier = new RunAlertNotifier(repository, async () => null);
+  const notifier = new RunAlertNotifier(repository, async () => null, async () => true);
 
   await notifier.send(input);
 
@@ -234,7 +247,7 @@ test("records ambiguous delivery and never claims the batch for another POST", a
   sender.failure = new WecomDeliveryAmbiguousError();
   const input = summary();
   repository.seed(input);
-  const notifier = new RunAlertNotifier(repository, async () => sender);
+  const notifier = new RunAlertNotifier(repository, async () => sender, async () => true);
 
   await notifier.send(input);
   await notifier.send(input);
@@ -242,4 +255,18 @@ test("records ambiguous delivery and never claims the batch for another POST", a
   assert.equal(sender.messages.length, 1);
   assert.equal(repository.batches.get("run-1")?.state, "AMBIGUOUS");
   assert.deepEqual(repository.batches.get("run-1")?.failures, ["WECOM_DELIVERY_AMBIGUOUS"]);
+});
+
+test("returns before claiming a durable batch while live sending is unapproved", async () => {
+  const repository = new FakeBatchRepository();
+  const sender = new RecordingSender();
+  const input = summary("run-unapproved");
+  repository.seed(input);
+  const notifier = new RunAlertNotifier(repository, async () => sender, async () => false);
+
+  await notifier.send(input);
+
+  assert.equal(repository.claimCount, 0);
+  assert.equal(repository.batches.get("run-unapproved")?.state, "PENDING");
+  assert.equal(sender.messages.length, 0);
 });

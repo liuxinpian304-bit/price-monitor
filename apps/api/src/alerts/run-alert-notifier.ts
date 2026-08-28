@@ -12,7 +12,14 @@ export interface ClaimedRunAlertBatch {
   summary: RunAlertSummary;
   alertIds: string[];
 }
+export interface StoredRunAlertNotificationBatch {
+  batchId: string;
+  runId: string;
+  state: "PENDING" | "SENDING" | "NOTIFIED" | "AMBIGUOUS" | "FAILED";
+  summary: RunAlertSummary;
+}
 export interface RunAlertNotificationRepository {
+  getBatch(runId: string): Promise<StoredRunAlertNotificationBatch | null>;
   claimBatch(runId: string, attemptedAt: Date): Promise<ClaimedRunAlertBatch | null>;
   markBatchNotified(batch: ClaimedRunAlertBatch, notifiedAt: Date): Promise<void>;
   recordBatchNotificationFailure(
@@ -32,19 +39,23 @@ export type WecomSenderFactory = () => Promise<WecomMarkdownSender | null>;
 export class RunAlertNotifier {
   private readonly repository: RunAlertNotificationRepository;
   private readonly senderFactory: WecomSenderFactory;
+  private readonly isLiveSendingApproved: () => Promise<boolean>;
   private readonly now: () => Date;
 
   constructor(
     repository: RunAlertNotificationRepository,
     senderFactory: WecomSenderFactory,
+    isLiveSendingApproved: () => Promise<boolean> = async () => true,
     now: () => Date = () => new Date()
   ) {
     this.repository = repository;
     this.senderFactory = senderFactory;
+    this.isLiveSendingApproved = isLiveSendingApproved;
     this.now = now;
   }
 
   async send(summary: RunAlertSummary): Promise<void> {
+    if (!await this.isLiveSendingApproved()) return;
     const batch = await this.repository.claimBatch(summary.runId, this.now());
     if (!batch) return;
 

@@ -9,6 +9,7 @@ import { AlertActionService } from "./alerts/alert-action.service.ts";
 import { AlertController } from "./alerts/alert.controller.ts";
 import { PrismaAlertActionRepository } from "./alerts/prisma-alert-action.repository.ts";
 import { PrismaRunAlertNotificationRepository } from "./alerts/prisma-run-alert-notification.repository.ts";
+import { RunAlertNotificationApprovalService } from "./alerts/run-alert-notification-approval.service.ts";
 import { PrismaRunAlertEvaluationRepository } from "./alerts/prisma-run-alert-evaluation.repository.ts";
 import { RunAlertReconciler, RunAlertReconciliationLoop } from "./alerts/run-alert-reconciler.ts";
 import { RunAlertNotifier } from "./alerts/run-alert-notifier.ts";
@@ -142,7 +143,13 @@ export const runAlertNotifier = new RunAlertNotifier(
   async () => {
     const webhookUrl = await settingsService.readSecretForInternalUse("WECOM_WEBHOOK");
     return webhookUrl ? new WecomClient({ webhookUrl }) : null;
-  }
+  },
+  () => settingsService.isWecomLiveSendingApproved()
+);
+export const runAlertNotificationApprovalService = new RunAlertNotificationApprovalService(
+  runAlertNotificationRepository,
+  settingsService,
+  runAlertNotifier
 );
 export const runAlertReconciler = new RunAlertReconciler(
   new PrismaRunAlertEvaluationRepository(prisma),

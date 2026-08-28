@@ -37,6 +37,8 @@ export class RoleForbiddenError extends Error {}
 export class SettingsValidationError extends Error {}
 
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const WECOM_LIVE_SEND_APPROVAL = "WECOM_LIVE_SEND_APPROVAL";
+const PREVIEW_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 function requireAdmin(role: UserRole): void {
   if (role !== "ADMIN") {
@@ -57,22 +59,59 @@ function scheduleFrom(record: SettingRecord | null): ScheduleInput {
   };
 }
 
+interface WecomLiveSendApproval {
+  approved: true;
+  actorId: string;
+  approvedAt: string;
+  previewRunId: string;
+  previewDigest: string;
+}
+
+function wecomApprovalFrom(record: SettingRecord | null): WecomLiveSendApproval | null {
+  if (!record || record.secret || record.encryptedValue !== null) return null;
+  if (typeof record.valueJson !== "object" || record.valueJson === null || Array.isArray(record.valueJson)) {
+    return null;
+  }
+  const value = record.valueJson as Record<string, unknown>;
+  if (
+    value.approved !== true
+    || typeof value.actorId !== "string"
+    || value.actorId.trim() === ""
+    || typeof value.approvedAt !== "string"
+    || !Number.isFinite(Date.parse(value.approvedAt))
+    || typeof value.previewRunId !== "string"
+    || value.previewRunId.trim() === ""
+    || typeof value.previewDigest !== "string"
+    || !PREVIEW_DIGEST_PATTERN.test(value.previewDigest)
+  ) return null;
+  return {
+    approved: true,
+    actorId: value.actorId,
+    approvedAt: value.approvedAt,
+    previewRunId: value.previewRunId,
+    previewDigest: value.previewDigest
+  };
+}
+
 export class SettingsService {
   private readonly repository: SettingsRepository;
   private readonly secretStore: SecretStore;
   private readonly audit: AuditService;
   private readonly onScheduleSettingsChanged: () => Promise<void>;
+  private readonly now: () => Date;
 
   constructor(
     repository: SettingsRepository,
     secretStore: SecretStore,
     audit: AuditService,
-    onScheduleSettingsChanged: () => Promise<void> = async () => undefined
+    onScheduleSettingsChanged: () => Promise<void> = async () => undefined,
+    now: () => Date = () => new Date()
   ) {
     this.repository = repository;
     this.secretStore = secretStore;
     this.audit = audit;
     this.onScheduleSettingsChanged = onScheduleSettingsChanged;
+    this.now = now;
   }
 
   async getPublicSettings(_role: UserRole): Promise<PublicSettings> {
@@ -170,5 +209,56 @@ export class SettingsService {
   async readSecretForInternalUse(key: SecretSettingKey): Promise<string | null> {
     const record = await this.repository.get(key);
     return record?.encryptedValue ? this.secretStore.decrypt(record.encryptedValue) : null;
+  }
+
+  async isWecomLiveSendingApproved(): Promise<boolean> {
+    return wecomApprovalFrom(await this.repository.get(WECOM_LIVE_SEND_APPROVAL)) !== null;
+  }
+
+  async approveWecomLiveSending(
+    input: { previewRunId: string; previewDigest: string },
+    actorId: string,
+    role: UserRole
+  ): Promise<void> {
+    requireAdmin(role);
+    if (actorId.trim() === "") throw new TypeError("actorId is required");
+    if (input.previewRunId.trim() === "" || !PREVIEW_DIGEST_PATTERN.test(input.previewDigest)) {
+      throw new SettingsValidationError("企业微信预览确认信息无效");
+    }
+
+    const before = await this.repository.get(WECOM_LIVE_SEND_APPROVAL);
+    if (wecomApprovalFrom(before)) return;
+    const approvalMetadata = {
+      actorId,
+      approvedAt: this.now().toISOString(),
+      previewRunId: input.previewRunId,
+      previewDigest: input.previewDigest
+    };
+    const valueJson: JsonValue = {
+      approved: true,
+      ...approvalMetadata
+    };
+    await this.repository.set({
+      key: WECOM_LIVE_SEND_APPROVAL,
+      valueJson: { approved: false, ...approvalMetadata },
+      encryptedValue: null,
+      secret: false,
+      updatedBy: actorId
+    });
+    await this.audit.record({
+      actorId,
+      action: "wecom.live-send.approved",
+      entityType: "SystemSetting",
+      entityId: WECOM_LIVE_SEND_APPROVAL,
+      before: before?.valueJson ?? null,
+      after: valueJson
+    });
+    await this.repository.set({
+      key: WECOM_LIVE_SEND_APPROVAL,
+      valueJson,
+      encryptedValue: null,
+      secret: false,
+      updatedBy: actorId
+    });
   }
 }

@@ -9,7 +9,8 @@ import type { RunAlertSummary } from "../collection/run-alert.service.ts";
 import { PrismaAlertRepository } from "./prisma-alert.repository.ts";
 import type {
   ClaimedRunAlertBatch,
-  RunAlertNotificationRepository
+  RunAlertNotificationRepository,
+  StoredRunAlertNotificationBatch
 } from "./run-alert-notifier.ts";
 import {
   runAlertSummaryFromJson,
@@ -28,6 +29,19 @@ export class PrismaRunAlertNotificationRepository implements RunAlertNotificatio
 
   constructor(prisma: PrismaClient) {
     this.prisma = prisma;
+  }
+
+  async getBatch(runId: string): Promise<StoredRunAlertNotificationBatch | null> {
+    const batch = await this.prisma.runAlertNotificationBatch.findUnique({
+      where: { collectionRunId: runId },
+      select: { id: true, state: true, summary: true }
+    });
+    return batch ? {
+      batchId: batch.id,
+      runId,
+      state: batch.state,
+      summary: runAlertSummaryFromJson(batch.summary)
+    } : null;
   }
 
   async claimBatch(runId: string, attemptedAt: Date): Promise<ClaimedRunAlertBatch | null> {

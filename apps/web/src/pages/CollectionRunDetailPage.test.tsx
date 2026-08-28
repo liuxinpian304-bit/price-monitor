@@ -3,14 +3,21 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useApiData } from "../api/client.ts";
-import { fetchCollectionEvidence, requeueCollectionRun } from "../api/collection-runs.ts";
+import {
+  confirmCollectionRunNotification,
+  fetchCollectionEvidence,
+  getCollectionRunNotificationPreview,
+  requeueCollectionRun
+} from "../api/collection-runs.ts";
 import type { CollectionRunReportDetail } from "../api/types.ts";
 import { CollectionRunDetailPage } from "./CollectionRunDetailPage.tsx";
 
 vi.mock("../api/client.ts", () => ({ useApiData: vi.fn() }));
 vi.mock("../api/collection-runs.ts", async (importOriginal) => ({
   ...await importOriginal<typeof import("../api/collection-runs.ts")>(),
+  confirmCollectionRunNotification: vi.fn(),
   fetchCollectionEvidence: vi.fn(),
+  getCollectionRunNotificationPreview: vi.fn(),
   requeueCollectionRun: vi.fn()
 }));
 
@@ -173,6 +180,8 @@ describe("CollectionRunDetailPage", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.mocked(fetchCollectionEvidence).mockReset();
+    vi.mocked(getCollectionRunNotificationPreview).mockReset();
+    vi.mocked(confirmCollectionRunNotification).mockReset();
     vi.mocked(requeueCollectionRun).mockReset();
     vi.mocked(requeueCollectionRun).mockResolvedValue({ runId: "run-1" });
   });
@@ -260,6 +269,65 @@ describe("CollectionRunDetailPage", () => {
     renderPage();
 
     expect(screen.queryByRole("button", { name: /重新入队/ })).not.toBeInTheDocument();
+  });
+
+  it("previews and confirms the durable WeCom summary, then refetches without optimistic sent state", async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(useApiData).mockReturnValue({
+      data: report("SUCCEEDED"),
+      loading: false,
+      error: null,
+      errorStatus: null,
+      hasSuccessfulData: true,
+      refresh,
+      setData: vi.fn()
+    });
+    const previewDigest = `sha256:${"a".repeat(64)}`;
+    vi.mocked(getCollectionRunNotificationPreview)
+      .mockResolvedValueOnce({
+        runId: "run-1",
+        state: "PENDING",
+        markdown: "### 淘宝前50企业微信摘要\n确认低价 1",
+        previewDigest,
+        liveSendingApproved: false
+      })
+      .mockResolvedValueOnce({
+        runId: "run-1",
+        state: "NOTIFIED",
+        markdown: "### 淘宝前50企业微信摘要\n确认低价 1",
+        previewDigest,
+        liveSendingApproved: true
+      });
+    vi.mocked(confirmCollectionRunNotification).mockResolvedValue({ confirmed: true });
+
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "预览企业微信消息" }));
+
+    await vi.waitFor(() => expect(getCollectionRunNotificationPreview).toHaveBeenCalledWith("run-1"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveAttribute("aria-labelledby");
+    expect(within(dialog).getByText("企业微信消息预览")).toBeInTheDocument();
+    expect(screen.getByText(/淘宝前50企业微信摘要/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认发送并启用后续自动提醒" }));
+
+    await vi.waitFor(() => expect(confirmCollectionRunNotification).toHaveBeenCalledWith("run-1", {
+      previewDigest,
+      confirmation: "SEND_TO_WECOM"
+    }));
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(getCollectionRunNotificationPreview).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("FAILED")).toBeInTheDocument();
+    expect(await screen.findByText("后续自动提醒已启用")).toBeInTheDocument();
+  });
+
+  it("does not offer notification preview when no durable batch exists", () => {
+    const input = report("RUNNING");
+    input.notification.state = "NOT_CREATED";
+    vi.mocked(useApiData).mockReturnValue({ data: input, loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
+
+    renderPage();
+
+    expect(screen.queryByRole("button", { name: "预览企业微信消息" })).not.toBeInTheDocument();
   });
 
   it("does not render a synthetic report while the first detail request is loading", () => {
