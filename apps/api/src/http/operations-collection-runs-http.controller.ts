@@ -16,6 +16,7 @@ import type {
   CollectionReportPaginationInput,
   CollectionRunDetailPaginationInput,
   CollectionRunReportConfidence,
+  CollectionRunReportCombinationState,
   CollectionRunReportList,
   CollectionRunReportFilters,
   CollectionRunReportMatch,
@@ -65,11 +66,17 @@ function filtersFromQuery(query: Record<string, unknown>): CollectionRunReportFi
     ["CONFIRMED", "ESTIMATED", "MANUAL_REVIEW"],
     "confidence"
   );
+  const combinationState = optionalEnum<CollectionRunReportCombinationState>(
+    query.combinationState,
+    ["OWN", "MATCHED", "MISSING_OWN", "REVIEW", "EXCLUDED"],
+    "combinationState"
+  );
   const filters: CollectionRunReportFilters = {};
   if (source) filters.source = source;
   if (match) filters.match = match;
   if (price) filters.price = price;
   if (confidence) filters.confidence = confidence;
+  if (combinationState) filters.combinationState = combinationState;
   return filters;
 }
 

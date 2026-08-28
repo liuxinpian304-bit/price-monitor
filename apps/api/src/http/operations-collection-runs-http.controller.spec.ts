@@ -90,6 +90,7 @@ test("passes bounded list and detail pagination to the query service", async () 
     match: "EXACT",
     price: "LOWER",
     confidence: "CONFIRMED",
+    combinationState: "MATCHED",
     positionPage: "2",
     positionPageSize: "20",
     issuePage: "3",
@@ -101,7 +102,13 @@ test("passes bounded list and detail pagination to the query service", async () 
   assert.deepEqual(query.listInput, { page: 2, pageSize: 100 });
   assert.deepEqual(query.detailInput, {
     runId: "run-1",
-    filters: { source: "COMPETITOR", match: "EXACT", price: "LOWER", confidence: "CONFIRMED" },
+    filters: {
+      source: "COMPETITOR",
+      match: "EXACT",
+      price: "LOWER",
+      confidence: "CONFIRMED",
+      combinationState: "MATCHED"
+    },
     pagination: {
       positionPage: 2,
       positionPageSize: 20,
@@ -120,6 +127,19 @@ test("rejects invalid or oversized report pagination at the HTTP boundary", asyn
   assert.throws(() => controller.list({ pageSize: "101" }), BadRequestException);
   await assert.rejects(() => controller.detail("run-1", { skuPage: "1.5" }), BadRequestException);
   await assert.rejects(() => controller.detail("run-1", { issuePageSize: ["50"] }), BadRequestException);
+  await assert.rejects(() => controller.detail("run-1", { combinationState: "LEGACY" }), BadRequestException);
+});
+
+test("accepts every persisted combination state filter", async () => {
+  for (const combinationState of ["OWN", "MATCHED", "MISSING_OWN", "REVIEW", "EXCLUDED"] as const) {
+    const query = new QueryService();
+    query.detailResult = {} as CollectionRunReportDetail;
+    const controller = new OperationsCollectionRunsHttpController(query, new EvidenceStore());
+
+    await controller.detail("run-1", { combinationState });
+
+    assert.equal(query.detailInput?.filters.combinationState, combinationState);
+  }
 });
 
 test("rejects malformed evidence before repository or storage work", async () => {

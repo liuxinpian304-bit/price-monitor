@@ -1,4 +1,14 @@
 import { Prisma, type PrismaClient } from "../../../../generated/prisma/client.ts";
+import {
+  aggregateCollectionRunReport,
+  projectCollectionRunBusinessSkuRows,
+  type CollectionRunBusinessAggregationInput,
+  type CollectionRunBusinessPositionFact,
+  type CollectionRunBusinessSections,
+  type CollectionRunBusinessSkuRow,
+  type CollectionRunBusinessSnapshotFact,
+  type CollectionRunCombinationState
+} from "./collection-report-aggregation.ts";
 
 export const COLLECTION_REPORT_DEFAULT_PAGE_SIZE = 25;
 export const COLLECTION_REPORT_DETAIL_DEFAULT_PAGE_SIZE = 50;
@@ -9,12 +19,14 @@ export type CollectionRunReportSource = "OWN" | "COMPETITOR";
 export type CollectionRunReportMatch = "EXACT" | "REVIEW" | "EXCLUDED";
 export type CollectionRunReportPrice = "LOWER" | "NOT_LOWER";
 export type CollectionRunReportConfidence = "CONFIRMED" | "ESTIMATED" | "MANUAL_REVIEW";
+export type CollectionRunReportCombinationState = CollectionRunCombinationState;
 
 export interface CollectionRunReportFilters {
   source?: CollectionRunReportSource;
   match?: CollectionRunReportMatch;
   price?: CollectionRunReportPrice;
   confidence?: CollectionRunReportConfidence;
+  combinationState?: CollectionRunReportCombinationState;
 }
 
 export interface CollectionReportPaginationInput {
@@ -58,6 +70,7 @@ export interface CollectionReportRawRun {
   searchLimit: number;
   searchTerminationReason: "LIMIT_REACHED" | "END_MARKER" | null;
   ownBaselineSnapshotId: string | null;
+  claimedOwnListingIds: string[];
   searchedCount: number;
   fetchedCount: number;
   matchedCount: number;
@@ -91,45 +104,11 @@ export interface CollectionReportRawRun {
   } | null;
 }
 
-export interface CollectionReportRawPosition {
-  rank: number;
-  platformItemId: string;
-  url: string;
-  shopName: string;
-  title: string;
-  displayPriceMinFen: number;
-  displayPriceMaxFen: number;
-  sponsored: boolean;
-  capturedAt: Date;
-}
+export type CollectionReportRawPosition = CollectionRunBusinessPositionFact;
 
-export interface CollectionReportRawSnapshot {
-  id: string;
-  ownListingId: string | null;
+export interface CollectionReportRawSnapshot extends Omit<CollectionRunBusinessSnapshotFact, "matchCategory"> {
   searchCandidateId: string | null;
-  platformItemId: string;
-  skuId: string | null;
-  shopName: string;
-  title: string;
-  skuText: string | null;
   ownListingSkuText: string | null;
-  url: string;
-  listPriceFen: number | null;
-  activityPriceFen: number | null;
-  couponDiscountFen: number;
-  fullReductionFen: number;
-  directDiscountFen: number;
-  mandatoryFeeFen: number;
-  publicDiscountFen: number;
-  payableFen: number | null;
-  priceConfidence: CollectionRunReportConfidence;
-  stockState: "IN_STOCK" | "OUT_OF_STOCK" | "UNKNOWN";
-  matchDecision: "PENDING" | "BARE" | "BUNDLE" | "REJECTED" | "MANUAL" | null;
-  comparable: boolean;
-  matchConfidenceBps: number;
-  matchReasons: string[];
-  evidenceKey: string | null;
-  capturedAt: Date;
 }
 
 export interface CollectionReportRawIssue {
@@ -147,6 +126,12 @@ export interface CollectionReportRawRank {
   ranks: number[];
 }
 
+export interface CollectionReportCompleteFacts {
+  claimedOwnListingIds: string[];
+  positions: CollectionReportRawPosition[];
+  snapshots: CollectionReportRawSnapshot[];
+}
+
 export interface CollectionReportDataRepository {
   listRuns(request: CollectionReportPageRequest): Promise<CollectionReportPagedResult<CollectionReportRawRun>>;
   findRun(runId: string): Promise<CollectionReportRawRun | null>;
@@ -156,9 +141,9 @@ export interface CollectionReportDataRepository {
   listSnapshots(
     run: CollectionReportRawRun,
     filters: CollectionRunReportFilters,
-    baseline: CollectionReportRawSnapshot | null,
     request: CollectionReportPageRequest
   ): Promise<CollectionReportPagedResult<CollectionReportRawSnapshot>>;
+  loadBusinessFacts(runId: string): Promise<CollectionReportCompleteFacts>;
   listRanks(runId: string, platformItemIds: string[]): Promise<CollectionReportRawRank[]>;
   isEvidenceReferenced(runId: string, evidenceKey: string): Promise<boolean>;
 }
@@ -208,45 +193,9 @@ export interface CollectionRunReportSummary {
   error: { code: string; message: string | null } | null;
 }
 
-export interface CollectionRunSkuReportRow {
-  id: string;
-  source: CollectionRunReportSource;
-  platformItemId: string;
-  skuId: string | null;
-  shopName: string;
-  title: string;
-  skuText: string | null;
-  url: string;
-  ranks: number[];
-  prices: {
-    listPriceFen: number | null;
-    activityPriceFen: number | null;
-    couponDiscountFen: number;
-    fullReductionFen: number;
-    directDiscountFen: number;
-    mandatoryFeeFen: number;
-    publicDiscountFen: number;
-    payableFen: number | null;
-  };
-  stockState: "IN_STOCK" | "OUT_OF_STOCK" | "UNKNOWN";
-  confidence: CollectionRunReportConfidence;
-  match: {
-    category: CollectionRunReportMatch;
-    decision: "PENDING" | "BARE" | "BUNDLE" | "REJECTED" | "MANUAL" | null;
-    comparable: boolean;
-    confidenceBps: number;
-    reasons: string[];
-  };
-  comparison: {
-    state: "OWN" | "LOWER" | "NOT_LOWER" | "UNDECIDED";
-    ownPayableFen: number | null;
-    differenceFen: number | null;
-  };
-  evidenceSha256: string | null;
-  capturedAt: string;
-}
+export type CollectionRunSkuReportRow = CollectionRunBusinessSkuRow;
 
-export interface CollectionRunReportDetail extends CollectionRunReportSummary {
+export interface CollectionRunReportDetail extends CollectionRunReportSummary, CollectionRunBusinessSections {
   positions: Array<Omit<CollectionReportRawPosition, "capturedAt"> & { capturedAt: string }>;
   issues: Array<Omit<CollectionReportRawIssue, "evidenceKey" | "capturedAt"> & {
     evidenceSha256: string | null;
@@ -270,10 +219,107 @@ export interface CollectionRunReportList {
 const evidenceKeyPattern = /^sha256:([0-9a-f]{64})$/;
 const evidenceDigestPattern = /^[0-9a-f]{64}$/;
 
-function asStringList(value: Prisma.JsonValue | null): string[] {
+function asStringList(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === "string")
     : [];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function attributesFromEvidence(value: unknown): Record<string, string> {
+  const attributes = asRecord(asRecord(value)?.attributes);
+  if (!attributes) return {};
+  return Object.fromEntries(
+    Object.entries(attributes).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+  );
+}
+
+function componentsFromEvidence(value: unknown): CollectionRunBusinessSnapshotFact["components"] {
+  const components = asRecord(value)?.components;
+  if (!Array.isArray(components) || components.length === 0) return null;
+  const parsed: NonNullable<CollectionRunBusinessSnapshotFact["components"]> = [];
+  for (const value of components) {
+    const component = asRecord(value);
+    const role = component?.role;
+    const accessoryType = component?.accessoryType;
+    const brand = component?.brand;
+    const modelOrName = component?.modelOrName;
+    const quantity = component?.quantity;
+    if (
+      (role !== "CORE" && role !== "PAID_ACCESSORY" && role !== "GIFT_OR_SERVICE" && role !== "UNKNOWN")
+      || typeof accessoryType !== "string"
+      || accessoryType.trim().length === 0
+      || (brand !== null && typeof brand !== "string")
+      || (typeof brand === "string" && brand.trim().length === 0)
+      || typeof modelOrName !== "string"
+      || modelOrName.trim().length === 0
+      || !Number.isSafeInteger(quantity)
+      || (quantity as number) <= 0
+    ) return null;
+    parsed.push({ role, accessoryType, brand, modelOrName, quantity: quantity as number });
+  }
+  return parsed;
+}
+
+function nonNegativeMoneyOrNull(value: unknown): value is number | null {
+  return value === null || (Number.isSafeInteger(value) && (value as number) >= 0);
+}
+
+function promotionsFromJson(value: unknown): CollectionRunBusinessSnapshotFact["promotions"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): CollectionRunBusinessSnapshotFact["promotions"] => {
+    const promotion = asRecord(entry);
+    const kind = promotion?.kind;
+    const label = promotion?.label;
+    const amountFen = promotion?.amountFen;
+    const thresholdFen = promotion?.thresholdFen;
+    const audience = promotion?.audience;
+    const stackGroup = promotion?.stackGroup;
+    const includedInActivityPrice = promotion?.includedInActivityPrice;
+    const inclusion = promotion?.activityPriceInclusion;
+    if (
+      typeof kind !== "string"
+      || typeof label !== "string"
+      || !nonNegativeMoneyOrNull(amountFen)
+      || !nonNegativeMoneyOrNull(thresholdFen)
+      || typeof audience !== "string"
+      || (stackGroup !== null && typeof stackGroup !== "string")
+      || typeof includedInActivityPrice !== "boolean"
+      || (inclusion !== undefined && inclusion !== "INCLUDED" && inclusion !== "EXCLUDED" && inclusion !== "UNKNOWN")
+    ) return [];
+    return [{
+      kind,
+      label,
+      amountFen,
+      thresholdFen,
+      audience,
+      stackGroup,
+      includedInActivityPrice,
+      activityPriceInclusion: inclusion ?? (includedInActivityPrice ? "INCLUDED" : "UNKNOWN")
+    }];
+  });
+}
+
+function giftsFromJson(value: unknown): CollectionRunBusinessSnapshotFact["gifts"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): CollectionRunBusinessSnapshotFact["gifts"] => {
+    const gift = asRecord(entry);
+    const name = gift?.name;
+    const quantity = gift?.quantity;
+    return typeof name === "string" && name.trim().length > 0
+      && Number.isSafeInteger(quantity) && (quantity as number) > 0
+      ? [{ name, quantity: quantity as number }]
+      : [];
+  });
+}
+
+function combinationReasonsFromJson(value: unknown): string[] {
+  return asStringList(asRecord(value)?.codes);
 }
 
 function digestFromEvidenceKey(value: string | null): string | null {
@@ -394,72 +440,6 @@ function matchCategory(
   return "REVIEW";
 }
 
-function comparisonFor(
-  run: CollectionReportRawRun,
-  snapshot: CollectionReportRawSnapshot,
-  baseline: CollectionReportRawSnapshot | null
-): CollectionRunSkuReportRow["comparison"] {
-  if (snapshot.ownListingId) {
-    return { state: "OWN", ownPayableFen: baseline?.payableFen ?? null, differenceFen: null };
-  }
-  if (
-    !baseline
-    || matchCategory(run, snapshot) !== "EXACT"
-    || snapshot.stockState !== "IN_STOCK"
-    || snapshot.priceConfidence !== "CONFIRMED"
-    || snapshot.payableFen === null
-  ) {
-    return { state: "UNDECIDED", ownPayableFen: baseline?.payableFen ?? null, differenceFen: null };
-  }
-  const differenceFen = baseline.payableFen! - snapshot.payableFen;
-  return {
-    state: differenceFen > 0 ? "LOWER" : "NOT_LOWER",
-    ownPayableFen: baseline.payableFen,
-    differenceFen: Math.abs(differenceFen)
-  };
-}
-
-function toSkuRow(
-  run: CollectionReportRawRun,
-  snapshot: CollectionReportRawSnapshot,
-  ranks: ReadonlyMap<string, number[]>,
-  baseline: CollectionReportRawSnapshot | null
-): CollectionRunSkuReportRow {
-  return {
-    id: snapshot.id,
-    source: snapshot.ownListingId ? "OWN" : "COMPETITOR",
-    platformItemId: snapshot.platformItemId,
-    skuId: snapshot.skuId,
-    shopName: snapshot.shopName,
-    title: snapshot.title,
-    skuText: snapshot.skuText,
-    url: snapshot.url,
-    ranks: [...(ranks.get(snapshot.platformItemId) ?? [])].sort((left, right) => left - right),
-    prices: {
-      listPriceFen: snapshot.listPriceFen,
-      activityPriceFen: snapshot.activityPriceFen,
-      couponDiscountFen: snapshot.couponDiscountFen,
-      fullReductionFen: snapshot.fullReductionFen,
-      directDiscountFen: snapshot.directDiscountFen,
-      mandatoryFeeFen: snapshot.mandatoryFeeFen,
-      publicDiscountFen: snapshot.publicDiscountFen,
-      payableFen: snapshot.payableFen
-    },
-    stockState: snapshot.stockState,
-    confidence: snapshot.priceConfidence,
-    match: {
-      category: matchCategory(run, snapshot),
-      decision: snapshot.matchDecision,
-      comparable: snapshot.comparable,
-      confidenceBps: snapshot.matchConfidenceBps,
-      reasons: snapshot.matchReasons
-    },
-    comparison: comparisonFor(run, snapshot, baseline),
-    evidenceSha256: digestFromEvidenceKey(snapshot.evidenceKey),
-    capturedAt: snapshot.capturedAt.toISOString()
-  };
-}
-
 const reportRunSummarySelect = {
   id: true,
   status: true,
@@ -470,6 +450,7 @@ const reportRunSummarySelect = {
   searchLimit: true,
   searchTerminationReason: true,
   ownBaselineSnapshotId: true,
+  claimedOwnListingIds: true,
   searchedCount: true,
   fetchedCount: true,
   matchedCount: true,
@@ -518,10 +499,30 @@ const snapshotSelect = {
   comparable: true,
   matchConfidenceBps: true,
   matchReasons: true,
+  combinationSignature: true,
+  combinationLabel: true,
+  combinationState: true,
+  combinationReasons: true,
+  comparisonOwnSnapshotId: true,
+  promotions: true,
+  gifts: true,
+  rawEvidence: true,
+  evidenceUrl: true,
   evidenceKey: true,
   capturedAt: true,
   ownListing: { select: { skuText: true, url: true } },
-  searchCandidate: { select: { url: true } }
+  searchCandidate: { select: { url: true } },
+  comparisonOwnSnapshot: {
+    select: {
+      id: true,
+      ownListingId: true,
+      platformItemId: true,
+      skuId: true,
+      payableFen: true,
+      combinationSignature: true,
+      ownListing: { select: { url: true } }
+    }
+  }
 } satisfies Prisma.OfferSnapshotSelect;
 
 type PrismaReportRun = Prisma.CollectionRunGetPayload<{ select: typeof reportRunSummarySelect }>;
@@ -538,6 +539,7 @@ function toRawRun(run: PrismaReportRun, uniqueItemCount: number): CollectionRepo
     searchLimit: run.searchLimit,
     searchTerminationReason: run.searchTerminationReason,
     ownBaselineSnapshotId: run.ownBaselineSnapshotId,
+    claimedOwnListingIds: [...run.claimedOwnListingIds],
     searchedCount: run.searchedCount,
     fetchedCount: run.fetchedCount,
     matchedCount: run.matchedCount,
@@ -566,10 +568,26 @@ function toRawRun(run: PrismaReportRun, uniqueItemCount: number): CollectionRepo
 }
 
 function toRawSnapshot(snapshot: PrismaReportSnapshot): CollectionReportRawSnapshot {
+  const {
+    ownListing,
+    searchCandidate,
+    comparisonOwnSnapshot: _comparisonOwnSnapshot,
+    rawEvidence,
+    promotions,
+    gifts,
+    combinationReasons,
+    evidenceUrl,
+    ...row
+  } = snapshot;
   return {
-    ...snapshot,
-    ownListingSkuText: snapshot.ownListing?.skuText ?? null,
-    url: snapshot.ownListing?.url ?? snapshot.searchCandidate?.url ?? "",
+    ...row,
+    ownListingSkuText: ownListing?.skuText ?? null,
+    url: ownListing?.url ?? searchCandidate?.url ?? evidenceUrl ?? "",
+    attributes: attributesFromEvidence(rawEvidence),
+    components: componentsFromEvidence(rawEvidence),
+    promotions: promotionsFromJson(promotions),
+    gifts: giftsFromJson(gifts),
+    combinationReasons: combinationReasonsFromJson(combinationReasons),
     priceConfidence: snapshot.priceConfidence,
     stockState: snapshot.stockState,
     matchDecision: snapshot.matchDecision,
@@ -583,13 +601,17 @@ function pageOffset(request: CollectionReportPageRequest): number {
 
 function snapshotFilterSql(
   run: CollectionReportRawRun,
-  filters: CollectionRunReportFilters,
-  baseline: CollectionReportRawSnapshot | null
-): Prisma.Sql | null {
+  filters: CollectionRunReportFilters
+): Prisma.Sql {
   const clauses: Prisma.Sql[] = [Prisma.sql`s."collectionRunId" = ${run.id}`];
   if (filters.source === "OWN") clauses.push(Prisma.sql`s."ownListingId" IS NOT NULL`);
   if (filters.source === "COMPETITOR") clauses.push(Prisma.sql`s."ownListingId" IS NULL`);
   if (filters.confidence) clauses.push(Prisma.sql`s."priceConfidence"::text = ${filters.confidence}`);
+  if (filters.combinationState === "REVIEW") {
+    clauses.push(Prisma.sql`(s."combinationState"::text = 'REVIEW' OR s."combinationState" IS NULL)`);
+  } else if (filters.combinationState) {
+    clauses.push(Prisma.sql`s."combinationState"::text = ${filters.combinationState}`);
+  }
 
   if (filters.match === "EXACT") {
     clauses.push(Prisma.sql`s."comparable" = TRUE`);
@@ -602,16 +624,14 @@ function snapshotFilterSql(
   }
 
   if (filters.price) {
-    if (baseline === null || baseline.payableFen === null) return null;
     clauses.push(Prisma.sql`s."ownListingId" IS NULL`);
-    clauses.push(Prisma.sql`s."comparable" = TRUE`);
-    clauses.push(Prisma.sql`s."matchDecision"::text = ${run.monitoredModel.comparisonType}`);
-    clauses.push(Prisma.sql`s."stockState"::text = 'IN_STOCK'`);
-    clauses.push(Prisma.sql`s."priceConfidence"::text = 'CONFIRMED'`);
+    clauses.push(Prisma.sql`s."combinationState"::text = 'MATCHED'`);
+    clauses.push(Prisma.sql`s."comparisonOwnSnapshotId" IS NOT NULL`);
     clauses.push(Prisma.sql`s."payableFen" IS NOT NULL`);
+    clauses.push(Prisma.sql`selected_own."payableFen" IS NOT NULL`);
     clauses.push(filters.price === "LOWER"
-      ? Prisma.sql`s."payableFen" < ${baseline.payableFen}`
-      : Prisma.sql`s."payableFen" >= ${baseline.payableFen}`);
+      ? Prisma.sql`s."payableFen" < selected_own."payableFen"`
+      : Prisma.sql`s."payableFen" >= selected_own."payableFen"`);
   }
 
   return Prisma.join(clauses, " AND ");
@@ -724,16 +744,17 @@ export class PrismaCollectionReportRepository implements CollectionReportDataRep
   async listSnapshots(
     run: CollectionReportRawRun,
     filters: CollectionRunReportFilters,
-    baseline: CollectionReportRawSnapshot | null,
     input: CollectionReportPageRequest
   ): Promise<CollectionReportPagedResult<CollectionReportRawSnapshot>> {
     const request = normalizePageRequest(input, COLLECTION_REPORT_DETAIL_DEFAULT_PAGE_SIZE);
-    const whereSql = snapshotFilterSql(run, filters, baseline);
-    if (!whereSql) return { items: [], total: 0 };
+    const whereSql = snapshotFilterSql(run, filters);
     const [idRows, countRows] = await Promise.all([
       this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT s."id"
         FROM "OfferSnapshot" s
+        LEFT JOIN "OfferSnapshot" selected_own
+          ON selected_own."id" = s."comparisonOwnSnapshotId"
+          AND selected_own."collectionRunId" = s."collectionRunId"
         LEFT JOIN "CollectionSearchPosition" position
           ON position."collectionRunId" = s."collectionRunId"
           AND position."platformItemId" = s."platformItemId"
@@ -750,6 +771,9 @@ export class PrismaCollectionReportRepository implements CollectionReportDataRep
       this.prisma.$queryRaw<Array<{ total: bigint | number }>>(Prisma.sql`
         SELECT COUNT(*)::int AS "total"
         FROM "OfferSnapshot" s
+        LEFT JOIN "OfferSnapshot" selected_own
+          ON selected_own."id" = s."comparisonOwnSnapshotId"
+          AND selected_own."collectionRunId" = s."collectionRunId"
         WHERE ${whereSql}
       `)
     ]);
@@ -763,6 +787,40 @@ export class PrismaCollectionReportRepository implements CollectionReportDataRep
         return snapshot ? [toRawSnapshot(snapshot)] : [];
       }),
       total: Number(countRows[0]?.total ?? 0)
+    };
+  }
+
+  async loadBusinessFacts(runId: string): Promise<CollectionReportCompleteFacts> {
+    const [run, positions, snapshots] = await Promise.all([
+      this.prisma.collectionRun.findUniqueOrThrow({
+        where: { id: runId },
+        select: { claimedOwnListingIds: true }
+      }),
+      this.prisma.collectionSearchPosition.findMany({
+        where: { collectionRunId: runId },
+        select: {
+          rank: true,
+          platformItemId: true,
+          url: true,
+          shopName: true,
+          title: true,
+          displayPriceMinFen: true,
+          displayPriceMaxFen: true,
+          sponsored: true,
+          capturedAt: true
+        },
+        orderBy: { rank: "asc" }
+      }),
+      this.prisma.offerSnapshot.findMany({
+        where: { collectionRunId: runId },
+        select: snapshotSelect,
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+      })
+    ]);
+    return {
+      claimedOwnListingIds: [...run.claimedOwnListingIds],
+      positions,
+      snapshots: snapshots.map(toRawSnapshot)
     };
   }
 
@@ -828,20 +886,37 @@ export class CollectionReportQueryService {
       COLLECTION_REPORT_DETAIL_DEFAULT_PAGE_SIZE
     );
 
-    const baselinePromise = this.repository.findExactOwnBaseline(run);
     const positionsPromise = this.repository.listPositions(runId, positionRequest);
     const issuesPromise = this.repository.listIssues(runId, issueRequest);
-    const baseline = await baselinePromise;
-    const snapshotsPromise = this.repository.listSnapshots(run, filters, baseline, skuRequest);
-    const [positions, issues, snapshots] = await Promise.all([positionsPromise, issuesPromise, snapshotsPromise]);
+    const snapshotsPromise = this.repository.listSnapshots(run, filters, skuRequest);
+    const businessFactsPromise = this.repository.loadBusinessFacts(runId);
+    const [positions, issues, snapshots, businessFacts] = await Promise.all([
+      positionsPromise,
+      issuesPromise,
+      snapshotsPromise,
+      businessFactsPromise
+    ]);
     const rankRows = await this.repository.listRanks(runId, snapshots.items.map((snapshot) => snapshot.platformItemId));
     const ranks = new Map<string, number[]>();
     for (const row of rankRows) {
       ranks.set(row.platformItemId, row.ranks);
     }
+    const aggregationInput: CollectionRunBusinessAggregationInput = {
+      claimedOwnListingIds: businessFacts.claimedOwnListingIds,
+      positions: businessFacts.positions,
+      snapshots: businessFacts.snapshots.map((snapshot) => ({
+        ...snapshot,
+        matchCategory: matchCategory(run, snapshot)
+      }))
+    };
+    const businessSections = aggregateCollectionRunReport(aggregationInput);
+    const completeRows = new Map(
+      projectCollectionRunBusinessSkuRows(aggregationInput).map((row) => [row.id, row])
+    );
 
     return {
       ...summary(run),
+      ...businessSections,
       positions: positions.items.map((position) => ({
         ...position,
         capturedAt: position.capturedAt.toISOString()
@@ -853,7 +928,10 @@ export class CollectionReportQueryService {
       })),
       filters,
       totalSkuCount: run.snapshotCount,
-      skus: snapshots.items.map((snapshot) => toSkuRow(run, snapshot, ranks, baseline)),
+      skus: snapshots.items.flatMap((snapshot) => {
+        const row = completeRows.get(snapshot.id);
+        return row ? [{ ...row, ranks: [...(ranks.get(snapshot.platformItemId) ?? row.ranks)] }] : [];
+      }),
       pagination: {
         positions: pageMeta(positionRequest, positions.total),
         issues: pageMeta(issueRequest, issues.total),
