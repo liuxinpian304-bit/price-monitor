@@ -29,6 +29,7 @@ const job = {
     standardModel: "MDR-7506",
     version: null,
     comparisonType: "BARE",
+    colorComparable: false,
     effectiveAliases: ["7506"],
     excludedAliases: [],
     mustIncludeTerms: [],

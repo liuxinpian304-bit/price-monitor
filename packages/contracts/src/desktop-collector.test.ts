@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { collectorJobSchema, collectorReportSchema } from "./desktop-collector.ts";
+import {
+  SKU_COMPONENT_ROLES,
+  collectorJobSchema,
+  collectorReportSchema
+} from "./desktop-collector.ts";
 
 const job = {
   schemaVersion: 1,
@@ -126,6 +130,18 @@ const report = {
 
 test("accepts the approved first-50 all-SKU job contract", () => {
   assert.equal(collectorJobSchema.parse(job).searchLimit, 50);
+});
+
+test("normalizes model color comparison rules for current and legacy jobs", () => {
+  const parsedJob = collectorJobSchema.parse({
+    ...job,
+    rule: { ...job.rule, colorComparable: true }
+  });
+  assert.equal(parsedJob.rule.colorComparable, true);
+
+  const legacyJob = structuredClone(job) as any;
+  delete legacyJob.rule.colorComparable;
+  assert.equal(collectorJobSchema.parse(legacyJob).rule.colorComparable, false);
 });
 
 test("requires claimed jobs and successful reports to include an own listing", () => {
@@ -362,9 +378,11 @@ test("accepts only the exact EXCLUDED winners from mixed promotion evidence", ()
 
 test("accepts optional structured bundle components and rejects ambiguous component data", () => {
   const components = [
-    { accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
-    { accessoryType: "转换线", brand: null, modelOrName: "C口转换线", quantity: 1 }
-  ];
+    { role: "CORE", accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
+    { role: "PAID_ACCESSORY", accessoryType: "声卡", brand: null, modelOrName: "AI-1", quantity: 1 },
+    { role: "GIFT_OR_SERVICE", accessoryType: "服务", brand: null, modelOrName: "远程调试", quantity: 1 },
+    { role: "UNKNOWN", accessoryType: "套餐", brand: null, modelOrName: "升级套餐二", quantity: 1 }
+  ] as const;
   const withComponents = {
     ...report,
     competitorItems: [{
@@ -376,6 +394,7 @@ test("accepts optional structured bundle components and rejects ambiguous compon
   const parsed = collectorReportSchema.parse(withComponents);
 
   assert.deepEqual(parsed.competitorItems[0]?.skus[0]?.components, components);
+  assert.deepEqual(components.map((component) => component.role), SKU_COMPONENT_ROLES);
   assert.doesNotThrow(() => collectorReportSchema.parse(report));
   assert.throws(() => collectorReportSchema.parse({
     ...withComponents,
@@ -394,6 +413,22 @@ test("accepts optional structured bundle components and rejects ambiguous compon
       }]
     }, withComponents.competitorItems[1]]
   }));
+
+  const unknownRole = structuredClone(withComponents) as any;
+  unknownRole.competitorItems[0].skus[0].components[0].role = "OPTIONAL";
+  assert.throws(() => collectorReportSchema.parse(unknownRole));
+
+  const legacyReport = structuredClone(report) as any;
+  legacyReport.competitorItems[0].skus[0].components = [{
+    accessoryType: "麦克风",
+    brand: "RODE",
+    modelOrName: "NT1S",
+    quantity: 1
+  }];
+  assert.equal(
+    collectorReportSchema.parse(legacyReport).competitorItems[0]?.skus[0]?.components?.[0]?.role,
+    "UNKNOWN"
+  );
 });
 
 test("rejects missing ranks, unsafe money, invalid confidence, and excess positions", () => {

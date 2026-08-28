@@ -3,6 +3,9 @@ import { z } from "zod";
 import { derivePromotionDiscounts } from "./promotion-discount-components.ts";
 
 export const PRICE_CONFIDENCES = ["CONFIRMED", "ESTIMATED", "MANUAL_REVIEW"] as const;
+export const SKU_COMPONENT_ROLES = [
+  "CORE", "PAID_ACCESSORY", "GIFT_OR_SERVICE", "UNKNOWN"
+] as const;
 export const COLLECTOR_REPORT_STATUSES = [
   "SUCCEEDED", "PARTIAL_FAILED", "PAUSED_LOGIN", "PAUSED_CHALLENGE", "FAILED"
 ] as const;
@@ -47,6 +50,7 @@ const ruleSchema = z.object({
   standardModel: z.string().min(1),
   version: z.string().min(1).nullable(),
   comparisonType: comparisonTypeSchema,
+  colorComparable: z.boolean().default(false),
   effectiveAliases: z.array(z.string().min(1)),
   excludedAliases: z.array(z.string().min(1)),
   mustIncludeTerms: z.array(z.string().min(1)),
@@ -81,6 +85,7 @@ const promotionEvidenceSchema = z.object({
 }));
 
 const collectedSkuComponentSchema = z.object({
+  role: z.enum(SKU_COMPONENT_ROLES).default("UNKNOWN"),
   accessoryType: z.string().min(1).max(200),
   brand: z.string().min(1).max(200).nullable(),
   modelOrName: z.string().min(1).max(500),
@@ -398,6 +403,7 @@ export const collectorHeartbeatSchema = z.object({
 }).strict();
 
 export type PriceConfidence = z.infer<typeof priceConfidenceSchema>;
+export type SkuComponentRole = (typeof SKU_COMPONENT_ROLES)[number];
 export type PromotionEvidence = z.infer<typeof promotionEvidenceSchema>;
 export type CollectedSkuComponent = z.infer<typeof collectedSkuComponentSchema>;
 export type CollectorJob = z.infer<typeof collectorJobSchema>;

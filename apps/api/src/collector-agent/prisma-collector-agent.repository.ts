@@ -209,6 +209,7 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
               standardModel: true,
               version: true,
               comparisonType: true,
+              colorComparable: true,
               searchQuery: true,
               mustIncludeTerms: true,
               excludedTerms: true,
@@ -252,6 +253,7 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
           standardModel: run.monitoredModel.standardModel,
           version: run.monitoredModel.version,
           comparisonType: run.monitoredModel.comparisonType,
+          colorComparable: run.monitoredModel.colorComparable,
           effectiveAliases: run.monitoredModel.aliases
             .filter((alias) => alias.type === "EFFECTIVE")
             .map((alias) => alias.phrase),
