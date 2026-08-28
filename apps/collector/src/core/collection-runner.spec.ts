@@ -44,6 +44,7 @@ const job: CollectorJob = {
     standardModel: "MDR-7506",
     version: null,
     comparisonType: "BARE",
+    colorComparable: false,
     effectiveAliases: ["7506"],
     excludedAliases: ["M1", "MV1"],
     mustIncludeTerms: ["7506"],
@@ -68,6 +69,7 @@ interface MutableFixtureResult {
     selectedLabels: Record<string, string>;
     activityPriceText: string | null;
     components?: Array<{
+      role: "CORE" | "PAID_ACCESSORY" | "GIFT_OR_SERVICE" | "UNKNOWN";
       accessoryType: string;
       brand: string | null;
       modelOrName: string;
@@ -200,6 +202,9 @@ test("collects every enabled Sony SKU while preserving duplicate search ranks", 
     assert.ok(itemB);
     assert.equal(itemB.skus.length, 1);
     assert.equal(itemB.skus[0]?.stockState, "OUT_OF_STOCK");
+    for (const item of [...report.ownItems, ...report.competitorItems]) {
+      for (const sku of item.skus) assert.ok(sku.components?.length);
+    }
 
     const checkpoint = await store.load(job.runId);
     assert.equal(checkpoint?.phase, "COMPLETE");
@@ -219,8 +224,8 @@ test("preserves structured bundle components from the desktop driver", async () 
   const componentJob = { ...job, runId: "sony-bundle-components-run" };
   try {
     const components = [
-      { accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
-      { accessoryType: "转换线", brand: null, modelOrName: "C口转换线", quantity: 1 }
+      { role: "CORE" as const, accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
+      { role: "UNKNOWN" as const, accessoryType: "转换线", brand: null, modelOrName: "C口转换线", quantity: 1 }
     ];
     const path = await writeFixtureCopy(root, (fixture) => {
       const item = fixture.search.items.find((candidate) => candidate.platformItemId === "competitor-a");

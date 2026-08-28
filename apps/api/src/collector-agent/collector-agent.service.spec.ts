@@ -48,6 +48,7 @@ const modelJob = {
     standardModel: "MDR-7506",
     version: null,
     comparisonType: "BARE",
+    colorComparable: false,
     effectiveAliases: ["7506"],
     excludedAliases: ["M1", "MV1"],
     mustIncludeTerms: ["7506"],
@@ -248,6 +249,7 @@ test("claimed jobs contain the model rule and every active own listing", async (
   });
 
   assert.equal(job?.rule.standardModel, "MDR-7506");
+  assert.equal(job?.rule.colorComparable, false);
   assert.deepEqual(job?.rule.effectiveAliases, ["7506"]);
   assert.deepEqual(job?.ownListings.map((listing) => listing.id), ["own-active-1", "own-active-2"]);
   assert.equal(job?.collectorId, repository.agents[0]?.id);

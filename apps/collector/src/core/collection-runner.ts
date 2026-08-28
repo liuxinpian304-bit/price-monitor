@@ -35,6 +35,7 @@ import {
   type TaobaoDesktopDriver
 } from "./desktop-driver.ts";
 import { enumerateSkuSelections } from "./sku-enumerator.ts";
+import { deriveSkuComponents } from "./sku-component-evidence.ts";
 
 const PAUSE_INCOMPLETE_MESSAGE = "Collection paused before SKU enumeration completed";
 const SEARCH_ID_CONFLICT_MESSAGE = "Search results exposed conflicting stable item IDs for one canonical URL";
@@ -247,7 +248,7 @@ export class CollectionRunner {
       }
 
       if (checkpoint.phase === "ITEMS") {
-        await this.collectSearchItems(checkpoint, signal);
+        await this.collectSearchItems(job, checkpoint, signal);
       }
 
       checkpoint.phase = "COMPLETE";
@@ -360,7 +361,7 @@ export class CollectionRunner {
         checkpoint.report.ownItems.push(item);
       }
 
-      await this.collectItemSkus(page, item, checkpoint, signal);
+      await this.collectItemSkus(job, page, item, checkpoint, signal);
       addUnique(checkpoint.completedOwnListingIds, listing.id);
       addUnique(checkpoint.completedPlatformItemIds, identity);
       await this.driver.returnToSearch();
@@ -408,6 +409,7 @@ export class CollectionRunner {
   }
 
   private async collectSearchItems(
+    job: CollectorJob,
     checkpoint: CollectorCheckpoint,
     signal: AbortSignal | undefined
   ): Promise<void> {
@@ -474,7 +476,7 @@ export class CollectionRunner {
         item.searchRanks = [...new Set([...item.searchRanks, ...ranks])].sort((a, b) => a - b);
       }
 
-      await this.collectItemSkus(page, item, checkpoint, signal);
+      await this.collectItemSkus(job, page, item, checkpoint, signal);
       completeIdentity(checkpoint, pageIdentity);
       completeIdentity(checkpoint, identity);
       await this.driver.returnToSearch();
@@ -484,6 +486,7 @@ export class CollectionRunner {
   }
 
   private async collectItemSkus(
+    job: CollectorJob,
     page: DriverItemPage,
     item: CollectedItem,
     checkpoint: CollectorCheckpoint,
@@ -581,7 +584,7 @@ export class CollectionRunner {
       }
 
       try {
-        const sku = await this.collectedSku(page, selection, skuId, result.view, checkpoint);
+        const sku = await this.collectedSku(job, page, selection, skuId, result.view, checkpoint);
         if (!item.skus.some((candidate) => candidate.skuId === sku.skuId)) item.skus.push(sku);
       } catch (error) {
         addIssueOnce(checkpoint.report, issue(
@@ -614,6 +617,7 @@ export class CollectionRunner {
   }
 
   private async collectedSku(
+    job: CollectorJob,
     page: DriverItemPage,
     selection: SkuSelection,
     skuId: string,
@@ -648,9 +652,12 @@ export class CollectionRunner {
       skuId,
       label: selectionLabel(page, selection),
       attributes: structuredClone(selection),
-      ...(view.components === undefined
-        ? {}
-        : { components: structuredClone(view.components) }),
+      components: deriveSkuComponents({
+        brand: job.rule.brand,
+        standardModel: job.rule.standardModel,
+        selectedLabels: view.selectedLabels,
+        explicitComponents: view.components
+      }),
       stockState: view.stockState,
       listPriceFen: price.listPriceFen,
       activityPriceFen: price.activityPriceFen,
