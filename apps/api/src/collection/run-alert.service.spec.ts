@@ -1,93 +1,108 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type {
-  AlertRepository,
-  PriceAlertRecord
-} from "../alerts/alert.service.ts";
+import type { AlertRepository, PriceAlertRecord } from "../alerts/alert.service.ts";
 import {
   RunAlertService,
+  type BaselineIssueCode,
   type CandidateMatchPersistence,
   type RunAlertData,
   type RunAlertRepository,
   type RunAlertSummary,
   type RunAlertUnitOfWork,
+  type SnapshotCombinationPersistence,
   type SnapshotMatchPersistence
 } from "./run-alert.service.ts";
 
-function snapshot(input: Partial<RunAlertData["snapshots"][number]> & {
+interface ComponentFixture {
+  role: "CORE" | "PAID_ACCESSORY" | "GIFT_OR_SERVICE" | "UNKNOWN";
+  accessoryType: string;
+  brand: string | null;
+  modelOrName: string;
+  quantity: number;
+}
+
+const core: ComponentFixture = {
+  role: "CORE",
+  accessoryType: "耳机",
+  brand: "Sony",
+  modelOrName: "MDR-7506",
+  quantity: 1
+};
+const cable: ComponentFixture = {
+  role: "PAID_ACCESSORY",
+  accessoryType: "转换线",
+  brand: null,
+  modelOrName: "C口转换线",
+  quantity: 1
+};
+const stand: ComponentFixture = {
+  role: "PAID_ACCESSORY",
+  accessoryType: "耳机架",
+  brand: null,
+  modelOrName: "HPS-1",
+  quantity: 1
+};
+
+function snapshot(input: {
   id: string;
   platformItemId: string;
   skuId: string;
-  skuText: string;
-  payableFen: number;
+  payableFen: number | null;
+  ownListingId?: string | null;
+  searchCandidateId?: string | null;
+  shopName?: string;
+  title?: string;
+  skuText?: string;
+  attributes?: Record<string, string>;
+  components?: ComponentFixture[] | null;
+  priceConfidence?: "CONFIRMED" | "ESTIMATED" | "MANUAL_REVIEW";
+  stockState?: "IN_STOCK" | "OUT_OF_STOCK" | "UNKNOWN";
+  searchRanks?: number[];
 }): RunAlertData["snapshots"][number] {
+  const displayPrice = input.payableFen ?? 0;
   return {
     id: input.id,
     ownListingId: input.ownListingId ?? null,
-    ownListingSkuText: input.ownListingSkuText ?? null,
+    ownListingSkuText: input.ownListingId ? "MDR-7506 单机" : null,
     searchCandidateId: input.searchCandidateId ?? null,
     platformItemId: input.platformItemId,
     skuId: input.skuId,
     shopName: input.shopName ?? "同行店铺",
-    title: input.title ?? "索尼 MDR-7506 专业监听耳机",
-    skuText: input.skuText,
-    attributes: input.attributes ?? { 型号: input.skuText },
-    bundleComponents: input.bundleComponents ?? null,
-    listPriceFen: input.listPriceFen ?? input.payableFen,
-    activityPriceFen: input.activityPriceFen ?? input.payableFen ?? 0,
-    publicDiscountFen: input.publicDiscountFen ?? 0,
+    title: input.title ?? "Sony MDR-7506 专业监听耳机",
+    skuText: input.skuText ?? "MDR-7506 单机",
+    attributes: input.attributes ?? { 型号: "MDR-7506" },
+    components: input.components === undefined ? [{ ...core }] : input.components,
+    listPriceFen: displayPrice,
+    activityPriceFen: displayPrice,
+    publicDiscountFen: 0,
     payableFen: input.payableFen,
     priceConfidence: input.priceConfidence ?? "CONFIRMED",
     stockState: input.stockState ?? "IN_STOCK",
-    capturedAt: input.capturedAt ?? new Date("2026-08-25T01:30:05.000Z"),
-    url: input.url ?? `https://item.taobao.com/item.htm?id=${input.platformItemId}`,
-    searchRanks: input.searchRanks ?? [1]
-  };
+    capturedAt: new Date("2026-08-25T01:30:05.000Z"),
+    url: `https://item.taobao.com/item.htm?id=${input.platformItemId}`,
+    searchRanks: input.searchRanks ?? []
+  } as RunAlertData["snapshots"][number];
 }
 
-function bareRun(): RunAlertData {
-  const own = snapshot({
-    id: "own-snapshot",
-    ownListingId: "own-listing",
-    ownListingSkuText: "MDR-7506 单机",
-    platformItemId: "own-item",
-    skuId: "own-7506",
-    shopName: "星空乐器专营店",
-    skuText: "MDR-7506 单机",
-    payableFen: 69_800,
-    capturedAt: new Date("2026-08-25T01:30:00.000Z"),
-    searchRanks: []
-  });
-  const competitor = (
-    id: string,
-    payableFen: number,
-    extra: Partial<RunAlertData["snapshots"][number]> = {}
-  ) => snapshot({
-    ...extra,
-    id: `snapshot-${id}`,
-    searchCandidateId: `candidate-${id}`,
-    platformItemId: `item-${id}`,
-    skuId: `sku-${id}`,
-    skuText: extra.skuText ?? "MDR-7506 单机",
-    payableFen: extra.payableFen ?? payableFen,
-    searchRanks: extra.searchRanks ?? [Number(id.replace(/\D/g, "")) || 1]
-  });
-
+function runData(snapshots: RunAlertData["snapshots"]): RunAlertData {
   return {
-    runId: "run-bare",
+    runId: "run-fixture",
     status: "SUCCEEDED",
-    searchLimit: 6,
-    positionCount: 6,
-    skuCount: 7,
+    searchLimit: 50,
+    positionCount: snapshots.filter((item) => item.searchCandidateId !== null).length,
+    skuCount: snapshots.length,
     issueCount: 0,
     completedAt: new Date("2026-08-25T01:31:00.000Z"),
+    claimedOwnListingIds: snapshots.flatMap((item) => item.ownListingId ? [item.ownListingId] : []),
+    ownCatalogComplete: true,
     model: {
       id: "model-7506",
       brand: "Sony",
       standardModel: "MDR-7506",
       version: null,
       comparisonType: "BARE",
+      colorComparable: false,
       owner: "张三",
       effectiveAliases: ["索尼 7506", "7506"],
       excludedAliases: [],
@@ -95,29 +110,18 @@ function bareRun(): RunAlertData {
       excludedTerms: ["M1", "MV1", "展示样机", "单独转换线"],
       bundleItems: []
     },
-    snapshots: [
-      own,
-      competitor("1", 69_800, { searchRanks: [1] }),
-      competitor("2", 69_799, { searchRanks: [2] }),
-      competitor("3", 65_800, { searchRanks: [3] }),
-      competitor("4", 60_000, { priceConfidence: "MANUAL_REVIEW", searchRanks: [4] }),
-      competitor("5", 50_000, { stockState: "OUT_OF_STOCK", searchRanks: [5] }),
-      competitor("6", 40_000, {
-        skuText: "M1",
-        attributes: { 型号: "M1" },
-        searchRanks: [6]
-      })
-    ]
-  };
+    snapshots
+  } as RunAlertData;
 }
 
 class FakeAlertRepository implements AlertRepository {
-  alerts: PriceAlertRecord[] = [];
+  readonly alerts: PriceAlertRecord[] = [];
 
   async createIfAbsent(input: Omit<PriceAlertRecord, "id" | "notifiedAt">) {
     if (this.alerts.some((alert) => alert.dedupKey === input.dedupKey)) return null;
     const alert: PriceAlertRecord = {
       ...input,
+      reasons: [...input.reasons],
       id: `alert-${this.alerts.length + 1}`,
       notifiedAt: null
     };
@@ -138,50 +142,64 @@ class FakeRunAlertRepository implements RunAlertRepository, RunAlertUnitOfWork {
   readonly alerts = new FakeAlertRepository();
   readonly snapshotDecisions = new Map<string, SnapshotMatchPersistence>();
   readonly candidateDecisions = new Map<string, CandidateMatchPersistence>();
-  readonly ensuredBatches = new Map<string, RunAlertSummary>();
-  readonly issues = new Set<"OWN_BASELINE_MISSING" | "OWN_BASELINE_AMBIGUOUS">();
+  readonly combinationDecisions = new Map<string, SnapshotCombinationPersistence>();
+  readonly issues = new Set<BaselineIssueCode>();
+  readonly notificationBatches: RunAlertSummary[] = [];
   ownBaselineSnapshotId: string | null = null;
-  data: RunAlertData;
+  readonly data: RunAlertData;
 
   constructor(data: RunAlertData) {
     this.data = data;
   }
 
-  async withEvaluation<T>(
-    runId: string,
-    operation: (unit: RunAlertUnitOfWork) => Promise<T>
-  ): Promise<T> {
+  get savedCombinationDecisions(): SnapshotCombinationPersistence[] {
+    return [...this.combinationDecisions.values()];
+  }
+
+  async withEvaluation<T>(runId: string, operation: (unit: RunAlertUnitOfWork) => Promise<T>) {
     assert.equal(runId, this.data.runId);
     return operation(this);
   }
 
   async saveSnapshotDecisions(decisions: SnapshotMatchPersistence[]) {
-    for (const decision of decisions) this.snapshotDecisions.set(decision.snapshotId, decision);
+    for (const decision of decisions) {
+      this.snapshotDecisions.set(decision.snapshotId, { ...decision, reasons: [...decision.reasons] });
+    }
   }
 
   async saveCandidateDecisions(decisions: CandidateMatchPersistence[]) {
-    for (const decision of decisions) this.candidateDecisions.set(decision.candidateId, decision);
+    for (const decision of decisions) {
+      this.candidateDecisions.set(decision.candidateId, { ...decision, reasons: [...decision.reasons] });
+    }
+  }
+
+  async saveCombinationDecisions(decisions: SnapshotCombinationPersistence[]) {
+    for (const decision of decisions) {
+      this.combinationDecisions.set(decision.snapshotId, {
+        ...decision,
+        reasons: { ...decision.reasons, codes: [...decision.reasons.codes] }
+      });
+    }
   }
 
   async saveOwnBaselineSnapshot(snapshotId: string | null) {
     this.ownBaselineSnapshotId = snapshotId;
   }
 
-  async ensureBaselineIssue(code: "OWN_BASELINE_MISSING" | "OWN_BASELINE_AMBIGUOUS") {
+  async ensureBaselineIssue(code: BaselineIssueCode) {
     const created = !this.issues.has(code);
     this.issues.add(code);
     return created;
   }
 
   async ensureNotificationBatch(summary: RunAlertSummary) {
-    if (summary.alerts.length === 0 && summary.systemIssue === null) return;
-    if (!this.ensuredBatches.has(summary.runId)) {
-      this.ensuredBatches.set(summary.runId, structuredClone(summary));
+    if (!this.notificationBatches.some((batch) => batch.runId === summary.runId)) {
+      this.notificationBatches.push(structuredClone(summary));
     }
   }
 }
 
-function context(data = bareRun()) {
+function context(data: RunAlertData) {
   const repository = new FakeRunAlertRepository(data);
   const service = new RunAlertService(
     repository,
@@ -190,314 +208,152 @@ function context(data = bareRun()) {
   return { repository, service };
 }
 
-interface BundleComponentFixture {
-  accessoryType: string;
-  brand: string | null;
-  modelOrName: string;
-  quantity: number;
-}
+test("evaluates every exact combination with its own baseline and groups missing combinations", async () => {
+  const data = runData([
+    snapshot({ id: "own-single", ownListingId: "listing-single", platformItemId: "own-single-item", skuId: "own-single-sku", payableFen: 69_800 }),
+    snapshot({ id: "own-bundle", ownListingId: "listing-bundle", platformItemId: "own-bundle-item", skuId: "own-bundle-sku", payableFen: 75_000, components: [core, cable] }),
+    snapshot({ id: "competitor-single-low", searchCandidateId: "candidate-single", platformItemId: "competitor-single-item", skuId: "competitor-single-sku", shopName: "同行甲店", payableFen: 69_799, searchRanks: [2] }),
+    snapshot({ id: "competitor-bundle-equal", searchCandidateId: "candidate-bundle", platformItemId: "competitor-bundle-item", skuId: "competitor-bundle-sku", shopName: "同行乙店", payableFen: 75_000, components: [core, cable], searchRanks: [4] }),
+    snapshot({ id: "competitor-missing", searchCandidateId: "candidate-missing", platformItemId: "competitor-missing-item", skuId: "competitor-missing-sku", shopName: "同行丙店", payableFen: 65_000, components: [core, stand], searchRanks: [3, 8] })
+  ]);
+  data.runId = "run-multi-baseline";
+  const { repository, service } = context(data);
 
-function withBundleComponents(
-  value: RunAlertData["snapshots"][number],
-  components: BundleComponentFixture[]
-): RunAlertData["snapshots"][number] {
-  Reflect.set(value, "bundleComponents", components);
-  return value;
-}
+  const summary = await service.evaluateRun(data.runId);
 
-test("creates confirmed lows only for the exact in-stock confirmed 69799 and 65800 fen SKUs", async () => {
-  const { repository, service } = context();
-
-  const summary = await service.evaluateRun("run-bare");
-
-  assert.deepEqual(
-    summary.alerts.map((alert) => [alert.severity, alert.payableFen]),
-    [["CONFIRMED_LOW", 69_799], ["CONFIRMED_LOW", 65_800]]
-  );
-  assert.equal(summary.baseline?.payableFen, 69_800);
-  assert.equal(summary.checkedItemCount, 6);
-  assert.equal(summary.searchLimit, 6);
+  assert.deepEqual(repository.savedCombinationDecisions.map((item) => [item.snapshotId, item.state]), [
+    ["own-single", "OWN"],
+    ["own-bundle", "OWN"],
+    ["competitor-single-low", "MATCHED"],
+    ["competitor-bundle-equal", "MATCHED"],
+    ["competitor-missing", "MISSING_OWN"]
+  ]);
+  assert.equal(summary.alerts.length, 1);
+  assert.equal(summary.alerts[0]?.ownSnapshotId, "own-single");
+  assert.equal(summary.alerts[0]?.ownPayableFen, 69_800);
+  assert.equal(summary.alerts[0]?.payableFen, 69_799);
+  assert.equal(summary.alerts[0]?.differenceFen, 1);
+  assert.equal(summary.alerts[0]?.combinationSignature.startsWith("sku-combination-v1:"), true);
+  assert.equal(summary.missingOwnGroups.length, 1);
+  assert.equal(summary.missingOwnGroups[0]?.earliestRank, 3);
+  assert.equal(summary.missingOwnGroups[0]?.representativeUrl.includes("competitor-missing-item"), true);
+  assert.equal(summary.positionCount, 3);
+  assert.equal(summary.shopCount, 3);
+  assert.equal(summary.reviewCount, 0);
   assert.equal(summary.systemIssue, null);
-  assert.equal(repository.alerts.alerts.length, 2);
-  assert.equal(repository.ownBaselineSnapshotId, "own-snapshot");
-  assert.deepEqual(repository.ensuredBatches.get("run-bare"), summary);
-
-  assert.equal(repository.snapshotDecisions.size, 7);
-  assert.equal(repository.snapshotDecisions.get("snapshot-2")?.decision, "BARE");
-  assert.equal(repository.snapshotDecisions.get("snapshot-6")?.decision, "REJECTED");
-  assert.equal(repository.snapshotDecisions.get("snapshot-6")?.comparable, false);
+  assert.equal(repository.issues.size, 0);
+  assert.equal(repository.alerts.alerts.length, 1);
+  assert.equal(repository.ownBaselineSnapshotId, "own-single");
+  assert.equal(repository.notificationBatches.length, 1);
+  assert.equal(repository.snapshotDecisions.size, 5);
+  assert.equal(repository.candidateDecisions.size, 3);
 });
 
-test("persists an attribute-only punctuation-normalized own baseline for report comparison", async () => {
-  const data = bareRun();
-  data.snapshots[0]!.ownListingSkuText = "MDR-7506 / 单机";
-  data.snapshots[0]!.skuText = "请选择规格";
-  data.snapshots[0]!.attributes = { 型号配置: "MDR 7506 单机" };
+test("selects deterministic lowest own links without creating an ambiguous-baseline issue", async () => {
+  const data = runData([
+    snapshot({ id: "own-z", ownListingId: "listing-z", platformItemId: "own-z-item", skuId: "own-z-sku", payableFen: 69_800 }),
+    snapshot({ id: "own-a", ownListingId: "listing-a", platformItemId: "own-a-item", skuId: "own-a-sku", payableFen: 69_800 }),
+    snapshot({ id: "competitor", searchCandidateId: "candidate", platformItemId: "competitor-item", skuId: "competitor-sku", payableFen: 69_799, searchRanks: [1] })
+  ]);
+  data.runId = "run-deterministic-own-links";
   const { repository, service } = context(data);
 
-  const result = await service.evaluateRun(data.runId);
+  const summary = await service.evaluateRun(data.runId);
 
-  assert.equal(result.baseline?.snapshotId, "own-snapshot");
-  assert.equal(repository.ownBaselineSnapshotId, "own-snapshot");
+  assert.equal(summary.alerts[0]?.ownSnapshotId, "own-a");
+  assert.equal(repository.ownBaselineSnapshotId, "own-a");
+  assert.equal(summary.systemIssue, null);
+  assert.equal(repository.issues.has("OWN_BASELINE_AMBIGUOUS"), false);
 });
 
-test("derives one candidate decision from all of its SKU snapshots", async () => {
-  const data = bareRun();
-  data.snapshots = [
-    data.snapshots[0]!,
-    snapshot({
-      id: "candidate-mixed-wrong",
-      searchCandidateId: "candidate-mixed",
-      platformItemId: "item-mixed",
-      skuId: "mixed-m1",
-      skuText: "M1",
-      payableFen: 40_000
-    }),
-    snapshot({
-      id: "candidate-mixed-exact",
-      searchCandidateId: "candidate-mixed",
-      platformItemId: "item-mixed",
-      skuId: "mixed-7506",
-      skuText: "MDR-7506 单机",
-      payableFen: 68_000
-    }),
-    snapshot({
-      id: "candidate-review",
-      searchCandidateId: "candidate-review",
-      platformItemId: "item-review",
-      skuId: "review-cable",
-      skuText: "MDR-7506 + C口转换线",
-      payableFen: 60_000
-    }),
-    snapshot({
-      id: "candidate-rejected",
-      searchCandidateId: "candidate-rejected",
-      platformItemId: "item-rejected",
-      skuId: "rejected-mv1",
-      skuText: "MV1",
-      payableFen: 30_000
-    })
-  ];
+test("downgrades absent own combinations to review when the claimed catalog is incomplete", async () => {
+  const data = runData([
+    snapshot({ id: "own-single", ownListingId: "listing-single", platformItemId: "own-single-item", skuId: "own-single-sku", payableFen: 69_800 }),
+    snapshot({ id: "competitor-unknown-own", searchCandidateId: "candidate-unknown-own", platformItemId: "competitor-unknown-own-item", skuId: "competitor-unknown-own-sku", payableFen: 65_000, components: [core, stand], searchRanks: [1] })
+  ]);
+  data.runId = "run-incomplete-own-catalog";
+  data.claimedOwnListingIds = ["listing-single", "listing-not-collected"];
+  data.ownCatalogComplete = false;
   const { repository, service } = context(data);
 
-  await service.evaluateRun(data.runId);
+  const summary = await service.evaluateRun(data.runId);
 
-  assert.deepEqual(repository.candidateDecisions.get("candidate-mixed"), {
-    candidateId: "candidate-mixed",
-    decision: "BARE",
-    comparable: true,
-    confidenceBps: 9300,
-    normalizedModel: "MDR-7506",
-    reasons: repository.snapshotDecisions.get("candidate-mixed-exact")!.reasons
-  });
-  assert.equal(repository.candidateDecisions.get("candidate-review")?.decision, "MANUAL");
-  assert.equal(repository.candidateDecisions.get("candidate-review")?.comparable, false);
-  assert.equal(repository.candidateDecisions.get("candidate-rejected")?.decision, "REJECTED");
+  assert.equal(repository.combinationDecisions.get("competitor-unknown-own")?.state, "REVIEW");
+  assert.deepEqual(repository.combinationDecisions.get("competitor-unknown-own")?.reasons.codes, ["OWN_CATALOG_INCOMPLETE"]);
+  assert.equal(summary.reviewCount, 1);
+  assert.deepEqual(summary.missingOwnGroups, []);
+  assert.deepEqual(summary.alerts, []);
+  assert.equal(summary.systemIssue, null);
+  assert.equal(repository.issues.size, 0);
+  assert.equal(repository.notificationBatches.length, 1);
 });
 
-for (const fixture of [
-  {
-    name: "missing",
-    code: "OWN_BASELINE_MISSING" as const,
-    mutate(data: RunAlertData) {
-      data.snapshots[0]!.skuText = "MDR-7506 展示样机";
-      data.snapshots[0]!.attributes = { 型号: "展示样机" };
-    }
-  },
-  {
-    name: "ambiguous",
-    code: "OWN_BASELINE_AMBIGUOUS" as const,
-    mutate(data: RunAlertData) {
-      data.snapshots.push({
-        ...structuredClone(data.snapshots[0]!),
-        id: "own-snapshot-duplicate",
-        skuId: "own-7506-duplicate"
-      });
-    }
-  }
-]) {
-  test(`persists one ${fixture.name} own-baseline issue and makes no competitor conclusion`, async () => {
-    const data = bareRun();
-    fixture.mutate(data);
-    const { repository, service } = context(data);
+test("creates OWN_BASELINE_MISSING only when no claimed own listing produced a snapshot", async () => {
+  const data = runData([
+    snapshot({ id: "competitor-only", searchCandidateId: "candidate-only", platformItemId: "competitor-only-item", skuId: "competitor-only-sku", payableFen: 65_000, searchRanks: [1] })
+  ]);
+  data.runId = "run-no-claimed-own-snapshot";
+  data.claimedOwnListingIds = ["listing-not-collected"];
+  data.ownCatalogComplete = false;
+  const { repository, service } = context(data);
 
-    const first = await service.evaluateRun(data.runId);
-    const repeated = await service.evaluateRun(data.runId);
+  const first = await service.evaluateRun(data.runId);
+  const repeated = await service.evaluateRun(data.runId);
 
-    assert.equal(first.systemIssue, fixture.code);
-    assert.equal(first.baseline, null);
-    assert.deepEqual(first.alerts, []);
-    assert.equal(repeated.systemIssue, fixture.code);
-    assert.equal(repository.issues.size, 1);
-    assert.equal(repository.alerts.alerts.length, 0);
-    assert.equal(repository.ownBaselineSnapshotId, null);
-    assert.deepEqual(repository.ensuredBatches.get(data.runId), first);
-  });
-}
+  assert.equal(first.systemIssue, "OWN_BASELINE_MISSING");
+  assert.equal(first.issueCount, 1);
+  assert.deepEqual(first.alerts, []);
+  assert.equal(repeated.systemIssue, "OWN_BASELINE_MISSING");
+  assert.equal(repository.issues.size, 1);
+  assert.equal(repository.alerts.alerts.length, 0);
+  assert.equal(repository.ownBaselineSnapshotId, null);
+  assert.equal(repository.notificationBatches.length, 1);
+});
 
-test("does not persist a notification batch when evaluation has no new event", async () => {
-  const data = bareRun();
-  data.snapshots = [data.snapshots[0]!, data.snapshots[1]!];
+test("does not alert or create issues for equal, higher, missing, review, or excluded rows", async () => {
+  const data = runData([
+    snapshot({ id: "own", ownListingId: "listing-own", platformItemId: "own-item", skuId: "own-sku", payableFen: 69_800 }),
+    snapshot({ id: "equal", searchCandidateId: "candidate-equal", platformItemId: "equal-item", skuId: "equal-sku", payableFen: 69_800, searchRanks: [1] }),
+    snapshot({ id: "higher", searchCandidateId: "candidate-higher", platformItemId: "higher-item", skuId: "higher-sku", payableFen: 69_801, searchRanks: [2] }),
+    snapshot({ id: "missing", searchCandidateId: "candidate-missing", platformItemId: "missing-item", skuId: "missing-sku", payableFen: 60_000, components: [core, stand], searchRanks: [3] }),
+    snapshot({ id: "review", searchCandidateId: "candidate-review", platformItemId: "review-item", skuId: "review-sku", payableFen: null, priceConfidence: "MANUAL_REVIEW", searchRanks: [4] }),
+    snapshot({ id: "product-review", searchCandidateId: "candidate-product-review", platformItemId: "product-review-item", skuId: "product-review-sku", skuText: "MDR-7506 + C口转换线套装", payableFen: 55_000, components: [core, cable], searchRanks: [5] }),
+    snapshot({ id: "excluded", searchCandidateId: "candidate-excluded", platformItemId: "excluded-item", skuId: "excluded-sku", title: "Sony MDR-7506 展示机", payableFen: 50_000, searchRanks: [6] })
+  ]);
+  data.runId = "run-no-alert-terminal-states";
   const { repository, service } = context(data);
 
   const summary = await service.evaluateRun(data.runId);
 
   assert.deepEqual(summary.alerts, []);
-  assert.equal(summary.systemIssue, null);
-  assert.equal(repository.ensuredBatches.size, 0);
+  assert.equal(repository.alerts.alerts.length, 0);
+  assert.equal(repository.issues.size, 0);
+  assert.deepEqual(["equal", "higher", "missing", "review", "product-review", "excluded"].map((id) => [
+    id,
+    repository.combinationDecisions.get(id)?.state
+  ]), [
+    ["equal", "MATCHED"],
+    ["higher", "MATCHED"],
+    ["missing", "MISSING_OWN"],
+    ["review", "REVIEW"],
+    ["product-review", "REVIEW"],
+    ["excluded", "EXCLUDED"]
+  ]);
+  assert.equal(repository.notificationBatches.length, 1);
 });
 
-test("compares an exact bundle signature and makes a different signature manual review only", async () => {
-  const data = bareRun();
-  data.runId = "run-bundle";
-  data.model.comparisonType = "BUNDLE";
-  data.model.bundleItems = [
-    {
-      accessoryType: "耳机",
-      brand: "Sony",
-      modelOrName: "MDR-7506",
-      quantity: 1,
-      core: true
-    },
-    {
-      accessoryType: "转换线",
-      brand: null,
-      modelOrName: "C口转换线",
-      quantity: 1,
-      core: true
-    }
-  ];
-  const exactComponents: BundleComponentFixture[] = [
-    { accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
-    { accessoryType: "转换线", brand: null, modelOrName: "C口转换线", quantity: 1 }
-  ];
-  data.snapshots = [
-    withBundleComponents(snapshot({
-      id: "own-bundle",
-      ownListingId: "own-listing",
-      ownListingSkuText: "MDR-7506 + C口转换线套装",
-      platformItemId: "own-item",
-      skuId: "own-bundle-sku",
-      shopName: "星空乐器专营店",
-      skuText: "MDR-7506 + C口转换线套装",
-      attributes: { 耳机: "MDR-7506", 配件: "C口转换线", 数量: "1" },
-      payableFen: 75_000,
-      searchRanks: []
-    }), exactComponents),
-    withBundleComponents(snapshot({
-      id: "exact-bundle",
-      searchCandidateId: "candidate-exact-bundle",
-      platformItemId: "item-exact-bundle",
-      skuId: "exact-bundle-sku",
-      skuText: "C口转换线 + MDR-7506 套装",
-      attributes: { 耳机: "MDR-7506", 配件: "C口转换线", 数量: "1" },
-      payableFen: 74_999,
-      searchRanks: [1]
-    }), exactComponents),
-    withBundleComponents(snapshot({
-      id: "different-bundle",
-      searchCandidateId: "candidate-different-bundle",
-      platformItemId: "item-different-bundle",
-      skuId: "different-bundle-sku",
-      skuText: "MDR-7506 + Lightning转换线套装",
-      attributes: { 耳机: "MDR-7506", 配件: "Lightning转换线", 数量: "1" },
-      payableFen: 70_000,
-      searchRanks: [2]
-    }), [
-      exactComponents[0]!,
-      { accessoryType: "转换线", brand: null, modelOrName: "Lightning转换线", quantity: 1 }
-    ]),
-    withBundleComponents(snapshot({
-      id: "expanded-bundle",
-      searchCandidateId: "candidate-expanded-bundle",
-      platformItemId: "item-expanded-bundle",
-      skuId: "expanded-bundle-sku",
-      skuText: "MDR-7506 + C口转换线 + 耳机包套装",
-      attributes: { 耳机: "MDR-7506", 配件: "C口转换线", 加赠: "耳机包", 数量: "1" },
-      payableFen: 69_000,
-      searchRanks: [3]
-    }), [
-      ...exactComponents,
-      { accessoryType: "收纳", brand: null, modelOrName: "防尘收纳盒", quantity: 1 }
-    ]),
-    withBundleComponents(snapshot({
-      id: "quantity-x2-bundle",
-      searchCandidateId: "candidate-quantity-x2-bundle",
-      platformItemId: "item-quantity-x2-bundle",
-      skuId: "quantity-x2-bundle-sku",
-      skuText: "MDR-7506 + C口转换线 x2 套装",
-      attributes: { 耳机: "MDR-7506", 配件: "C口转换线 x2" },
-      payableFen: 68_000,
-      searchRanks: [4]
-    }), [
-      exactComponents[0]!,
-      { ...exactComponents[1]!, quantity: 2 }
-    ]),
-    withBundleComponents(snapshot({
-      id: "quantity-two-cables-bundle",
-      searchCandidateId: "candidate-quantity-two-cables-bundle",
-      platformItemId: "item-quantity-two-cables-bundle",
-      skuId: "quantity-two-cables-bundle-sku",
-      skuText: "MDR-7506 + C口转换线2条 套装",
-      attributes: { 耳机: "MDR-7506", 配件: "C口转换线2条" },
-      payableFen: 67_000,
-      searchRanks: [5]
-    }), [
-      exactComponents[0]!,
-      { ...exactComponents[1]!, quantity: 2 }
-    ]),
-    withBundleComponents(snapshot({
-      id: "missing-required-bundle",
-      searchCandidateId: "candidate-missing-required-bundle",
-      platformItemId: "item-missing-required-bundle",
-      skuId: "missing-required-bundle-sku",
-      skuText: "MDR-7506 套装",
-      attributes: { 耳机: "MDR-7506" },
-      payableFen: 66_000,
-      searchRanks: [6]
-    }), [exactComponents[0]!]),
-    snapshot({
-      id: "unstructured-bundle",
-      searchCandidateId: "candidate-unstructured-bundle",
-      platformItemId: "item-unstructured-bundle",
-      skuId: "unstructured-bundle-sku",
-      skuText: "MDR-7506 + C口转换线套装",
-      attributes: { 耳机: "MDR-7506", 配件: "C口转换线", 数量: "1" },
-      payableFen: 65_000,
-      searchRanks: [7]
-    })
-  ];
-  data.searchLimit = 7;
-  data.positionCount = 7;
+test("persists exactly one zero-alert notification batch across repeated evaluation", async () => {
+  const data = runData([
+    snapshot({ id: "own", ownListingId: "listing-own", platformItemId: "own-item", skuId: "own-sku", payableFen: 69_800 }),
+    snapshot({ id: "equal", searchCandidateId: "candidate-equal", platformItemId: "equal-item", skuId: "equal-sku", payableFen: 69_800, searchRanks: [1] })
+  ]);
+  data.runId = "run-zero-alert-batch";
   const { repository, service } = context(data);
 
-  const summary = await service.evaluateRun(data.runId);
+  const first = await service.evaluateRun(data.runId);
+  const repeated = await service.evaluateRun(data.runId);
 
-  assert.deepEqual(
-    summary.alerts.map((alert) => [alert.severity, alert.snapshotId]),
-    [
-      ["CONFIRMED_LOW", "exact-bundle"],
-      ["MANUAL_REVIEW", "different-bundle"],
-      ["MANUAL_REVIEW", "expanded-bundle"],
-      ["MANUAL_REVIEW", "quantity-x2-bundle"],
-      ["MANUAL_REVIEW", "quantity-two-cables-bundle"],
-      ["MANUAL_REVIEW", "missing-required-bundle"],
-      ["MANUAL_REVIEW", "unstructured-bundle"]
-    ]
-  );
-  assert.equal(repository.snapshotDecisions.get("exact-bundle")?.decision, "BUNDLE");
-  assert.equal(repository.snapshotDecisions.get("exact-bundle")?.comparable, true);
-  assert.equal(repository.snapshotDecisions.get("different-bundle")?.decision, "MANUAL");
-  assert.equal(repository.snapshotDecisions.get("different-bundle")?.comparable, false);
-  assert.equal(repository.snapshotDecisions.get("expanded-bundle")?.decision, "MANUAL");
-  assert.equal(repository.snapshotDecisions.get("expanded-bundle")?.comparable, false);
-  for (const id of [
-    "quantity-x2-bundle",
-    "quantity-two-cables-bundle",
-    "missing-required-bundle",
-    "unstructured-bundle"
-  ]) {
-    assert.equal(repository.snapshotDecisions.get(id)?.decision, "MANUAL");
-    assert.equal(repository.snapshotDecisions.get(id)?.comparable, false);
-  }
+  assert.deepEqual(first.alerts, []);
+  assert.deepEqual(repeated.alerts, []);
+  assert.equal(repository.notificationBatches.length, 1);
 });

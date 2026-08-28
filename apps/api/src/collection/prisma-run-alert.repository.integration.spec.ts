@@ -28,24 +28,35 @@ const prisma = createPrismaClient();
 interface PriceFixture {
   key: string;
   payableFen: number;
+  displayPriceFen?: number;
   skuText?: string;
-  components?: BundleComponentFixture[];
+  components?: BundleComponentFixture[] | null;
   priceConfidence?: "CONFIRMED" | "ESTIMATED" | "MANUAL_REVIEW";
   stockState?: "IN_STOCK" | "OUT_OF_STOCK" | "UNKNOWN";
 }
 
 interface BundleComponentFixture {
+  role: "CORE" | "PAID_ACCESSORY" | "GIFT_OR_SERVICE" | "UNKNOWN";
   accessoryType: string;
   brand: string | null;
   modelOrName: string;
   quantity: number;
 }
 
+const coreComponent: BundleComponentFixture = {
+  role: "CORE",
+  accessoryType: "耳机",
+  brand: "Sony",
+  modelOrName: "MDR-7506",
+  quantity: 1
+};
+
 function rawEvidence(
   skuText: string,
   components?: BundleComponentFixture[]
 ): Prisma.InputJsonObject {
   const jsonComponents = components?.map((component): Prisma.InputJsonObject => ({
+    role: component.role,
     accessoryType: component.accessoryType,
     brand: component.brand,
     modelOrName: component.modelOrName,
@@ -75,6 +86,7 @@ async function seedRun(input: {
       scheduledFor: new Date(`2026-08-25T0${input.index}:30:00.000Z`),
       startedAt: new Date(`2026-08-25T0${input.index}:30:00.000Z`),
       finishedAt: new Date(`2026-08-25T0${input.index}:31:00.000Z`),
+      claimedOwnListingIds: [input.ownListingId],
       searchLimit: input.prices.length,
       searchedCount: input.prices.length,
       fetchedCount: input.prices.length + 1,
@@ -96,7 +108,7 @@ async function seedRun(input: {
       payableFen: 69_800,
       priceConfidence: "CONFIRMED",
       stockState: "IN_STOCK",
-      rawEvidence: rawEvidence(ownSkuText, input.ownComponents),
+      rawEvidence: rawEvidence(ownSkuText, input.ownComponents ?? [coreComponent]),
       capturedAt: new Date(`2026-08-25T0${input.index}:30:01.000Z`)
     }
   });
@@ -128,8 +140,8 @@ async function seedRun(input: {
         url: candidate.url,
         shopName: candidate.shopName,
         title: candidate.title,
-        displayPriceMinFen: price.payableFen,
-        displayPriceMaxFen: price.payableFen,
+        displayPriceMinFen: price.displayPriceFen ?? price.payableFen,
+        displayPriceMaxFen: price.displayPriceFen ?? price.payableFen,
         capturedAt: new Date(`2026-08-25T0${input.index}:30:02.000Z`)
       }
     });
@@ -148,7 +160,10 @@ async function seedRun(input: {
         payableFen: price.payableFen,
         priceConfidence: price.priceConfidence ?? "CONFIRMED",
         stockState: price.stockState ?? "IN_STOCK",
-        rawEvidence: rawEvidence(skuText, price.components),
+        rawEvidence: rawEvidence(
+          skuText,
+          price.components === undefined ? [coreComponent] : price.components ?? undefined
+        ),
         capturedAt: new Date(`2026-08-25T0${input.index}:30:03.000Z`)
       }
     });
@@ -229,9 +244,12 @@ async function createTransactionalSummary(
     owner: unit.data.model.owner,
     completedAt: unit.data.completedAt,
     checkedItemCount: 1,
+    positionCount: unit.data.positionCount,
+    shopCount: 1,
     searchLimit: unit.data.searchLimit,
     skuCount: unit.data.skuCount,
     issueCount: unit.data.issueCount,
+    reviewCount: 0,
     reportUrl: `https://monitor.example.test/collection-runs/${unit.data.runId}`,
     baseline: {
       snapshotId: own.id,
@@ -246,6 +264,11 @@ async function createTransactionalSummary(
       alertId: alert.id,
       severity: alert.severity,
       snapshotId: competitor.id,
+      ownSnapshotId: own.id,
+      ownSkuText: own.skuText,
+      ownPayableFen: own.payableFen!,
+      combinationSignature: "sku-combination-v1:transaction-fixture",
+      combinationLabel: "Sony MDR-7506 新品 核心耳机MDR-7506x1",
       rank: competitor.searchRanks[0] ?? null,
       shopName: competitor.shopName,
       title: competitor.title,
@@ -256,7 +279,8 @@ async function createTransactionalSummary(
       differenceFen: alert.differenceFen,
       url: competitor.url,
       reasons: alert.reasons
-    }]
+    }],
+    missingOwnGroups: []
   };
 }
 
@@ -284,6 +308,157 @@ before(async () => {
 });
 after(async () => {
   await prisma.$disconnect();
+});
+
+test("commits per-combination baselines, alerts, missing groups, and one batch atomically", async () => {
+  const suffix = randomUUID().replaceAll("-", "");
+  const model = await prisma.monitoredModel.create({
+    data: {
+      monitorCode: `T5-COMBO-${suffix.slice(0, 16)}`,
+      brand: "Sony",
+      standardModel: "MDR-7506",
+      category: "headphones",
+      searchQuery: "Sony MDR-7506",
+      comparisonType: "BARE",
+      owner: "task-5"
+    }
+  });
+  const firstOwnListing = await prisma.ownListing.create({
+    data: {
+      monitoredModelId: model.id,
+      platform: "TAOBAO",
+      shopName: "星空乐器专营店",
+      platformItemId: `own-first-${suffix.slice(0, 8)}`,
+      url: `https://item.taobao.com/item.htm?id=own-first-${suffix.slice(0, 8)}`,
+      skuText: "MDR-7506 单机"
+    }
+  });
+
+  try {
+    const run = await seedRun({
+      modelId: model.id,
+      ownListingId: firstOwnListing.id,
+      index: 8,
+      prices: [
+        {
+          key: `detail-low-${suffix.slice(0, 8)}`,
+          payableFen: 68_999,
+          displayPriceFen: 1
+        },
+        {
+          key: `missing-${suffix.slice(0, 8)}`,
+          payableFen: 65_000,
+          components: [coreComponent, {
+            role: "PAID_ACCESSORY",
+            accessoryType: "耳机架",
+            brand: null,
+            modelOrName: "HPS-1",
+            quantity: 1
+          }]
+        },
+        {
+          key: `malformed-role-${suffix.slice(0, 8)}`,
+          payableFen: 64_000
+        }
+      ]
+    });
+    const secondOwnListing = await prisma.ownListing.create({
+      data: {
+        monitoredModelId: model.id,
+        platform: "TAOBAO",
+        shopName: "星空乐器专营店",
+        platformItemId: `own-lowest-${suffix.slice(0, 8)}`,
+        url: `https://item.taobao.com/item.htm?id=own-lowest-${suffix.slice(0, 8)}`,
+        skuText: "MDR-7506 单机"
+      }
+    });
+    const lowestOwnSnapshot = await prisma.offerSnapshot.create({
+      data: {
+        collectionRunId: run.id,
+        ownListingId: secondOwnListing.id,
+        platformItemId: secondOwnListing.platformItemId!,
+        skuId: "own-lowest-sku",
+        shopName: secondOwnListing.shopName,
+        title: "Sony MDR-7506 专业监听耳机",
+        skuText: "MDR-7506 单机",
+        listPriceFen: 69_000,
+        activityPriceFen: 69_000,
+        payableFen: 69_000,
+        priceConfidence: "CONFIRMED",
+        stockState: "IN_STOCK",
+        rawEvidence: rawEvidence("MDR-7506 单机", [coreComponent]),
+        capturedAt: new Date("2026-08-25T08:30:04.000Z")
+      }
+    });
+    await prisma.collectionRun.update({
+      where: { id: run.id },
+      data: {
+        claimedOwnListingIds: [firstOwnListing.id, secondOwnListing.id],
+        skuCount: { increment: 1 }
+      }
+    });
+    const competitorSnapshot = await prisma.offerSnapshot.findFirstOrThrow({
+      where: { collectionRunId: run.id, skuId: `sku-detail-low-${suffix.slice(0, 8)}` }
+    });
+    const missingSnapshot = await prisma.offerSnapshot.findFirstOrThrow({
+      where: { collectionRunId: run.id, skuId: `sku-missing-${suffix.slice(0, 8)}` }
+    });
+    const malformedRoleSnapshot = await prisma.offerSnapshot.findFirstOrThrow({
+      where: { collectionRunId: run.id, skuId: `sku-malformed-role-${suffix.slice(0, 8)}` }
+    });
+    await prisma.offerSnapshot.update({
+      where: { id: malformedRoleSnapshot.id },
+      data: {
+        rawEvidence: rawEvidence("MDR-7506 单机", [{
+          ...coreComponent,
+          role: "INVALID_ROLE" as BundleComponentFixture["role"]
+        }])
+      }
+    });
+    const service = new RunAlertService(
+      new PrismaRunAlertRepository(prisma),
+      (runId) => `https://monitor.example.test/collection-runs/${runId}`
+    );
+
+    const summary = await service.evaluateRun(run.id);
+
+    await prisma.$transaction(async (transaction) => {
+      const competitor = await transaction.offerSnapshot.findUniqueOrThrow({
+        where: { id: competitorSnapshot.id }
+      });
+      const missing = await transaction.offerSnapshot.findUniqueOrThrow({
+        where: { id: missingSnapshot.id }
+      });
+      const malformedRole = await transaction.offerSnapshot.findUniqueOrThrow({
+        where: { id: malformedRoleSnapshot.id }
+      });
+      const alert = await transaction.priceAlert.findFirstOrThrow({
+        where: { competitorSnapshotId: competitor.id }
+      });
+      assert.equal(competitor.combinationState, "MATCHED");
+      assert.equal(competitor.comparisonOwnSnapshotId, lowestOwnSnapshot.id);
+      assert.equal(alert.ownSnapshotId, lowestOwnSnapshot.id);
+      assert.equal(alert.competitorPriceFen, 68_999);
+      assert.equal(alert.dedupKey.startsWith("price-v3:"), true);
+      assert.equal(missing.combinationState, "MISSING_OWN");
+      assert.equal(missing.comparisonOwnSnapshotId, null);
+      assert.equal(malformedRole.combinationState, "REVIEW");
+      assert.equal(malformedRole.comparisonOwnSnapshotId, null);
+      assert.equal(await transaction.priceAlert.count({ where: { competitorSnapshotId: missing.id } }), 0);
+      assert.equal(await transaction.collectionIssue.count({ where: { collectionRunId: run.id } }), 0);
+      assert.equal(await transaction.runAlertNotificationBatch.count({ where: { collectionRunId: run.id } }), 1);
+    });
+    assert.equal(summary.alerts[0]?.ownSnapshotId, lowestOwnSnapshot.id);
+    assert.equal(summary.alerts[0]?.differenceFen, 1);
+    assert.equal(summary.missingOwnGroups.length, 1);
+    assert.equal(summary.reviewCount, 1);
+
+    await service.evaluateRun(run.id);
+    assert.equal(await prisma.priceAlert.count({ where: { competitorSnapshotId: competitorSnapshot.id } }), 1);
+    assert.equal(await prisma.runAlertNotificationBatch.count({ where: { collectionRunId: run.id } }), 1);
+  } finally {
+    await prisma.monitoredModel.delete({ where: { id: model.id } });
+  }
 });
 
 test("serializes run evaluation, persists decisions, deduplicates prices, and retries one durable batch", async () => {
@@ -384,8 +559,8 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
       index: 2,
       prices: [{ key: "low", payableFen: 65_800 }]
     });
-    assert.equal((await service.evaluateRun(repeatedRun.id)).alerts.length, 0);
-    assert.equal(await prisma.runAlertNotificationBatch.findUnique({
+    assert.equal((await service.evaluateRun(repeatedRun.id)).alerts.length, 1);
+    assert.notEqual(await prisma.runAlertNotificationBatch.findUnique({
       where: { collectionRunId: repeatedRun.id }
     }), null);
 
@@ -397,7 +572,7 @@ test("serializes run evaluation, persists decisions, deduplicates prices, and re
     });
     const lowerSummary = await service.evaluateRun(lowerRun.id);
     assert.equal(lowerSummary.alerts.length, 1);
-    assert.equal(await prisma.priceAlert.count({ where: { monitoredModelId: model.id } }), 3);
+    assert.equal(await prisma.priceAlert.count({ where: { monitoredModelId: model.id } }), 4);
 
     const evaluatedRun = await prisma.collectionRun.findUniqueOrThrow({
       where: { id: firstRun.id },
@@ -530,6 +705,44 @@ test("rejects a notification summary for a different run", async () => {
   }
 });
 
+test("rejects a comparison baseline snapshot from a different run", async () => {
+  const first = await seedEvaluationFixture("same-run-first", 6);
+  const second = await seedEvaluationFixture("same-run-second", 9);
+  const repository = new PrismaRunAlertRepository(prisma);
+
+  try {
+    const foreignOwn = await prisma.offerSnapshot.findFirstOrThrow({
+      where: { collectionRunId: second.run.id, ownListingId: { not: null } }
+    });
+    const target = await prisma.offerSnapshot.findFirstOrThrow({
+      where: { collectionRunId: first.run.id, searchCandidateId: { not: null } }
+    });
+
+    await assert.rejects(
+      repository.withEvaluation(first.run.id, async (unit) => {
+        await unit.saveCombinationDecisions([{
+          snapshotId: target.id,
+          signature: "sku-combination-v1:foreign",
+          label: "foreign baseline",
+          state: "MATCHED",
+          comparisonOwnSnapshotId: foreignOwn.id,
+          reasons: { ruleVersion: "sku-combination-v1", codes: ["EXACT_SIGNATURE"] }
+        }]);
+      }),
+      (error: unknown) => {
+        assert.equal(error instanceof RunAlertEvaluationError, true);
+        return true;
+      }
+    );
+    const unchanged = await prisma.offerSnapshot.findUniqueOrThrow({ where: { id: target.id } });
+    assert.equal(unchanged.combinationState, null);
+    assert.equal(unchanged.comparisonOwnSnapshotId, null);
+  } finally {
+    await prisma.monitoredModel.delete({ where: { id: first.model.id } });
+    await prisma.monitoredModel.delete({ where: { id: second.model.id } });
+  }
+});
+
 test("rolls back the alert and notification batch on a pre-commit crash", async () => {
   const { model, run } = await seedEvaluationFixture("rollback", 7);
   const dedupKey = `task-3-rollback-${randomUUID()}`;
@@ -538,6 +751,26 @@ test("rolls back the alert and notification batch on a pre-commit crash", async 
   try {
     await assert.rejects(
       repository.withEvaluation(run.id, async (unit) => {
+        const own = unit.data.snapshots.find((snapshot) => snapshot.ownListingId !== null)!;
+        const competitor = unit.data.snapshots.find((snapshot) => snapshot.searchCandidateId !== null)!;
+        await unit.saveCombinationDecisions([
+          {
+            snapshotId: own.id,
+            signature: "sku-combination-v1:rollback",
+            label: "rollback own",
+            state: "OWN",
+            comparisonOwnSnapshotId: null,
+            reasons: { ruleVersion: "sku-combination-v1", codes: [] }
+          },
+          {
+            snapshotId: competitor.id,
+            signature: "sku-combination-v1:rollback",
+            label: "rollback competitor",
+            state: "MATCHED",
+            comparisonOwnSnapshotId: own.id,
+            reasons: { ruleVersion: "sku-combination-v1", codes: ["EXACT_SIGNATURE"] }
+          }
+        ]);
         const summary = await createTransactionalSummary(unit, dedupKey);
         await unit.ensureNotificationBatch(summary);
         throw new Error("simulated pre-commit crash");
@@ -548,6 +781,12 @@ test("rolls back the alert and notification batch on a pre-commit crash", async 
     assert.equal(await prisma.runAlertNotificationBatch.findUnique({
       where: { collectionRunId: run.id }
     }), null);
+    const rolledBackSnapshots = await prisma.offerSnapshot.findMany({
+      where: { collectionRunId: run.id },
+      select: { combinationState: true, comparisonOwnSnapshotId: true }
+    });
+    assert.equal(rolledBackSnapshots.every((snapshot) => snapshot.combinationState === null), true);
+    assert.equal(rolledBackSnapshots.every((snapshot) => snapshot.comparisonOwnSnapshotId === null), true);
   } finally {
     await prisma.monitoredModel.delete({ where: { id: model.id } });
   }
@@ -556,15 +795,15 @@ test("rolls back the alert and notification batch on a pre-commit crash", async 
 test("compares only exact structured bundle signatures after Prisma persistence", async () => {
   const suffix = randomUUID().replaceAll("-", "");
   const exactComponents: BundleComponentFixture[] = [
-    { accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
-    { accessoryType: "转换线", brand: null, modelOrName: "C口转换线", quantity: 1 }
+    { role: "CORE", accessoryType: "耳机", brand: "Sony", modelOrName: "MDR-7506", quantity: 1 },
+    { role: "PAID_ACCESSORY", accessoryType: "转换线", brand: null, modelOrName: "C口转换线", quantity: 1 }
   ];
   const bundle = await prisma.bundle.create({
     data: {
       code: `T12-B-${suffix.slice(0, 20)}`,
       title: "MDR-7506 C口转换线套装",
       items: {
-        create: exactComponents.map((component) => ({
+        create: exactComponents.map(({ role: _role, ...component }) => ({
           ...component,
           unitValueFen: 0,
           core: true
@@ -635,13 +874,14 @@ test("compares only exact structured bundle signatures after Prisma persistence"
           skuText: "MDR-7506 + C口转换线 + 防尘收纳盒套装",
           components: [
             ...exactComponents,
-            { accessoryType: "收纳", brand: null, modelOrName: "防尘收纳盒", quantity: 1 }
+            { role: "PAID_ACCESSORY", accessoryType: "收纳", brand: null, modelOrName: "防尘收纳盒", quantity: 1 }
           ]
         },
         {
           key: "bundle-unstructured",
           payableFen: 64_000,
-          skuText: "MDR-7506 + C口转换线套装"
+          skuText: "MDR-7506 + C口转换线套装",
+          components: null
         }
       ]
     });
@@ -654,30 +894,28 @@ test("compares only exact structured bundle signatures after Prisma persistence"
     assert.deepEqual(
       summary.alerts.map((alert) => [alert.severity, alert.skuText]),
       [
-        ["CONFIRMED_LOW", "C口转换线 + MDR-7506 套装"],
-        ["MANUAL_REVIEW", "MDR-7506 + C口转换线 x2 套装"],
-        ["MANUAL_REVIEW", "MDR-7506 + C口转换线2条 套装"],
-        ["MANUAL_REVIEW", "MDR-7506 套装"],
-        ["MANUAL_REVIEW", "MDR-7506 + C口转换线 + 防尘收纳盒套装"],
-        ["MANUAL_REVIEW", "MDR-7506 + C口转换线套装"]
+        ["CONFIRMED_LOW", "C口转换线 + MDR-7506 套装"]
       ]
     );
+    assert.equal(summary.missingOwnGroups.length, 3);
+    assert.equal(summary.reviewCount, 1);
     const decisions = await prisma.offerSnapshot.findMany({
       where: { collectionRunId: run.id, searchCandidateId: { not: null } },
-      select: { skuId: true, matchDecision: true, comparable: true },
+      select: { skuId: true, matchDecision: true, comparable: true, combinationState: true },
       orderBy: { createdAt: "asc" }
     });
     assert.deepEqual(decisions.map((decision) => [
       decision.skuId,
       decision.matchDecision,
-      decision.comparable
+      decision.comparable,
+      decision.combinationState
     ]), [
-      ["sku-bundle-exact", "BUNDLE", true],
-      ["sku-bundle-x2", "MANUAL", false],
-      ["sku-bundle-two-cables", "MANUAL", false],
-      ["sku-bundle-missing", "MANUAL", false],
-      ["sku-bundle-extra", "MANUAL", false],
-      ["sku-bundle-unstructured", "MANUAL", false]
+      ["sku-bundle-exact", "BUNDLE", true, "MATCHED"],
+      ["sku-bundle-x2", "BUNDLE", true, "MISSING_OWN"],
+      ["sku-bundle-two-cables", "BUNDLE", true, "MISSING_OWN"],
+      ["sku-bundle-missing", "BUNDLE", true, "MISSING_OWN"],
+      ["sku-bundle-extra", "BUNDLE", true, "MISSING_OWN"],
+      ["sku-bundle-unstructured", "BUNDLE", true, "REVIEW"]
     ]);
   } finally {
     await prisma.monitoredModel.delete({ where: { id: model.id } });

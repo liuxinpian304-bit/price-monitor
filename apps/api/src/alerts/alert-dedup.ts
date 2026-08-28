@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 export function dedupKey(
   monitoredModelId: string,
-  ownSkuId: string,
+  combinationSignature: string,
+  ownSnapshotId: string,
   competitorItemId: string,
   competitorSkuId: string,
   competitorPriceFen: number
@@ -12,10 +13,11 @@ export function dedupKey(
   }
   const canonical = JSON.stringify({
     monitoredModelId,
-    ownSkuId,
+    combinationSignature,
+    ownSnapshotId,
     competitorItemId,
     competitorSkuId,
     competitorPriceFen
   });
-  return `price-v2:${createHash("sha256").update(canonical).digest("hex")}`;
+  return `price-v3:${createHash("sha256").update(canonical).digest("hex")}`;
 }

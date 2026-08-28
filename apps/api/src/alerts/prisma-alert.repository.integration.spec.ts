@@ -100,6 +100,7 @@ async function seedOffers(): Promise<{ own: AlertOffer; competitor: AlertOffer }
     own: {
       monitoredModelId: model.id,
       snapshotId: ownSnapshot.id,
+      combinationSignature: "sku-combination-v1:fixture",
       platformItemId: "own-1001",
       skuId: "own-sku",
       brand: "RME",
@@ -117,6 +118,7 @@ async function seedOffers(): Promise<{ own: AlertOffer; competitor: AlertOffer }
     competitor: {
       monitoredModelId: model.id,
       snapshotId: competitorSnapshot.id,
+      combinationSignature: "sku-combination-v1:fixture",
       platformItemId: "competitor-1001",
       skuId: "competitor-sku",
       brand: "RME",

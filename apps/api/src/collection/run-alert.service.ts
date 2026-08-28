@@ -1,7 +1,8 @@
-import { bundleSignature } from "../pricing/bundle-signature.ts";
-import { AlertService, type AlertRepository } from "../alerts/alert.service.ts";
-import { MatcherService, normalizeText } from "../matching/matcher.service.ts";
+import { AlertService, type AlertOffer, type AlertRepository } from "../alerts/alert.service.ts";
+import { MatcherService } from "../matching/matcher.service.ts";
 import type { MatchDecision, MonitoredProductRule } from "../matching/matcher.types.ts";
+import { buildSkuCombination } from "../pricing/sku-combination.ts";
+import { evaluateRunSkuCombinations } from "./run-sku-comparison.ts";
 import type { RawOffer } from "./providers/commerce-provider.ts";
 
 export type PersistedMatchDecision = "BARE" | "BUNDLE" | "REJECTED" | "MANUAL";
@@ -16,6 +17,7 @@ export interface RunAlertBundleItem {
 }
 
 export interface RunAlertBundleComponent {
+  role: "CORE" | "PAID_ACCESSORY" | "GIFT_OR_SERVICE" | "UNKNOWN";
   accessoryType: string;
   brand: string | null;
   modelOrName: string;
@@ -33,7 +35,7 @@ export interface RunAlertSnapshot {
   title: string;
   skuText: string;
   attributes: Record<string, string>;
-  bundleComponents: RunAlertBundleComponent[] | null;
+  components: RunAlertBundleComponent[] | null;
   listPriceFen: number;
   activityPriceFen: number;
   publicDiscountFen: number;
@@ -53,12 +55,15 @@ export interface RunAlertData {
   skuCount: number;
   issueCount: number;
   completedAt: Date;
+  claimedOwnListingIds: string[];
+  ownCatalogComplete: boolean;
   model: {
     id: string;
     brand: string;
     standardModel: string;
     version: string | null;
     comparisonType: "BARE" | "BUNDLE";
+    colorComparable: boolean;
     owner: string;
     effectiveAliases: string[];
     excludedAliases: string[];
@@ -87,11 +92,24 @@ export interface CandidateMatchPersistence {
   reasons: string[];
 }
 
+export interface SnapshotCombinationPersistence {
+  snapshotId: string;
+  signature: string | null;
+  label: string | null;
+  state: "OWN" | "MATCHED" | "MISSING_OWN" | "REVIEW" | "EXCLUDED";
+  comparisonOwnSnapshotId: string | null;
+  reasons: {
+    ruleVersion: "sku-combination-v1";
+    codes: string[];
+  };
+}
+
 export interface RunAlertUnitOfWork {
   data: RunAlertData;
   alerts: AlertRepository;
   saveSnapshotDecisions(decisions: SnapshotMatchPersistence[]): Promise<void>;
   saveCandidateDecisions(decisions: CandidateMatchPersistence[]): Promise<void>;
+  saveCombinationDecisions(decisions: SnapshotCombinationPersistence[]): Promise<void>;
   saveOwnBaselineSnapshot(snapshotId: string | null): Promise<void>;
   ensureBaselineIssue(code: BaselineIssueCode): Promise<boolean>;
   ensureNotificationBatch(summary: RunAlertSummary): Promise<void>;
@@ -117,6 +135,11 @@ export interface RunAlertEntry {
   alertId: string;
   severity: "CONFIRMED_LOW" | "MANUAL_REVIEW";
   snapshotId: string;
+  ownSnapshotId: string;
+  ownSkuText: string;
+  ownPayableFen: number;
+  combinationSignature: string;
+  combinationLabel: string;
   rank: number | null;
   shopName: string;
   title: string;
@@ -129,6 +152,16 @@ export interface RunAlertEntry {
   reasons: string[];
 }
 
+export interface RunAlertMissingOwnGroup {
+  combinationSignature: string;
+  combinationLabel: string;
+  missingReason: "OWN_COMBINATION_ABSENT" | "OWN_OUT_OF_STOCK_ONLY";
+  earliestRank: number | null;
+  minimumConfirmedPayableFen: number;
+  shopCount: number;
+  representativeUrl: string;
+}
+
 export interface RunAlertSummary {
   runId: string;
   monitoredModelId: string;
@@ -138,49 +171,22 @@ export interface RunAlertSummary {
   owner: string;
   completedAt: Date;
   checkedItemCount: number;
+  positionCount: number;
+  shopCount: number;
   searchLimit: number;
   skuCount: number;
   issueCount: number;
+  reviewCount: number;
   reportUrl: string;
   baseline: RunAlertBaseline | null;
   systemIssue: BaselineIssueCode | null;
   alerts: RunAlertEntry[];
+  missingOwnGroups: RunAlertMissingOwnGroup[];
 }
 
 interface EvaluatedSnapshot {
   snapshot: RunAlertSnapshot;
-  rawDecision: MatchDecision;
   persistence: SnapshotMatchPersistence;
-  bundleConfiguration: "SAME" | "DIFFERENT" | "UNKNOWN" | "NOT_APPLICABLE";
-}
-
-function compact(value: string): string {
-  return normalizeText(value).replace(/\s+/g, "");
-}
-
-function configuredSkuMatches(snapshot: RunAlertSnapshot): boolean {
-  if (!snapshot.ownListingSkuText) return false;
-  const target = compact(snapshot.ownListingSkuText);
-  if (!target) return false;
-  const values = Object.values(snapshot.attributes);
-  const candidates = [snapshot.skuText, ...values, values.join(" ")];
-  return candidates.some((candidate) => compact(candidate) === target);
-}
-
-function configuredBundleSignature(items: RunAlertBundleItem[]): string | null {
-  const coreItems = items.some((item) => item.core) ? items.filter((item) => item.core) : items;
-  return coreItems.length === 0
-    ? null
-    : bundleSignature(coreItems.map((item) => ({ ...item, unitValueFen: 0 })));
-}
-
-function observedBundleSignature(components: RunAlertBundleComponent[] | null): string | null {
-  if (!components || components.length === 0) return null;
-  return bundleSignature(components.map((component) => ({
-    ...component,
-    unitValueFen: 0,
-    core: true
-  })));
 }
 
 function ruleFrom(data: RunAlertData): MonitoredProductRule {
@@ -225,49 +231,22 @@ function rawOffer(snapshot: RunAlertSnapshot): RawOffer {
   };
 }
 
-function persistenceDecision(
-  data: RunAlertData,
-  snapshot: RunAlertSnapshot,
-  rawDecision: MatchDecision
-): EvaluatedSnapshot {
-  let exact = rawDecision.comparable;
-  let bundleConfiguration: EvaluatedSnapshot["bundleConfiguration"] = "NOT_APPLICABLE";
-  const reasons = [...rawDecision.reasons];
-
-  if (data.model.comparisonType === "BUNDLE" && rawDecision.category !== "REJECTED") {
-    const configuredSignature = configuredBundleSignature(data.model.bundleItems);
-    const observedSignature = observedBundleSignature(snapshot.bundleComponents);
-    const exactBundle = configuredSignature !== null && observedSignature === configuredSignature;
-    bundleConfiguration = exactBundle ? "SAME" : observedSignature === null ? "UNKNOWN" : "DIFFERENT";
-    exact = rawDecision.category === "BUNDLE" && exactBundle;
-    reasons.push(
-      exactBundle
-        ? `套装核心配件签名一致：${configuredSignature}`
-        : observedSignature === null
-          ? "缺少可验证的结构化套装配件，进入人工复核"
-          : "套装核心配件签名不同，进入人工复核"
-    );
-  } else if (rawDecision.category === "BUNDLE") {
-    bundleConfiguration = "DIFFERENT";
-  }
-
+function persistenceDecision(snapshot: RunAlertSnapshot, rawDecision: MatchDecision): EvaluatedSnapshot {
   const decision: PersistedMatchDecision = rawDecision.category === "REJECTED"
     ? "REJECTED"
-    : exact && (rawDecision.category === "BARE" || rawDecision.category === "BUNDLE")
+    : rawDecision.comparable
+      && (rawDecision.category === "BARE" || rawDecision.category === "BUNDLE")
       ? rawDecision.category
       : "MANUAL";
-
   return {
     snapshot,
-    rawDecision,
-    bundleConfiguration,
     persistence: {
       snapshotId: snapshot.id,
       decision,
-      comparable: decision === data.model.comparisonType,
+      comparable: rawDecision.comparable,
       confidenceBps: Math.round(rawDecision.confidence * 10_000),
       normalizedModel: rawDecision.normalizedModel,
-      reasons
+      reasons: [...rawDecision.reasons]
     }
   };
 }
@@ -280,7 +259,6 @@ function candidateDecisions(evaluated: EvaluatedSnapshot[]): CandidateMatchPersi
     current.push(entry);
     byCandidate.set(entry.snapshot.searchCandidateId, current);
   }
-
   return [...byCandidate.entries()].map(([candidateId, entries]) => {
     const sorted = [...entries].sort((left, right) => {
       const priority = (decision: PersistedMatchDecision) =>
@@ -296,7 +274,7 @@ function candidateDecisions(evaluated: EvaluatedSnapshot[]): CandidateMatchPersi
       comparable: selected.persistence.comparable,
       confidenceBps: selected.persistence.confidenceBps,
       normalizedModel: selected.persistence.normalizedModel,
-      reasons: selected.persistence.reasons
+      reasons: [...selected.persistence.reasons]
     };
   });
 }
@@ -309,6 +287,52 @@ function baselineSummary(snapshot: RunAlertSnapshot): RunAlertBaseline {
     activityPriceFen: snapshot.activityPriceFen,
     publicDiscountFen: snapshot.publicDiscountFen,
     payableFen: snapshot.payableFen!
+  };
+}
+
+function earliestRank(snapshot: RunAlertSnapshot): number | null {
+  return snapshot.searchRanks.length === 0 ? null : Math.min(...snapshot.searchRanks);
+}
+
+function compareText(left: string, right: string): number {
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+function compareRepresentative(left: RunAlertSnapshot, right: RunAlertSnapshot): number {
+  const leftRank = earliestRank(left);
+  const rightRank = earliestRank(right);
+  if (leftRank !== rightRank) {
+    if (leftRank === null) return 1;
+    if (rightRank === null) return -1;
+    return leftRank - rightRank;
+  }
+  return compareText(left.platformItemId, right.platformItemId)
+    || compareText(left.skuId, right.skuId)
+    || compareText(left.id, right.id);
+}
+
+function alertOffer(
+  data: RunAlertData,
+  snapshot: RunAlertSnapshot,
+  combinationSignature: string
+): AlertOffer {
+  return {
+    monitoredModelId: data.model.id,
+    snapshotId: snapshot.id,
+    combinationSignature,
+    platformItemId: snapshot.platformItemId,
+    skuId: snapshot.skuId,
+    brand: data.model.brand,
+    standardModel: data.model.standardModel,
+    comparisonType: data.model.comparisonType,
+    shopName: snapshot.shopName,
+    skuText: snapshot.skuText,
+    payableFen: snapshot.payableFen,
+    priceConfidence: snapshot.priceConfidence,
+    stockState: snapshot.stockState,
+    url: snapshot.url,
+    capturedAt: snapshot.capturedAt,
+    owner: data.model.owner
   };
 }
 
@@ -336,26 +360,73 @@ export class RunAlertService {
       const data = unit.data;
       const rule = ruleFrom(data);
       const evaluated = data.snapshots.map((snapshot) =>
-        persistenceDecision(data, snapshot, this.matcher.match(rule, rawOffer(snapshot)))
+        persistenceDecision(snapshot, this.matcher.match(rule, rawOffer(snapshot)))
       );
-
       await unit.saveSnapshotDecisions(evaluated.map((entry) => entry.persistence));
       await unit.saveCandidateDecisions(candidateDecisions(evaluated));
 
-      const ownBaselines = evaluated.filter((entry) =>
-        entry.snapshot.ownListingId !== null
-        && configuredSkuMatches(entry.snapshot)
-        && entry.persistence.comparable
-        && entry.snapshot.stockState === "IN_STOCK"
-        && entry.snapshot.priceConfidence === "CONFIRMED"
-        && entry.snapshot.payableFen !== null
-      );
+      const combinationCandidates = evaluated.map((entry) => ({
+        snapshotId: entry.snapshot.id,
+        source: entry.snapshot.ownListingId ? "OWN" as const : "COMPETITOR" as const,
+        platformItemId: entry.snapshot.platformItemId,
+        skuId: entry.snapshot.skuId,
+        shopName: entry.snapshot.shopName,
+        searchRanks: [...entry.snapshot.searchRanks],
+        stockState: entry.snapshot.stockState,
+        priceConfidence: entry.snapshot.priceConfidence,
+        payableFen: entry.snapshot.payableFen,
+        combination: buildSkuCombination({
+          productDecision: entry.persistence.decision,
+          brand: data.model.brand,
+          standardModel: data.model.standardModel,
+          version: data.model.version,
+          colorComparable: data.model.colorComparable,
+          title: entry.snapshot.title,
+          skuText: entry.snapshot.skuText,
+          attributes: entry.snapshot.attributes,
+          components: entry.snapshot.components
+        })
+      }));
+      const comparison = evaluateRunSkuCombinations({
+        candidates: combinationCandidates,
+        ownCatalogComplete: data.ownCatalogComplete
+      });
+      const combinationDecisions = evaluated.map((entry): SnapshotCombinationPersistence => {
+        const decision = comparison.bySnapshotId.get(entry.snapshot.id)!;
+        return {
+          snapshotId: decision.snapshotId,
+          signature: decision.signature,
+          label: decision.label,
+          state: decision.state,
+          comparisonOwnSnapshotId: decision.comparisonOwnSnapshotId,
+          reasons: {
+            ruleVersion: "sku-combination-v1",
+            codes: [...decision.reasons]
+          }
+        };
+      });
+      await unit.saveCombinationDecisions(combinationDecisions);
+      await unit.saveOwnBaselineSnapshot(comparison.primaryOwnSnapshotId);
 
-      const checkedItemCount = new Set(
-        data.snapshots
-          .filter((snapshot) => snapshot.searchCandidateId !== null)
-          .map((snapshot) => snapshot.platformItemId)
-      ).size;
+      const snapshotById = new Map(data.snapshots.map((snapshot) => [snapshot.id, snapshot]));
+      const primaryOwnSnapshot = comparison.primaryOwnSnapshotId === null
+        ? null
+        : snapshotById.get(comparison.primaryOwnSnapshotId) ?? null;
+      const missingOwnGroups: RunAlertMissingOwnGroup[] = comparison.missingOwnGroups.map((group) => {
+        const representative = group.offerSnapshotIds
+          .flatMap((snapshotId) => snapshotById.get(snapshotId) ?? [])
+          .sort(compareRepresentative)[0];
+        return {
+          combinationSignature: group.combinationSignature,
+          combinationLabel: group.combinationLabel,
+          missingReason: group.missingReason,
+          earliestRank: group.earliestRank,
+          minimumConfirmedPayableFen: group.minimumConfirmedPayableFen,
+          shopCount: group.shops.length,
+          representativeUrl: representative?.url ?? ""
+        };
+      });
+      const competitorSnapshots = data.snapshots.filter((snapshot) => snapshot.searchCandidateId !== null);
       const common = {
         runId: data.runId,
         monitoredModelId: data.model.id,
@@ -364,98 +435,76 @@ export class RunAlertService {
         comparisonType: data.model.comparisonType,
         owner: data.model.owner,
         completedAt: data.completedAt,
-        checkedItemCount,
+        checkedItemCount: new Set(competitorSnapshots.map((snapshot) => snapshot.platformItemId)).size,
+        positionCount: data.positionCount,
+        shopCount: new Set(competitorSnapshots.map((snapshot) => snapshot.shopName)).size,
         searchLimit: data.searchLimit,
         skuCount: data.skuCount,
-        reportUrl: this.reportUrlForRun(data.runId)
+        reviewCount: comparison.reviewCount,
+        reportUrl: this.reportUrlForRun(data.runId),
+        baseline: primaryOwnSnapshot === null ? null : baselineSummary(primaryOwnSnapshot),
+        missingOwnGroups
       };
-
-      if (ownBaselines.length !== 1) {
-        await unit.saveOwnBaselineSnapshot(null);
-        const systemIssue: BaselineIssueCode = ownBaselines.length === 0
-          ? "OWN_BASELINE_MISSING"
-          : "OWN_BASELINE_AMBIGUOUS";
-        const issueCreated = await unit.ensureBaselineIssue(systemIssue);
+      const claimedOwnSnapshotExists = data.snapshots.some((snapshot) =>
+        snapshot.ownListingId !== null
+        && data.claimedOwnListingIds.includes(snapshot.ownListingId)
+      );
+      if (!claimedOwnSnapshotExists) {
+        const issueCreated = await unit.ensureBaselineIssue("OWN_BASELINE_MISSING");
         return complete({
           ...common,
           issueCount: data.issueCount + (issueCreated ? 1 : 0),
-          baseline: null,
-          systemIssue,
+          systemIssue: "OWN_BASELINE_MISSING",
           alerts: []
         });
       }
 
-      const baseline = ownBaselines[0]!;
-      await unit.saveOwnBaselineSnapshot(baseline.snapshot.id);
       const alertService = new AlertService(unit.alerts);
       const alerts: RunAlertEntry[] = [];
-      for (const entry of evaluated) {
-        const competitor = entry.snapshot;
-        if (!competitor.searchCandidateId) continue;
+      for (const alertCandidate of comparison.alertCandidates) {
+        const competitor = snapshotById.get(alertCandidate.snapshotId);
+        const own = snapshotById.get(alertCandidate.comparisonOwnSnapshotId);
+        const combinationDecision = comparison.bySnapshotId.get(alertCandidate.snapshotId);
+        const evaluatedCompetitor = evaluated.find((entry) => entry.snapshot.id === alertCandidate.snapshotId);
+        if (!competitor || !own || !combinationDecision || !evaluatedCompetitor) continue;
+        const category = evaluatedCompetitor.persistence.decision;
+        if (category !== "BARE" && category !== "BUNDLE") continue;
         const persisted = await alertService.evaluate(
+          alertOffer(data, own, alertCandidate.signature),
+          alertOffer(data, competitor, alertCandidate.signature),
           {
-            monitoredModelId: data.model.id,
-            snapshotId: baseline.snapshot.id,
-            platformItemId: baseline.snapshot.platformItemId,
-            skuId: baseline.snapshot.skuId,
-            brand: data.model.brand,
-            standardModel: data.model.standardModel,
-            comparisonType: data.model.comparisonType,
-            shopName: baseline.snapshot.shopName,
-            skuText: baseline.snapshot.skuText,
-            payableFen: baseline.snapshot.payableFen,
-            priceConfidence: baseline.snapshot.priceConfidence,
-            stockState: baseline.snapshot.stockState,
-            url: baseline.snapshot.url,
-            capturedAt: baseline.snapshot.capturedAt,
-            owner: data.model.owner
-          },
-          {
-            monitoredModelId: data.model.id,
-            snapshotId: competitor.id,
-            platformItemId: competitor.platformItemId,
-            skuId: competitor.skuId,
-            brand: data.model.brand,
-            standardModel: data.model.standardModel,
-            comparisonType: data.model.comparisonType,
-            shopName: competitor.shopName,
-            skuText: competitor.skuText,
-            payableFen: competitor.payableFen,
-            priceConfidence: competitor.priceConfidence,
-            stockState: competitor.stockState,
-            url: competitor.url,
-            capturedAt: competitor.capturedAt,
-            owner: data.model.owner
-          },
-          {
-            category: entry.rawDecision.category === "BUNDLE" ? "BUNDLE" : entry.persistence.decision,
-            comparable: entry.persistence.comparable,
-            bundleConfiguration: entry.bundleConfiguration,
-            reasons: entry.persistence.reasons
+            category,
+            comparable: true,
+            bundleConfiguration: category === "BUNDLE" ? "SAME" : "NOT_APPLICABLE",
+            reasons: [...combinationDecision.reasons]
           }
         );
-        if (!persisted || competitor.payableFen === null) continue;
+        if (!persisted || persisted.severity !== "CONFIRMED_LOW" || competitor.payableFen === null) continue;
         alerts.push({
           alertId: persisted.id,
-          severity: persisted.severity,
+          severity: "CONFIRMED_LOW",
           snapshotId: competitor.id,
-          rank: competitor.searchRanks.length > 0 ? Math.min(...competitor.searchRanks) : null,
+          ownSnapshotId: own.id,
+          ownSkuText: own.skuText,
+          ownPayableFen: alertCandidate.ownPayableFen,
+          combinationSignature: alertCandidate.signature,
+          combinationLabel: alertCandidate.label,
+          rank: earliestRank(competitor),
           shopName: competitor.shopName,
           title: competitor.title,
           skuText: competitor.skuText,
           activityPriceFen: competitor.activityPriceFen,
           publicDiscountFen: competitor.publicDiscountFen,
           payableFen: competitor.payableFen,
-          differenceFen: persisted.differenceFen,
+          differenceFen: alertCandidate.differenceFen,
           url: competitor.url,
-          reasons: entry.persistence.reasons
+          reasons: [...combinationDecision.reasons]
         });
       }
 
       return complete({
         ...common,
         issueCount: data.issueCount,
-        baseline: baselineSummary(baseline.snapshot),
         systemIssue: null,
         alerts
       });

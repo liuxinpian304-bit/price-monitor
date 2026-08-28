@@ -20,9 +20,12 @@ function summary(runId: string): RunAlertSummary {
     owner: "fixture-owner",
     completedAt: new Date("2026-08-25T01:31:00.000Z"),
     checkedItemCount: 1,
+    positionCount: 1,
+    shopCount: 1,
     searchLimit: 1,
     skuCount: 2,
     issueCount: 0,
+    reviewCount: 0,
     reportUrl: `https://monitor.example.test/collection-runs/${runId}`,
     baseline: {
       snapshotId: "own-snapshot",
@@ -33,7 +36,8 @@ function summary(runId: string): RunAlertSummary {
       payableFen: 1_000
     },
     systemIssue: null,
-    alerts: []
+    alerts: [],
+    missingOwnGroups: []
   };
 }
 
