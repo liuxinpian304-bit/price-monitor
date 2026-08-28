@@ -9,12 +9,7 @@ import {
   type AlertRepository,
   type PriceAlertRecord
 } from "../../../apps/api/src/alerts/alert.service.ts";
-import {
-  RunAlertNotifier,
-  type ClaimedRunAlertBatch,
-  type RunAlertNotificationRepository,
-  type StoredRunAlertNotificationBatch
-} from "../../../apps/api/src/alerts/run-alert-notifier.ts";
+import { RunAlertNotifier } from "../../../apps/api/src/alerts/run-alert-notifier.ts";
 import type { WecomMarkdownSender } from "../../../apps/api/src/alerts/wecom/wecom.client.ts";
 import {
   CatalogImportService,
@@ -41,6 +36,7 @@ import { bundleSignature, type BundleComparableItem } from "../../../apps/api/sr
 import { PriceEngineService } from "../../../apps/api/src/pricing/price-engine.service.ts";
 import {
   createDesktopReportHarness,
+  InMemoryRunAlertNotificationRepository,
   type DesktopReportHarnessOptions
 } from "./desktop-report-harness.ts";
 
@@ -93,94 +89,6 @@ class InMemoryAlertRepository implements AlertRepository {
 
   async recordBatchNotificationFailure(alertIds: string[], message: string) {
     this.notificationFailures.push({ alertIds: [...alertIds], message });
-  }
-}
-
-class InMemoryNotificationRepository implements RunAlertNotificationRepository {
-  private readonly alertRepository: InMemoryAlertRepository;
-  private readonly batches = new Map<string, {
-    batchId: string;
-    state: StoredRunAlertNotificationBatch["state"];
-    summary: RunAlertSummary;
-    attemptToken: string | null;
-  }>();
-  private nextBatch = 1;
-
-  constructor(alertRepository: InMemoryAlertRepository) {
-    this.alertRepository = alertRepository;
-  }
-
-  ensureBatch(summary: RunAlertSummary): void {
-    if (summary.alerts.length === 0 && summary.systemIssue === null) return;
-    if (this.batches.has(summary.runId)) return;
-    this.batches.set(summary.runId, {
-      batchId: `acceptance-batch-${this.nextBatch++}`,
-      state: "PENDING",
-      summary: structuredClone(summary),
-      attemptToken: null
-    });
-  }
-
-  async getBatch(runId: string): Promise<StoredRunAlertNotificationBatch | null> {
-    const batch = this.batches.get(runId);
-    return batch ? {
-      batchId: batch.batchId,
-      runId,
-      state: batch.state,
-      summary: structuredClone(batch.summary)
-    } : null;
-  }
-
-  async claimBatch(runId: string, _attemptedAt: Date): Promise<ClaimedRunAlertBatch | null> {
-    const batch = this.batches.get(runId);
-    if (!batch || batch.state !== "PENDING") return null;
-    batch.state = "SENDING";
-    batch.attemptToken = `acceptance-attempt-${runId}`;
-    return {
-      batchId: batch.batchId,
-      attemptToken: batch.attemptToken,
-      summary: structuredClone(batch.summary),
-      alertIds: batch.summary.alerts.map((alert) => alert.alertId)
-    };
-  }
-
-  async markBatchNotified(batch: ClaimedRunAlertBatch, notifiedAt: Date) {
-    const stored = this.requireClaim(batch);
-    stored.state = "NOTIFIED";
-    stored.attemptToken = null;
-    await this.alertRepository.markBatchNotified(batch.alertIds, notifiedAt);
-  }
-
-  async recordBatchNotificationFailure(
-    batch: ClaimedRunAlertBatch,
-    message: "WECOM_NOT_CONFIGURED" | "WECOM_DELIVERY_FAILED",
-    _failedAt: Date
-  ) {
-    const stored = this.requireClaim(batch);
-    stored.state = "PENDING";
-    stored.attemptToken = null;
-    await this.alertRepository.recordBatchNotificationFailure(batch.alertIds, message);
-  }
-
-  async recordBatchNotificationAmbiguous(batch: ClaimedRunAlertBatch) {
-    const stored = this.requireClaim(batch);
-    stored.state = "AMBIGUOUS";
-    stored.attemptToken = null;
-  }
-
-  async listRetryableSummaries(_attemptedAt: Date, limit: number): Promise<RunAlertSummary[]> {
-    return [...this.batches.values()]
-      .filter((batch) => batch.state === "PENDING")
-      .slice(0, limit)
-      .map((batch) => structuredClone(batch.summary));
-  }
-
-  private requireClaim(batch: ClaimedRunAlertBatch) {
-    const stored = [...this.batches.values()].find((candidate) => candidate.batchId === batch.batchId);
-    if (!stored || stored.state !== "SENDING" || stored.attemptToken !== batch.attemptToken) {
-      throw new Error("Acceptance notification claim is invalid");
-    }
-    return stored;
   }
 }
 
@@ -272,7 +180,7 @@ class PipelineCollectionRepository implements CollectionRepository {
   private readonly ownPriceFen: number;
   private readonly competitorBundleModel: "MK4" | "MK8" | undefined;
   private readonly alertService: AlertService;
-  private readonly notificationRepository: InMemoryNotificationRepository;
+  private readonly notificationRepository: InMemoryRunAlertNotificationRepository;
   private readonly runAlertNotifier: RunAlertNotifier;
   private readonly runAlerts: RunAlertEntry[] = [];
   private capturedAt = new Date("2026-08-19T01:30:00.000Z");
@@ -284,7 +192,7 @@ class PipelineCollectionRepository implements CollectionRepository {
     ownPriceFen: number;
     competitorBundleModel: "MK4" | "MK8" | undefined;
     alertService: AlertService;
-    notificationRepository: InMemoryNotificationRepository;
+    notificationRepository: InMemoryRunAlertNotificationRepository;
     runAlertNotifier: RunAlertNotifier;
   }) {
     this.collectionModel = input.collectionModel;
@@ -537,7 +445,11 @@ export async function createMonitorHarness(options: DesktopReportHarnessOptions 
 
   const catalog = catalogWriter.catalog;
   const alertRepository = new InMemoryAlertRepository();
-  const notificationRepository = new InMemoryNotificationRepository(alertRepository);
+  const notificationRepository = new InMemoryRunAlertNotificationRepository({
+    alertRepository,
+    fixturePrefix: "acceptance",
+    skipEmptyBatches: true
+  });
   const sender = new RecordingSender();
   const runAlertNotifier = new RunAlertNotifier(
     notificationRepository,
