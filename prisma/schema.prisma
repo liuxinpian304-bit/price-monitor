@@ -31,6 +31,14 @@ enum StockState {
   UNKNOWN
 }
 
+enum SkuCombinationState {
+  OWN
+  MATCHED
+  MISSING_OWN
+  REVIEW
+  EXCLUDED
+}
+
 enum CollectorPlatform {
   MACOS
   WINDOWS
@@ -270,6 +278,11 @@ model OfferSnapshot {
   matchConfidenceBps    Int              @default(0)
   normalizedModel       String?          @db.VarChar(300)
   matchReasons          Json?
+  combinationSignature  String?          @db.VarChar(100)
+  combinationLabel      String?          @db.VarChar(1000)
+  combinationState      SkuCombinationState?
+  combinationReasons    Json?
+  comparisonOwnSnapshotId String?
   stockState            StockState       @default(UNKNOWN)
   promotions            Json?
   gifts                 Json?
@@ -283,8 +296,14 @@ model OfferSnapshot {
   ownPriceAlerts        PriceAlert[]     @relation("OwnSnapshotAlerts")
   competitorPriceAlerts PriceAlert[]     @relation("CompetitorSnapshotAlerts")
   ownBaselineForRuns    CollectionRun[]  @relation("RunOwnBaseline")
+  comparisonOwnSnapshot OfferSnapshot?   @relation("OfferComparisonOwn", fields: [comparisonOwnSnapshotId], references: [id], onDelete: SetNull)
+  comparedCompetitorSnapshots OfferSnapshot[] @relation("OfferComparisonOwn")
 
   @@index([collectionRunId])
+  @@index([collectionRunId, combinationState])
+  @@index([collectionRunId, combinationSignature])
+  @@index([collectionRunId, shopName])
+  @@index([comparisonOwnSnapshotId])
   @@index([ownListingId, capturedAt])
   @@index([searchCandidateId, capturedAt])
   @@index([platformItemId, skuId, capturedAt])
