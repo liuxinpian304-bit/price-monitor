@@ -11,6 +11,7 @@ import type {
   RunAlertRepository,
   RunAlertSummary,
   RunAlertUnitOfWork,
+  SnapshotCombinationPersistence,
   SnapshotMatchPersistence
 } from "./run-alert.service.ts";
 
@@ -40,19 +41,24 @@ function attributesFromJson(value: Prisma.JsonValue | null): Record<string, stri
   );
 }
 
-function bundleComponentsFromJson(value: Prisma.JsonValue | null): RunAlertBundleComponent[] | null {
+function skuComponentsFromJson(value: Prisma.JsonValue | null): RunAlertBundleComponent[] | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const components = Reflect.get(value, "components");
   if (!Array.isArray(components) || components.length === 0) return null;
   const parsed: RunAlertBundleComponent[] = [];
   for (const component of components) {
     if (!component || typeof component !== "object" || Array.isArray(component)) return null;
+    const role = Reflect.get(component, "role");
     const accessoryType = Reflect.get(component, "accessoryType");
     const brand = Reflect.get(component, "brand");
     const modelOrName = Reflect.get(component, "modelOrName");
     const quantity = Reflect.get(component, "quantity");
     if (
-      typeof accessoryType !== "string"
+      (role !== "CORE"
+        && role !== "PAID_ACCESSORY"
+        && role !== "GIFT_OR_SERVICE"
+        && role !== "UNKNOWN")
+      || typeof accessoryType !== "string"
       || accessoryType.trim().length === 0
       || (brand !== null && typeof brand !== "string")
       || (typeof brand === "string" && brand.trim().length === 0)
@@ -64,7 +70,7 @@ function bundleComponentsFromJson(value: Prisma.JsonValue | null): RunAlertBundl
     ) {
       return null;
     }
-    parsed.push({ accessoryType, brand, modelOrName, quantity });
+    parsed.push({ role, accessoryType, brand, modelOrName, quantity });
   }
   return parsed;
 }
@@ -103,6 +109,39 @@ class PrismaRunAlertUnitOfWork implements RunAlertUnitOfWork {
           matchConfidenceBps: decision.confidenceBps,
           normalizedModel: decision.normalizedModel,
           matchReasons: decision.reasons
+        }
+      });
+      if (updated.count !== 1) throw new RunAlertEvaluationError();
+    }
+  }
+
+  async saveCombinationDecisions(decisions: SnapshotCombinationPersistence[]): Promise<void> {
+    const referencedSnapshotIds = [...new Set(decisions.flatMap((decision) => [
+      decision.snapshotId,
+      ...(decision.comparisonOwnSnapshotId === null ? [] : [decision.comparisonOwnSnapshotId])
+    ]))];
+    const snapshotsInRun = await this.transaction.offerSnapshot.findMany({
+      where: {
+        id: { in: referencedSnapshotIds },
+        collectionRunId: this.data.runId
+      },
+      select: { id: true }
+    });
+    if (snapshotsInRun.length !== referencedSnapshotIds.length) {
+      throw new RunAlertEvaluationError();
+    }
+    for (const decision of decisions) {
+      const updated = await this.transaction.offerSnapshot.updateMany({
+        where: { id: decision.snapshotId, collectionRunId: this.data.runId },
+        data: {
+          combinationSignature: decision.signature,
+          combinationLabel: decision.label,
+          combinationState: decision.state,
+          combinationReasons: {
+            ruleVersion: decision.reasons.ruleVersion,
+            codes: [...decision.reasons.codes]
+          },
+          comparisonOwnSnapshotId: decision.comparisonOwnSnapshotId
         }
       });
       if (updated.count !== 1) throw new RunAlertEvaluationError();
@@ -164,7 +203,6 @@ class PrismaRunAlertUnitOfWork implements RunAlertUnitOfWork {
 
   async ensureNotificationBatch(summary: RunAlertSummary): Promise<void> {
     if (summary.runId !== this.data.runId) throw new RunAlertEvaluationError();
-    if (summary.alerts.length === 0 && summary.systemIssue === null) return;
     await this.transaction.runAlertNotificationBatch.createMany({
       data: [{
         collectionRunId: summary.runId,
@@ -202,6 +240,7 @@ export class PrismaRunAlertRepository implements RunAlertRepository {
           id: true,
           monitoredModelId: true,
           status: true,
+          claimedOwnListingIds: true,
           searchLimit: true,
           skuCount: true,
           finishedAt: true,
@@ -266,6 +305,11 @@ export class PrismaRunAlertRepository implements RunAlertRepository {
       }
       const ownListingById = new Map(ownListings.map((listing) => [listing.id, listing]));
       const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+      const collectedOwnListingIds = new Set(
+        snapshots.flatMap((snapshot) => snapshot.ownListingId ? [snapshot.ownListingId] : [])
+      );
+      const ownCatalogComplete = run.claimedOwnListingIds.length > 0
+        && run.claimedOwnListingIds.every((id) => collectedOwnListingIds.has(id));
       const data: RunAlertData = {
         runId: run.id,
         status: run.status,
@@ -274,12 +318,15 @@ export class PrismaRunAlertRepository implements RunAlertRepository {
         skuCount: run.skuCount,
         issueCount,
         completedAt: run.finishedAt ?? run.createdAt,
+        claimedOwnListingIds: [...run.claimedOwnListingIds],
+        ownCatalogComplete,
         model: {
           id: model.id,
           brand: model.brand,
           standardModel: model.standardModel,
           version: model.version,
           comparisonType: model.comparisonType,
+          colorComparable: model.colorComparable,
           owner: model.owner,
           effectiveAliases: aliases
             .filter((alias) => alias.type === "EFFECTIVE")
@@ -304,7 +351,7 @@ export class PrismaRunAlertRepository implements RunAlertRepository {
           title: snapshot.title,
           skuText: snapshot.skuText ?? "",
           attributes: attributesFromJson(snapshot.rawEvidence),
-          bundleComponents: bundleComponentsFromJson(snapshot.rawEvidence),
+          components: skuComponentsFromJson(snapshot.rawEvidence),
           listPriceFen: snapshot.listPriceFen ?? snapshot.payableFen ?? 0,
           activityPriceFen: snapshot.activityPriceFen ?? snapshot.payableFen ?? 0,
           publicDiscountFen: snapshot.publicDiscountFen,

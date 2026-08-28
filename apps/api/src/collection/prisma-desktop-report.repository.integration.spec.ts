@@ -476,13 +476,17 @@ test("transactionally ingests one concurrent report history and returns its orig
       owner: "task-12-ingestion-retry",
       completedAt: new Date(report.completedAt),
       checkedItemCount: 1,
+      positionCount: 1,
+      shopCount: 1,
       searchLimit: 50,
       skuCount: 6,
       issueCount: 2,
+      reviewCount: 0,
       reportUrl: `https://monitor.example.test/collection-runs/${run.id}`,
       baseline: null,
       systemIssue: "OWN_BASELINE_MISSING",
-      alerts: []
+      alerts: [],
+      missingOwnGroups: []
     };
     const failingSender = new AlwaysFailingSender();
     const notificationRepository = new PrismaRunAlertNotificationRepository(prisma);

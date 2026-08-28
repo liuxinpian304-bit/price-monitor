@@ -13,6 +13,7 @@ function ownOffer(priceFen = 630_000): AlertOffer {
   return {
     monitoredModelId: "model-1",
     snapshotId: "own-snapshot-1",
+    combinationSignature: "sku-combination-v1:single",
     platformItemId: "own-1001",
     skuId: "own-sku",
     brand: "RME",
@@ -33,6 +34,7 @@ function competitorOffer(priceFen = 629_999): AlertOffer {
   return {
     monitoredModelId: "model-1",
     snapshotId: "competitor-snapshot-1",
+    combinationSignature: "sku-combination-v1:single",
     platformItemId: "competitor-1001",
     skuId: "competitor-sku",
     brand: "RME",
@@ -112,25 +114,27 @@ test("deduplicates the same competitor SKU and price but alerts after another dr
   assert.equal(repository.alerts.length, 2);
 });
 
-test("dedup identity includes model and authoritative own SKU", async () => {
+test("price-v3 identity includes the combination signature and selected own snapshot", async () => {
   const { service, repository } = context();
 
   const first = await service.evaluate(ownOffer(), competitorOffer(), comparable);
-  const otherModel = await service.evaluate(
-    { ...ownOffer(), monitoredModelId: "model-2" },
-    { ...competitorOffer(), monitoredModelId: "model-2" },
+  const otherCombination = await service.evaluate(
+    { ...ownOffer(), combinationSignature: "sku-combination-v1:bundle" },
+    { ...competitorOffer(), combinationSignature: "sku-combination-v1:bundle" },
     comparable
   );
-  const otherOwnSku = await service.evaluate(
-    { ...ownOffer(), skuId: "own-sku-2" },
+  const otherOwnSnapshot = await service.evaluate(
+    { ...ownOffer(), snapshotId: "own-snapshot-2" },
     competitorOffer(),
     comparable
   );
 
   assert.ok(first);
-  assert.ok(otherModel);
-  assert.ok(otherOwnSku);
+  assert.ok(otherCombination);
+  assert.ok(otherOwnSnapshot);
   assert.equal(repository.alerts.length, 3);
+  assert.equal(repository.alerts.every((alert) => alert.dedupKey.startsWith("price-v3:")), true);
+  assert.equal(new Set(repository.alerts.map((alert) => alert.dedupKey)).size, 3);
 });
 
 test("marks a lower but differently configured bundle for manual review", async () => {

@@ -3,6 +3,7 @@ import { dedupKey } from "./alert-dedup.ts";
 export interface AlertOffer {
   monitoredModelId: string;
   snapshotId: string;
+  combinationSignature: string;
   platformItemId: string;
   skuId: string;
   brand: string;
@@ -79,6 +80,8 @@ export class AlertService {
   ): Promise<PriceAlertRecord | null> {
     if (
       ownOffer.monitoredModelId !== competitorOffer.monitoredModelId
+      || ownOffer.combinationSignature === ""
+      || ownOffer.combinationSignature !== competitorOffer.combinationSignature
       || ownOffer.priceConfidence !== "CONFIRMED"
       || competitorOffer.priceConfidence !== "CONFIRMED"
       || ownOffer.stockState !== "IN_STOCK"
@@ -104,7 +107,8 @@ export class AlertService {
 
     const key = dedupKey(
       ownOffer.monitoredModelId,
-      ownOffer.skuId,
+      ownOffer.combinationSignature,
+      ownOffer.snapshotId,
       competitorOffer.platformItemId,
       competitorOffer.skuId,
       competitorOffer.payableFen
@@ -130,7 +134,7 @@ export class AlertService {
       competitorSkuId: competitorOffer.skuId,
       competitorUrl: competitorOffer.url,
       differenceFen: ownOffer.payableFen - competitorOffer.payableFen,
-      reasons: decision.reasons,
+      reasons: [...decision.reasons],
       firstSeenAt: competitorOffer.capturedAt,
       lastSeenAt: competitorOffer.capturedAt
     });

@@ -21,9 +21,12 @@ function summary(runId = "run-1"): RunAlertSummary {
     owner: "张三",
     completedAt: new Date("2026-08-25T01:31:00.000Z"),
     checkedItemCount: 50,
+    positionCount: 50,
+    shopCount: 1,
     searchLimit: 50,
     skuCount: 76,
     issueCount: 0,
+    reviewCount: 0,
     reportUrl: `https://monitor.example.test/collection-runs/${runId}`,
     baseline: {
       snapshotId: "own-snapshot",
@@ -38,6 +41,11 @@ function summary(runId = "run-1"): RunAlertSummary {
       alertId: "alert-1",
       severity: "CONFIRMED_LOW",
       snapshotId: "competitor-snapshot",
+      ownSnapshotId: "own-snapshot",
+      ownSkuText: "MDR-7506 单机",
+      ownPayableFen: 69_800,
+      combinationSignature: "sku-combination-v1:fixture",
+      combinationLabel: "Sony MDR-7506 新品 核心耳机MDR-7506x1",
       rank: 1,
       shopName: "同行店铺",
       title: "Sony MDR-7506",
@@ -48,7 +56,8 @@ function summary(runId = "run-1"): RunAlertSummary {
       differenceFen: 1,
       url: "https://item.taobao.com/item.htm?id=1",
       reasons: ["同配置裸机"]
-    }]
+    }],
+    missingOwnGroups: []
   };
 }
 
