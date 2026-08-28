@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   aggregateCollectionRunReport,
+  projectCollectionRunBusinessSkuRows,
   type CollectionRunBusinessAggregationInput,
   type CollectionRunBusinessSnapshotFact
 } from "./collection-report-aggregation.ts";
@@ -210,6 +211,8 @@ test("groups complete displayed positions by normalized shop and preserves detai
   assert.equal(result.missingOwnGroups.length, 1);
   assert.deepEqual(result.missingOwnGroups[0]?.shops, ["Beta Shop", "Gamma Shop"]);
   assert.equal(result.missingOwnGroups[0]?.minimumConfirmedPayableFen, 188_000);
+  assert.equal(result.missingOwnGroups[0]?.minimumOfferSnapshotId, "missing-beta");
+  assert.equal(result.missingOwnGroups[0]?.minimumOfferRank, 2);
   assert.deepEqual(result.missingOwnGroups[0]?.offers.map((row) => row.id), ["missing-beta", "missing-gamma"]);
 });
 
@@ -236,6 +239,139 @@ test("orders confirmed lows by signed difference descending then earliest rank",
     ["low-rank-five", "low-rank-six", "competitor-low"]
   );
   assert.deepEqual(reverse, forward);
+});
+
+test("requires complete confirmed in-stock persisted facts for confirmed lows", () => {
+  const cases: Array<[
+    string,
+    (competitor: CollectionRunBusinessSnapshotFact, own: CollectionRunBusinessSnapshotFact) => void
+  ]> = [
+    ["competitor confidence", (competitor) => { competitor.priceConfidence = "ESTIMATED"; }],
+    ["competitor null price", (competitor) => { competitor.payableFen = null; }],
+    ["competitor negative price", (competitor) => { competitor.payableFen = -1; }],
+    ["competitor stock", (competitor) => { competitor.stockState = "OUT_OF_STOCK"; }],
+    ["own confidence", (_competitor, own) => { own.priceConfidence = "MANUAL_REVIEW"; }],
+    ["own null price", (_competitor, own) => { own.payableFen = null; }],
+    ["own negative price", (_competitor, own) => { own.payableFen = -1; }],
+    ["own stock", (_competitor, own) => { own.stockState = "UNKNOWN"; }],
+    ["persisted state", (competitor) => { competitor.combinationState = "REVIEW"; }]
+  ];
+
+  for (const [label, mutate] of cases) {
+    const input = reportFixture();
+    const competitor = input.snapshots.find((row) => row.id === "competitor-low")!;
+    const own = input.snapshots.find((row) => row.id === "own-low")!;
+    mutate(competitor, own);
+
+    assert.equal(
+      aggregateCollectionRunReport(input).confirmedLows.some((row) =>
+        row.competitorSnapshot.id === competitor.id),
+      false,
+      label
+    );
+  }
+});
+
+test("keeps signed business differences while nested comparisons remain absolute", () => {
+  const input = reportFixture();
+  input.positions.push({
+    ...input.positions[0]!,
+    rank: 5,
+    platformItemId: "item-e",
+    shopName: "Delta Shop"
+  });
+  input.snapshots.push(snapshot("competitor-equal", {
+    platformItemId: "item-e",
+    payableFen: 148_000
+  }));
+
+  const byId = new Map(projectCollectionRunBusinessSkuRows(input).map((row) => [row.id, row]));
+  assert.deepEqual(
+    ["competitor-low", "competitor-equal", "competitor-higher"].map((id) => ({
+      id,
+      state: byId.get(id)?.comparison.state,
+      signed: byId.get(id)?.differenceFen,
+      compatibility: byId.get(id)?.comparison.differenceFen
+    })),
+    [
+      { id: "competitor-low", state: "LOWER", signed: 1, compatibility: 1 },
+      { id: "competitor-equal", state: "NOT_LOWER", signed: 0, compatibility: 0 },
+      { id: "competitor-higher", state: "NOT_LOWER", signed: -100, compatibility: 100 }
+    ]
+  );
+});
+
+test("downgrades corrupt selected-own relations and never exposes selected-own facts", () => {
+  const cases: Array<[string, (input: CollectionRunBusinessAggregationInput) => void]> = [
+    ["cross signature own", (input) => {
+      const competitor = input.snapshots.find((row) => row.id === "competitor-low")!;
+      const own = input.snapshots.find((row) => row.id === "own-alt")!;
+      own.combinationSignature = "different-signature";
+      competitor.comparisonOwnSnapshotId = own.id;
+    }],
+    ["non-own snapshot", (input) => {
+      const competitor = input.snapshots.find((row) => row.id === "competitor-low")!;
+      competitor.comparisonOwnSnapshotId = "competitor-higher";
+    }]
+  ];
+
+  for (const [label, corrupt] of cases) {
+    const input = reportFixture();
+    corrupt(input);
+    const result = aggregateCollectionRunReport(input);
+    const row = projectCollectionRunBusinessSkuRows(input)
+      .find((candidate) => candidate.id === "competitor-low");
+
+    assert.equal(result.confirmedLows.some((low) => low.competitorSnapshot.id === row?.id), false, label);
+    assert.equal(row?.selectedOwnSnapshot, null, label);
+    assert.equal(row?.combination.state, "REVIEW", label);
+    assert.ok(row?.combination.reasons.includes("INVALID_COMPARISON_OWN_SNAPSHOT"), label);
+  }
+});
+
+test("preserves missing-own groups with no confirmed eligible offer", () => {
+  const input = reportFixture();
+  const beta = input.snapshots.find((row) => row.id === "missing-beta")!;
+  const gamma = input.snapshots.find((row) => row.id === "missing-gamma")!;
+  beta.priceConfidence = "ESTIMATED";
+  gamma.payableFen = null;
+
+  const group = aggregateCollectionRunReport(input).missingOwnGroups[0];
+
+  assert.ok(group);
+  assert.equal(group.minimumConfirmedPayableFen, null);
+  assert.equal(group.minimumOfferSnapshotId, null);
+  assert.equal(group.minimumOfferRank, null);
+  assert.deepEqual(group.shops, ["Beta Shop", "Gamma Shop"]);
+  assert.deepEqual(group.offers.map((row) => row.id), ["missing-beta", "missing-gamma"]);
+  assert.deepEqual(group.offers.map((row) => row.url), [
+    "https://example.invalid/items/missing-beta",
+    "https://example.invalid/items/missing-gamma"
+  ]);
+});
+
+test("selects missing-own minimum price and rank from one deterministic source offer", () => {
+  const input = reportFixture();
+  const beta = input.snapshots.find((row) => row.id === "missing-beta")!;
+  const gamma = input.snapshots.find((row) => row.id === "missing-gamma")!;
+  beta.payableFen = 190_000;
+  gamma.payableFen = 188_000;
+
+  let group = aggregateCollectionRunReport(input).missingOwnGroups[0];
+  assert.equal(group?.minimumConfirmedPayableFen, 188_000);
+  assert.equal(group?.minimumOfferSnapshotId, "missing-gamma");
+  assert.equal(group?.minimumOfferRank, 3);
+
+  beta.payableFen = 188_000;
+  const reversed = aggregateCollectionRunReport({
+    ...input,
+    positions: [...input.positions].reverse(),
+    snapshots: [...input.snapshots].reverse()
+  });
+  group = reversed.missingOwnGroups[0];
+  assert.equal(group?.minimumConfirmedPayableFen, 188_000);
+  assert.equal(group?.minimumOfferSnapshotId, "missing-beta");
+  assert.equal(group?.minimumOfferRank, 2);
 });
 
 test("downgrades historical null combination states without inventing business outcomes", () => {

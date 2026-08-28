@@ -209,7 +209,9 @@ export interface CollectionRunMissingOwnGroup {
   combinationLabel: string;
   missingReason: "OWN_COMBINATION_ABSENT" | "OWN_OUT_OF_STOCK_ONLY";
   earliestRank: number;
-  minimumConfirmedPayableFen: number;
+  minimumConfirmedPayableFen: number | null;
+  minimumOfferSnapshotId: string | null;
+  minimumOfferRank: number | null;
   shops: string[];
   offers: CollectionRunBusinessSkuRow[];
 }
@@ -244,6 +246,18 @@ function compareText(left: string, right: string): number {
 
 function compareNumber(left: number, right: number): number {
   return left === right ? 0 : left < right ? -1 : 1;
+}
+
+function nonNegativeFen(value: number | null): value is number {
+  return value !== null && Number.isSafeInteger(value) && value >= 0;
+}
+
+function confirmedInStockPrice(
+  confidence: CollectionRunBusinessConfidence,
+  stockState: "IN_STOCK" | "OUT_OF_STOCK" | "UNKNOWN",
+  payableFen: number | null
+): payableFen is number {
+  return confidence === "CONFIRMED" && stockState === "IN_STOCK" && nonNegativeFen(payableFen);
 }
 
 function displayShopName(value: string): string {
@@ -369,17 +383,24 @@ function projectedRows(input: CollectionRunBusinessAggregationInput): Collection
 
   return input.snapshots.map((snapshot): CollectionRunBusinessSkuRow => {
     const legacy = snapshot.combinationState === null;
-    const combinationState = snapshot.combinationState ?? "REVIEW";
-    const combinationReasons = uniqueStrings([
-      ...snapshot.combinationReasons,
-      ...(legacy ? ["LEGACY_COMBINATION_NOT_EVALUATED"] : [])
-    ]);
     const selectedCandidate = snapshot.comparisonOwnSnapshotId
       ? ownById.get(snapshot.comparisonOwnSnapshotId) ?? null
       : null;
-    const selectedOwnSnapshot = selectedCandidate
+    const validComparisonOwnRelation = selectedCandidate !== null
       && snapshot.combinationSignature !== null
-      && selectedCandidate.combinationSignature === snapshot.combinationSignature
+      && selectedCandidate.combinationSignature !== null
+      && selectedCandidate.combinationSignature === snapshot.combinationSignature;
+    const invalidMatchedRelation = snapshot.combinationState === "MATCHED" && !validComparisonOwnRelation;
+    const persistedCombinationState = snapshot.combinationState ?? "REVIEW";
+    const combinationState: CollectionRunCombinationState = legacy || invalidMatchedRelation
+      ? "REVIEW"
+      : persistedCombinationState;
+    const combinationReasons = uniqueStrings([
+      ...snapshot.combinationReasons,
+      ...(legacy ? ["LEGACY_COMBINATION_NOT_EVALUATED"] : []),
+      ...(invalidMatchedRelation ? ["INVALID_COMPARISON_OWN_SNAPSHOT"] : [])
+    ]);
+    const selectedOwnSnapshot = validComparisonOwnRelation
       ? { ...selectedCandidate }
       : null;
     const alternativeOwnSnapshots = snapshot.combinationSignature
@@ -387,15 +408,24 @@ function projectedRows(input: CollectionRunBusinessAggregationInput): Collection
         .filter((row) => row.id !== selectedOwnSnapshot?.id)
         .map((row) => ({ ...row }))
       : [];
-    const differenceFen = selectedOwnSnapshot?.prices.payableFen !== null
-      && selectedOwnSnapshot?.prices.payableFen !== undefined
-      && snapshot.payableFen !== null
+    const differenceFen = selectedOwnSnapshot
+      && nonNegativeFen(selectedOwnSnapshot.prices.payableFen)
+      && nonNegativeFen(snapshot.payableFen)
       ? selectedOwnSnapshot.prices.payableFen - snapshot.payableFen
       : null;
     const source: CollectionRunBusinessSource = snapshot.ownListingId ? "OWN" : "COMPETITOR";
+    const eligibleComparison = source === "COMPETITOR"
+      && combinationState === "MATCHED"
+      && selectedOwnSnapshot !== null
+      && confirmedInStockPrice(snapshot.priceConfidence, snapshot.stockState, snapshot.payableFen)
+      && confirmedInStockPrice(
+        selectedOwnSnapshot.confidence,
+        selectedOwnSnapshot.stockState,
+        selectedOwnSnapshot.prices.payableFen
+      );
     const comparisonState = source === "OWN"
       ? "OWN"
-      : combinationState === "MATCHED" && differenceFen !== null
+      : eligibleComparison && differenceFen !== null
         ? differenceFen > 0 ? "LOWER" : "NOT_LOWER"
         : "UNDECIDED";
     const itemPositions = positionsByItem.get(snapshot.platformItemId) ?? [];
@@ -436,7 +466,7 @@ function projectedRows(input: CollectionRunBusinessAggregationInput): Collection
       comparison: {
         state: comparisonState,
         ownPayableFen: selectedOwnSnapshot?.prices.payableFen ?? null,
-        differenceFen
+        differenceFen: differenceFen === null ? null : Math.abs(differenceFen)
       },
       evidenceSha256: evidenceKeyPattern.exec(snapshot.evidenceKey ?? "")?.[1] ?? null,
       capturedAt: snapshot.capturedAt.toISOString()
@@ -455,7 +485,15 @@ function confirmedLows(rows: CollectionRunBusinessSkuRow[]): CollectionRunConfir
     if (
       row.source !== "COMPETITOR"
       || row.combination.state !== "MATCHED"
+      || row.combination.signature === null
       || !row.selectedOwnSnapshot
+      || row.selectedOwnSnapshot.combinationSignature !== row.combination.signature
+      || !confirmedInStockPrice(row.confidence, row.stockState, row.prices.payableFen)
+      || !confirmedInStockPrice(
+        row.selectedOwnSnapshot.confidence,
+        row.selectedOwnSnapshot.stockState,
+        row.selectedOwnSnapshot.prices.payableFen
+      )
       || row.differenceFen === null
       || row.differenceFen <= 0
     ) return [];
@@ -489,11 +527,12 @@ function missingGroups(rows: CollectionRunBusinessSkuRow[]): CollectionRunMissin
 
   return [...bySignature.entries()].flatMap(([signature, entries]): CollectionRunMissingOwnGroup[] => {
     const offers = [...entries].sort(compareRow);
-    const confirmedPrices = offers.flatMap((row) =>
-      row.confidence === "CONFIRMED" && row.prices.payableFen !== null ? [row.prices.payableFen] : []
-    );
+    const minimumOffer = offers.filter((row) =>
+      confirmedInStockPrice(row.confidence, row.stockState, row.prices.payableFen)
+    ).sort((left, right) =>
+      compareNumber(left.prices.payableFen!, right.prices.payableFen!) || compareRow(left, right)
+    )[0] ?? null;
     const ranks = offers.flatMap((row) => row.ranks);
-    if (confirmedPrices.length === 0 || ranks.length === 0) return [];
     const shops = new Map<string, { name: string; rank: number }>();
     for (const row of offers) {
       const key = normalizedShopName(row.shopName);
@@ -509,18 +548,25 @@ function missingGroups(rows: CollectionRunBusinessSkuRow[]): CollectionRunMissin
       combinationLabel: offers.map((row) => row.combination.label ?? "").sort(compareText)[0] ?? "",
       missingReason,
       earliestRank: Math.min(...ranks),
-      minimumConfirmedPayableFen: Math.min(...confirmedPrices),
+      minimumConfirmedPayableFen: minimumOffer?.prices.payableFen ?? null,
+      minimumOfferSnapshotId: minimumOffer?.id ?? null,
+      minimumOfferRank: minimumOffer?.ranks[0] ?? null,
       shops: [...shops.entries()]
         .sort(([leftKey, left], [rightKey, right]) =>
           compareNumber(left.rank, right.rank) || compareText(leftKey, rightKey))
         .map(([, shop]) => shop.name),
       offers
     }];
-  }).sort((left, right) =>
-    compareNumber(left.minimumConfirmedPayableFen, right.minimumConfirmedPayableFen)
+  }).sort((left, right) => {
+    const priceOrder = left.minimumConfirmedPayableFen === null
+      ? right.minimumConfirmedPayableFen === null ? 0 : 1
+      : right.minimumConfirmedPayableFen === null
+        ? -1
+        : compareNumber(left.minimumConfirmedPayableFen, right.minimumConfirmedPayableFen);
+    return priceOrder
       || compareNumber(left.earliestRank, right.earliestRank)
-      || compareText(left.combinationSignature, right.combinationSignature)
-  );
+      || compareText(left.combinationSignature, right.combinationSignature);
+  });
 }
 
 function priceBoard(

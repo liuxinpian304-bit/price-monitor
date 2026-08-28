@@ -265,12 +265,23 @@ class FixtureRepository implements CollectionReportDataRepository {
       const selectedOwn = snapshot.comparisonOwnSnapshotId
         ? byId.get(snapshot.comparisonOwnSnapshotId) ?? null
         : null;
+      const validSelectedOwn = selectedOwn?.ownListingId
+        && snapshot.combinationSignature !== null
+        && selectedOwn.combinationSignature !== null
+        && selectedOwn.combinationSignature === snapshot.combinationSignature
+        && snapshot.priceConfidence === "CONFIRMED"
+        && selectedOwn.priceConfidence === "CONFIRMED"
+        && snapshot.stockState === "IN_STOCK"
+        && selectedOwn.stockState === "IN_STOCK"
+        && snapshot.payableFen !== null
+        && snapshot.payableFen >= 0
+        && selectedOwn.payableFen !== null
+        && selectedOwn.payableFen >= 0;
       const comparison = snapshot.ownListingId
         ? "OWN"
-        : combinationState !== "MATCHED" || !selectedOwn
-          || selectedOwn.payableFen === null || snapshot.payableFen === null
+        : combinationState !== "MATCHED" || !validSelectedOwn
           ? "UNDECIDED"
-          : snapshot.payableFen < selectedOwn.payableFen ? "LOWER" : "NOT_LOWER";
+          : snapshot.payableFen! < selectedOwn.payableFen! ? "LOWER" : "NOT_LOWER";
       return (!filters.source || filters.source === source)
         && (!filters.match || filters.match === category)
         && (!filters.price || filters.price === comparison)
@@ -567,6 +578,29 @@ test("supports exact, review, excluded and not-lower database filter pages", asy
   assert.deepEqual((await service.getRun("run-7506", { match: "REVIEW" }))?.skus.map((row) => row.id), ["review-sku"]);
   assert.deepEqual((await service.getRun("run-7506", { match: "EXCLUDED" }))?.skus.map((row) => row.id), ["excluded-sku"]);
   assert.deepEqual((await service.getRun("run-7506", { price: "NOT_LOWER" }))?.skus.map((row) => row.id), ["not-lower-sku"]);
+});
+
+test("excludes corrupt selected-own relations from persisted price filters", async () => {
+  const repo = repository();
+  repo.snapshots.push(
+    snapshotFixture("corrupt-cross-signature", {
+      payableFen: 60_000,
+      combinationSignature: "different-signature",
+      comparisonOwnSnapshotId: "own-sku"
+    }),
+    snapshotFixture("corrupt-non-own", {
+      payableFen: 60_000,
+      comparisonOwnSnapshotId: "not-lower-sku"
+    })
+  );
+
+  const result = await new CollectionReportQueryService(repo).getRun(
+    "run-7506",
+    { source: "COMPETITOR", price: "LOWER" },
+    { skuPageSize: 100 }
+  );
+
+  assert.deepEqual(result?.skus.map((row) => row.id), ["lower-sku"]);
 });
 
 test("projects complete persisted business facts independently of the paged audit rows", async () => {
