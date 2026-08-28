@@ -304,6 +304,10 @@ private final class TestAXElement: AXElementReading {
         return attributes[attribute]
     }
 
+    func referencedElement(for attribute: String) throws -> (any AXElementReading)? {
+        nil
+    }
+
     func actionNames() throws -> [String] {
         actions
     }

@@ -1,6 +1,8 @@
 import Foundation
 
 enum AXAttribute {
+    static let focusedWindow = "AXFocusedWindow"
+    static let mainWindow = "AXMainWindow"
     static let role = "AXRole"
     static let subrole = "AXSubrole"
     static let identifier = "AXIdentifier"
@@ -32,9 +34,35 @@ enum AXAttributeSanitizer {
 
 protocol AXElementReading: AnyObject {
     func value(for attribute: String) throws -> Any?
+    func referencedElement(for attribute: String) throws -> (any AXElementReading)?
     func actionNames() throws -> [String]
     func childElements() throws -> [any AXElementReading]
     func isSameElement(as other: any AXElementReading) -> Bool
+}
+
+enum AXRootScope: String, Codable, Equatable {
+    case focusedWindow
+    case mainWindow
+}
+
+struct AXScopedRoot {
+    let element: any AXElementReading
+    let scope: AXRootScope
+}
+
+struct AXScopedRootResolver {
+    func resolve(applicationRoot: any AXElementReading) throws -> AXScopedRoot {
+        if let focused = try applicationRoot.referencedElement(for: AXAttribute.focusedWindow) {
+            return AXScopedRoot(element: focused, scope: .focusedWindow)
+        }
+        if let main = try applicationRoot.referencedElement(for: AXAttribute.mainWindow) {
+            return AXScopedRoot(element: main, scope: .mainWindow)
+        }
+        throw HelperError(
+            code: "FRONT_WINDOW_NOT_AVAILABLE",
+            message: "A focused or main application window is required."
+        )
+    }
 }
 
 struct AXTreeSerializer {
