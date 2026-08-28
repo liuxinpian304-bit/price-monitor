@@ -76,6 +76,32 @@ test("changes core quantity only for one unambiguous count token", () => {
   assert.equal(ambiguous[0]?.quantity, 1);
 });
 
+test("rejects fractional and decimal quantity evidence", () => {
+  for (const label of ["0.5件", "1.5套", "．5件"]) {
+    const result = deriveSkuComponents({
+      brand: "RODE",
+      standardModel: "NT1S",
+      selectedLabels: { "麦克风数量": label },
+      explicitComponents: undefined
+    });
+
+    assert.equal(result[0]?.quantity, 1, label);
+  }
+});
+
+test("rejects signed or otherwise ambiguous quantity evidence", () => {
+  for (const label of ["-2只", "+2个", "－2只", "＋2个", "−2件", "2只或3只", "型号3 2只"]) {
+    const result = deriveSkuComponents({
+      brand: "RODE",
+      standardModel: "NT1S",
+      selectedLabels: { "麦克风数量": label },
+      explicitComponents: undefined
+    });
+
+    assert.equal(result[0]?.quantity, 1, label);
+  }
+});
+
 test("splits package labels and classifies gift or service tokens before accessories", () => {
   const result = deriveSkuComponents({
     brand: "RODE",
@@ -99,6 +125,45 @@ test("does not promote a model-free accessory token to paid accessory", () => {
 
   assert.equal(result.some((item) => item.role === "PAID_ACCESSORY"), false);
   assert.equal(result.find((item) => item.modelOrName === "专业支架")?.role, "UNKNOWN");
+});
+
+test("treats a joined core model and product type as core evidence", () => {
+  const result = deriveSkuComponents({
+    brand: "RODE",
+    standardModel: "NT1S",
+    selectedLabels: { "套餐类型": "NT1S麦克风" },
+    explicitComponents: undefined
+  });
+
+  assert.deepEqual(result, [{
+    role: "CORE",
+    accessoryType: "核心产品",
+    brand: "RODE",
+    modelOrName: "NT1S",
+    quantity: 1
+  }]);
+});
+
+test("keeps a distinct accessory model beside joined core evidence", () => {
+  const result = deriveSkuComponents({
+    brand: "RODE",
+    standardModel: "NT1S",
+    selectedLabels: { "套餐类型": "NT1S麦克风 AI-1声卡" },
+    explicitComponents: undefined
+  });
+
+  assert.equal(result.find((item) => item.modelOrName === "AI-1")?.role, "PAID_ACCESSORY");
+});
+
+test("keeps generic package text beside a core model unknown", () => {
+  const result = deriveSkuComponents({
+    brand: "RODE",
+    standardModel: "NT1S",
+    selectedLabels: { "套餐类型": "NT1S豪华套装" },
+    explicitComponents: undefined
+  });
+
+  assert.equal(result.find((item) => item.modelOrName === "NT1S豪华套装")?.role, "UNKNOWN");
 });
 
 test("deduplicates only components with identical normalized evidence", () => {
