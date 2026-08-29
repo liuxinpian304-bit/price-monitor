@@ -297,7 +297,8 @@ function isScopedState(node: AxNode): boolean {
 
 function hasStateUrl(node: AxNode, pattern: RegExp): boolean {
   const parsed = parseUrl(node.url);
-  return parsed !== null && pattern.test(`${parsed.hostname}${parsed.pathname}`);
+  return (parsed?.protocol === "http:" || parsed?.protocol === "https:")
+    && pattern.test(`${parsed.hostname}${parsed.pathname}`);
 }
 
 export function liveAssertNoStopState(root: AxNode): void {
