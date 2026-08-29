@@ -65,7 +65,8 @@
               ]
             }
           ]
-        }
+        },
+        { "path": [0, 1], "role": "AXButton", "subrole": null, "identifier": null, "title": "Example Interface X1", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] }
       ]
     }
   ]

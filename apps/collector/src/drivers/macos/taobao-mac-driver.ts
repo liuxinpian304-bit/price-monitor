@@ -27,10 +27,10 @@ import {
   canonicalItemIdentity,
   findBackAction,
   findSearchField,
-  findSearchResultContainer,
   findSkuOption,
   hasSearchEndMarker,
   readDetailPage,
+  readSearchAdvance,
   readSearchCards,
   readSearchResultQuery,
   readSelectedLabels,
@@ -317,16 +317,8 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     let root = firstResult;
     let scrollCount = 0;
     while (cards.length < limit && !hasSearchEndMarker(root) && scrollCount < 50) {
-      const container = findSearchResultContainer(root);
-      if (!container.actions.includes("AXScrollDown")) {
-        throw new UiContractChangedError("Taobao search result container is not semantically scrollable.");
-      }
       const beforeScroll = readSearchContext(root).signature;
-      await this.client.command("perform", {
-        nodePath: container.path,
-        action: "AXScrollDown",
-        fingerprint: fingerprintFor(container)
-      });
+      await this.advanceSearch(root);
       root = await this.waitForStableSearch(query, beforeScroll);
       const next = readSearchCards(root);
       const merged = mergeSearchCardViewports(cards, next, viewportCards);
@@ -492,7 +484,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     }
     const detail = await this.client.snapshot();
     assertNoStopState(detail);
-    const back = findBackAction(detail);
+    const back = findBackAction(detail, this.currentSearchQuery);
     await this.client.command("perform", {
       nodePath: back.path,
       action: "AXPress",
@@ -590,14 +582,8 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
         }
       }
       if (hasSearchEndMarker(current)) break;
-      const container = findSearchResultContainer(current);
-      if (!container.actions.includes("AXScrollDown")) break;
       const beforeScroll = readSearchContext(current).signature;
-      await this.client.command("perform", {
-        nodePath: container.path,
-        action: "AXScrollDown",
-        fingerprint: fingerprintFor(container)
-      });
+      await this.advanceSearch(current);
       current = await this.waitForStableSearch(this.currentSearchQuery, beforeScroll);
     }
     throw new UiContractChangedError("Taobao search result position is no longer visible.");
@@ -607,6 +593,19 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     return position.platformItemId !== null
       ? card.platformItemId === position.platformItemId
       : card.url === position.url && card.title === position.title && card.shopName === position.shopName;
+  }
+
+  private async advanceSearch(root: AxNode): Promise<void> {
+    const advance = readSearchAdvance(root);
+    if (advance.kind === "KEY") {
+      await this.client.command("keyPress", { keyCode: advance.keyCode });
+      return;
+    }
+    await this.client.command("perform", {
+      nodePath: advance.node.path,
+      action: advance.action,
+      fingerprint: fingerprintFor(advance.node)
+    });
   }
 
   private async waitForStableDetail(): Promise<AxNode> {

@@ -8,7 +8,7 @@ import {
   type SkuSelection
 } from "../../core/desktop-driver.ts";
 import { axNodeText, walkAxNodes, type AxNode } from "./ax-node.ts";
-import type { SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
+import type { SearchAdvance, SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
 import { canonicalItemIdentity, parseLiveItemUrl } from "./taobao-url.ts";
 
 const PROFILE_ERROR = "Taobao Accessibility tree does not match the approved 2.4.5 build 15 profile";
@@ -318,6 +318,15 @@ export function liveFindSearchResultContainer(root: AxNode): AxNode {
   return uniqueSearchWebArea(root);
 }
 
+export function liveReadSearchAdvance(root: AxNode): SearchAdvance {
+  const searchArea = uniqueSearchWebArea(root);
+  const scrollNode = walkAxNodes(searchArea).find((node) =>
+    node.enabled !== false && node.actions.includes("AXScrollDown"));
+  return scrollNode
+    ? { kind: "AX_ACTION", action: "AXScrollDown", node: scrollNode }
+    : { kind: "KEY", keyCode: 121 };
+}
+
 export function liveReadSearchResultQuery(root: AxNode): string {
   const searchArea = uniqueSearchWebArea(root);
   const query = requiredFieldQuery(liveSearchField(searchArea));
@@ -367,4 +376,24 @@ export function liveHasSearchEndMarker(root: AxNode): boolean {
     const text = axNodeText(node);
     return text !== null && END_MARKERS.has(text);
   });
+}
+
+function isLiveNavigationControl(node: AxNode): boolean {
+  return (node.role === "AXButton" || node.role === "AXRadioButton")
+    && node.enabled !== false
+    && node.actions.includes("AXPress");
+}
+
+export function liveFindBackAction(root: AxNode, exactQuery: string): AxNode {
+  const query = normalizeText(exactQuery);
+  if (!query) return profileError();
+  const controls = walkAxNodes(root).filter(isLiveNavigationControl);
+  const exactMatches = controls.filter((node) => [node.title, typeof node.value === "string" ? node.value : null]
+    .some((value) => value !== null && normalizeText(value) === query));
+  if (exactMatches.length > 1) return profileError();
+  if (exactMatches.length === 1) return exactMatches[0] ?? profileError();
+
+  const backMatches = controls.filter((node) => node.title !== null && normalizeText(node.title) === "返回");
+  if (backMatches.length !== 1) return profileError();
+  return backMatches[0] ?? profileError();
 }

@@ -1,5 +1,9 @@
 import type { AxNode } from "./ax-node.ts";
 
+export type SearchAdvance =
+  | { kind: "AX_ACTION"; action: "AXScrollDown"; node: AxNode }
+  | { kind: "KEY"; keyCode: 121 };
+
 export interface SelectedDetailPage {
   platformItemId: string | null;
   url: string;

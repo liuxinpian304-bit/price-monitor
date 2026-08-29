@@ -8,21 +8,23 @@ import {
 import { axNodeText, findAxNode, walkAxNodes, type AxNode } from "./ax-node.ts";
 import {
   liveAssertNoStopState,
+  liveFindBackAction,
   liveFindSearchField,
   liveFindSearchResultContainer,
   liveFindSkuOption,
   liveHasSearchEndMarker,
   liveReadDetailPage,
+  liveReadSearchAdvance,
   liveReadSearchCards,
   liveReadSearchResultQuery,
   liveReadSelectedLabels,
   liveReadSkuDimensions
 } from "./taobao-live-selectors.ts";
-import type { SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
+import type { SearchAdvance, SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
 import { taobaoSelectorProfile } from "./taobao-selector-profile.ts";
 import { canonicalItemIdentity } from "./taobao-url.ts";
 
-export type { SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
+export type { SearchAdvance, SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
 export { canonicalItemIdentity } from "./taobao-url.ts";
 
 const PROFILE_ERROR = "Taobao Accessibility tree does not match the approved 2.4.5 build 15 profile";
@@ -81,6 +83,21 @@ export function findSearchResultContainer(root: AxNode): AxNode {
   return taobaoSelectorProfile(root) === "SYNTHETIC"
     ? syntheticFindSearchResultContainer(root)
     : liveFindSearchResultContainer(root);
+}
+
+function syntheticReadSearchAdvance(root: AxNode): SearchAdvance {
+  const container = syntheticFindSearchResultContainer(root);
+  if (!container.actions.includes("AXScrollDown")) {
+    throw new UiContractChangedError("Taobao search result container is not semantically scrollable.");
+  }
+  return { kind: "AX_ACTION", action: "AXScrollDown", node: container };
+}
+
+export function readSearchAdvance(root: AxNode): SearchAdvance {
+  assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC"
+    ? syntheticReadSearchAdvance(root)
+    : liveReadSearchAdvance(root);
 }
 
 function syntheticReadSearchResultQuery(root: AxNode): string {
@@ -231,8 +248,14 @@ export function findSkuOption(root: AxNode, dimensionName: string, label: string
     : liveFindSkuOption(root, dimensionName, label);
 }
 
-export function findBackAction(root: AxNode): AxNode {
-  assertNoStopState(root);
+function syntheticFindBackAction(root: AxNode): AxNode {
   return findAxNode(root, (node) => node.identifier === "navigation-back"
     && node.role === "AXButton" && node.title === "返回" && node.actions.includes("AXPress")) ?? profileError();
+}
+
+export function findBackAction(root: AxNode, exactQuery?: string): AxNode {
+  assertNoStopState(root);
+  return exactQuery === undefined || taobaoSelectorProfile(root) === "SYNTHETIC"
+    ? syntheticFindBackAction(root)
+    : liveFindBackAction(root, exactQuery);
 }
