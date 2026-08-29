@@ -119,6 +119,21 @@ function searchPageVariant(root: AxNode, page: number): AxNode {
   return clone;
 }
 
+function withRawSearchAdvance(root: AxNode): AxNode {
+  const clone = structuredClone(root);
+  searchResultRegion(clone).actions.push("AXScrollDown");
+  return clone;
+}
+
+function withoutFirstCardIdentity(root: AxNode): AxNode {
+  const clone = structuredClone(root);
+  const firstCard = searchResultRegion(clone).children[0] ?? assert.fail("First live search card is missing");
+  for (const link of walkAxNodes(firstCard).filter((node) => node.role === "AXLink")) {
+    link.url = "https://detail.tmall.com/item.htm";
+  }
+  return clone;
+}
+
 function sponsoredFirstCard(root: AxNode): AxNode {
   const clone = structuredClone(root);
   const firstCard = searchResultRegion(clone).children[0] ?? assert.fail("First live search card is missing");
@@ -235,6 +250,26 @@ test("pages a live search with Page Down and preserves duplicate and sponsored r
   });
 });
 
+test("uses the exact raw live AXScrollDown action before the Page Down fallback", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const search = withRawSearchAdvance(await fixture("live-search-results.json"));
+  const next = await fixture("live-search-results-next.json");
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search), ...stable(next));
+
+  await driver.search(QUERY, 3);
+
+  assert.deepEqual(client.commands.at(-1), {
+    command: "perform",
+    fields: {
+      nodePath: [0, 0, 1],
+      action: "AXScrollDown",
+      fingerprint: { role: "AXGroup" }
+    }
+  });
+  assert.equal(client.commands.some(({ command, fields }) => command === "keyPress" && fields.keyCode === 121), false);
+});
+
 test("rejects Page Down when the stable live search signature does not change", async () => {
   const client = new LiveFakeClient();
   const driver = liveDriver(client);
@@ -271,6 +306,30 @@ test("opens a live position with the exact raw path and no invented identifier f
     }
   });
   assert.equal(Object.hasOwn(press?.fields.fingerprint ?? {}, "identifier"), false);
+});
+
+test("recovers an ID-less live detail through the exact raw copied-link action", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const search = withoutFirstCardIdentity(await fixture("live-search-results.json"));
+  const detail = withoutDetailIdentity(await fixture("live-item-x1-default.json"));
+  client.copiedText = "https://detail.tmall.com/item.htm?id=example-x1-a";
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search));
+  const result = await driver.search(QUERY, 1);
+  const position = result.positions[0] ?? assert.fail("Live search position is missing");
+  client.snapshotQueue.push(search, ...stable(detail));
+
+  const page = await driver.openSearchPosition(position);
+
+  assert.equal(page.platformItemId, "example-x1-a");
+  assert.deepEqual(client.commands.at(-1), {
+    command: "captureCopiedText",
+    fields: {
+      nodePath: [0, 0, 0, 2],
+      action: "AXPress",
+      fingerprint: { role: "AXButton", title: "分享" }
+    }
+  });
 });
 
 test("reconstructs a global duplicate rank instead of opening a sponsored same-ID overlap path", async () => {
@@ -312,6 +371,22 @@ test("rejects locate paging when an unparsable snapshot returns to the unchanged
   unparsable.children = [];
   const target = unreachablePosition(result.positions[0] ?? assert.fail("Live search position is missing"), 100);
   client.snapshotQueue.push(offTop, ...stable(search), unparsable, ...Array.from({ length: 70 }, () => search));
+
+  await assert.rejects(driver.openSearchPosition(target), UiContractChangedError);
+
+  const pageDowns = client.commands.filter(({ command, fields }) => command === "keyPress" && fields.keyCode === 121);
+  assert.equal(pageDowns.length, 1);
+});
+
+test("rejects locate paging when a changed parseable transient settles on the original signature", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const result = await searchOnce(client, driver);
+  const search = await fixture("live-search-results.json");
+  const offTop = searchPageVariant(search, 900);
+  const transient = searchPageVariant(search, 901);
+  const target = unreachablePosition(result.positions[0] ?? assert.fail("Live search position is missing"), 100);
+  client.snapshotQueue.push(offTop, ...stable(search), transient, ...Array.from({ length: 70 }, () => search));
 
   await assert.rejects(driver.openSearchPosition(target), UiContractChangedError);
 
@@ -426,7 +501,7 @@ test("rejects a changed live detail item before return mutation", async () => {
   assert.equal(client.commands.length, beforeReturn);
 });
 
-test("rejects missing live detail identity before return mutation", async () => {
+test("rejects a missing raw detail identity when the opened item did not use copied-link recovery", async () => {
   const client = new LiveFakeClient();
   const driver = liveDriver(client);
   const { search, detail } = await openDefaultDetail(client, driver);
