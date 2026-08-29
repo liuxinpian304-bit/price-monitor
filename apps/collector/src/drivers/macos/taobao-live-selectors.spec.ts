@@ -87,6 +87,34 @@ function stopStateRoot(stateScope: AxNode): AxNode {
   });
 }
 
+type StopStateExpectation = "NONE" | "LOGIN" | "CHALLENGE";
+type StopStateScope = "WEB_AREA" | "DIALOG";
+
+function stopStateScope(
+  scope: StopStateScope,
+  title: string | null,
+  url: string | null
+): AxNode {
+  return axNode([1], {
+    role: scope === "DIALOG" ? "AXWindow" : "AXWebArea",
+    subrole: scope === "DIALOG" ? "AXDialog" : null,
+    title,
+    url
+  });
+}
+
+function assertStopState(root: AxNode, expected: StopStateExpectation): void {
+  if (expected === "LOGIN") {
+    assert.throws(() => assertNoStopState(root), LoginRequiredError);
+    return;
+  }
+  if (expected === "CHALLENGE") {
+    assert.throws(() => assertNoStopState(root), PlatformChallengeError);
+    return;
+  }
+  assert.doesNotThrow(() => assertNoStopState(root));
+}
+
 test("ignores a fictional internal account-management loginPop frame", () => {
   const root = stopStateRoot(axNode([1], {
     role: "AXWebArea",
@@ -102,35 +130,107 @@ test("ignores a fictional internal account-management loginPop frame", () => {
   assert.doesNotThrow(() => assertNoStopState(root));
 });
 
-test("keeps explicit internal login and challenge titles terminal", () => {
-  const loginRoot = stopStateRoot(axNode([1], {
-    role: "AXWebArea",
+const stopStateCases: Array<{
+  name: string;
+  scope: StopStateScope;
+  title: string | null;
+  url: string | null;
+  expected: StopStateExpectation;
+}> = [
+  {
+    name: "stops for an HTTP external login URL",
+    scope: "WEB_AREA",
+    title: null,
+    url: "http://portal.example.test/login",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for an HTTPS external login URL",
+    scope: "WEB_AREA",
+    title: null,
+    url: "https://portal.example.test/login",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for a login token in an external hostname only",
+    scope: "WEB_AREA",
+    title: null,
+    url: "https://login.example.test/continue",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for a login token in an external pathname only",
+    scope: "WEB_AREA",
+    title: null,
+    url: "https://portal.example.test/login",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for an external security token only",
+    scope: "WEB_AREA",
+    title: null,
+    url: "https://portal.example.test/security",
+    expected: "CHALLENGE"
+  },
+  {
+    name: "stops for an external punish token only",
+    scope: "WEB_AREA",
+    title: null,
+    url: "https://portal.example.test/punish",
+    expected: "CHALLENGE"
+  },
+  {
+    name: "ignores an attacker-shaped javascript URL by itself",
+    scope: "WEB_AREA",
+    title: null,
+    url: "javascript:login()",
+    expected: "NONE"
+  },
+  {
+    name: "ignores an attacker-shaped custom security URL by itself",
+    scope: "WEB_AREA",
+    title: null,
+    url: "fictional-security://portal.example.test/punish",
+    expected: "NONE"
+  },
+  {
+    name: "keeps a dialog login title terminal regardless of its file URL",
+    scope: "DIALOG",
     title: "请登录",
-    url: "file:///fictional/client/account-panel/loginPop/index.html"
-  }));
-  const challengeRoot = stopStateRoot(axNode([1], {
-    role: "AXWebArea",
+    url: "file:///fictional/client/account-panel/index.html",
+    expected: "LOGIN"
+  },
+  {
+    name: "keeps a dialog challenge title terminal regardless of its custom URL",
+    scope: "DIALOG",
     title: "安全验证",
-    url: "file:///fictional/client/account-panel/security.html"
-  }));
+    url: "fictional-security://portal.example.test/notice",
+    expected: "CHALLENGE"
+  },
+  {
+    name: "stops for a dialog external login URL without a semantic title",
+    scope: "DIALOG",
+    title: null,
+    url: "https://portal.example.test/login",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for a dialog external challenge URL without a semantic title",
+    scope: "DIALOG",
+    title: null,
+    url: "https://portal.example.test/security",
+    expected: "CHALLENGE"
+  }
+];
 
-  assert.throws(() => assertNoStopState(loginRoot), LoginRequiredError);
-  assert.throws(() => assertNoStopState(challengeRoot), PlatformChallengeError);
-});
-
-test("keeps external Taobao login and challenge URLs terminal", () => {
-  const loginRoot = stopStateRoot(axNode([1], {
-    role: "AXWebArea",
-    url: "https://login.taobao.com/login?target=fictional"
-  }));
-  const challengeRoot = stopStateRoot(axNode([1], {
-    role: "AXWebArea",
-    url: "https://security.taobao.com/punish?target=fictional"
-  }));
-
-  assert.throws(() => assertNoStopState(loginRoot), LoginRequiredError);
-  assert.throws(() => assertNoStopState(challengeRoot), PlatformChallengeError);
-});
+for (const stopStateCase of stopStateCases) {
+  test(stopStateCase.name, () => {
+    assertStopState(
+      stopStateRoot(stopStateScope(stopStateCase.scope, stopStateCase.title, stopStateCase.url)),
+      stopStateCase.expected
+    );
+  });
+}
 
 function detailArea(root: AxNode): AxNode {
   return findAxNode(root, (node) => node.role === "AXWebArea" && node.title === "商品详情")
