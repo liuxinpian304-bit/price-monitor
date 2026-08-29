@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
-import { UiContractChangedError } from "../../core/desktop-driver.ts";
+import { DriverIssueError, UiContractChangedError } from "../../core/desktop-driver.ts";
 import type { AxJsonValue, AxNode, AxNodeFingerprint } from "./ax-node.ts";
 
 export const AX_HELPER_TIMEOUT_MS = 15_000;
@@ -264,6 +264,8 @@ export class AxHelperClient {
       clearTimeout(pending.timer);
       if (decoded.ok) {
         pending.resolve(decoded.payload);
+      } else if (decoded.error?.code === "APP_NOT_FRONTMOST") {
+        pending.reject(new DriverIssueError("TAOBAO_NOT_FRONTMOST", "Taobao Desktop is not frontmost."));
       } else {
         pending.reject(new AxHelperResponseError(
           decoded.error?.code ?? "HELPER_ERROR",

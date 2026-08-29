@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { UiContractChangedError } from "../../core/desktop-driver.ts";
+import { DriverIssueError, UiContractChangedError } from "../../core/desktop-driver.ts";
 import {
   AX_HELPER_TIMEOUT_MS,
   AxHelperResponseError,
@@ -179,6 +179,27 @@ test("surfaces typed helper errors without restarting or leaking unsafe messages
     return true;
   });
   assert.equal(spawns, 1);
+  client.close();
+});
+
+test("translates a non-frontmost keypress response into a terminal driver issue", async () => {
+  const process = new FakeProcess();
+  const client = new AxHelperClient({ spawn: () => process });
+  process.stdin.once("data", (chunk) => {
+    const command = JSON.parse(String(chunk)) as { id: string };
+    response(process, {
+      id: command.id,
+      ok: false,
+      error: { code: "APP_NOT_FRONTMOST", message: `token=private ${privateLocalPath}` }
+    });
+  });
+
+  await assert.rejects(client.command("keyPress", { keyCode: 36 }), (error: unknown) => {
+    assert.equal(error instanceof DriverIssueError, true);
+    assert.equal((error as DriverIssueError).code, "TAOBAO_NOT_FRONTMOST");
+    assert.equal((error as Error).message, "Taobao Desktop is not frontmost.");
+    return true;
+  });
   client.close();
 });
 

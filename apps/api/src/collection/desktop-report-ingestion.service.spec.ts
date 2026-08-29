@@ -255,6 +255,7 @@ test("accepts every runner fatal code only with failed no-progress data", async 
     "MISSING_ITEM_ID",
     "TAOBAO_NOT_INSTALLED",
     "TAOBAO_NOT_RUNNING",
+    "TAOBAO_NOT_FRONTMOST",
     "ACCESSIBILITY_PERMISSION_REQUIRED",
     "APP_VERSION_UNSUPPORTED",
     "UI_CONTRACT_CHANGED",
@@ -278,6 +279,7 @@ test("accepts every runner completion issue only with partial progress", async (
     "SKU_ENUMERATION_INCOMPLETE",
     "SKU_SELECTION_MISMATCH",
     "PRICE_UNSTABLE",
+    "TAOBAO_NOT_FRONTMOST",
     "UI_CONTRACT_CHANGED",
     "MISSING_ITEM_ID"
   ] as const) {
@@ -501,6 +503,7 @@ test("rejects every non-success collector issue on a successful report", async (
     "PLATFORM_CHALLENGE",
     "TAOBAO_NOT_INSTALLED",
     "TAOBAO_NOT_RUNNING",
+    "TAOBAO_NOT_FRONTMOST",
     "ACCESSIBILITY_PERMISSION_REQUIRED",
     "APP_VERSION_UNSUPPORTED",
     "UI_CONTRACT_CHANGED",

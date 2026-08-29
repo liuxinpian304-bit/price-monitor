@@ -1834,3 +1834,39 @@ test("reports typed startup and missing-identity driver outcomes without claimin
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("reports a non-frontmost Taobao driver issue after zero and durable progress", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-not-frontmost-"));
+  try {
+    const zeroProgressBase = await FixtureDriver.fromFile(fixturePath);
+    const zeroProgressDriver = withDiagnose(zeroProgressBase, async () => {
+      throw new DriverIssueError("TAOBAO_NOT_FRONTMOST", "Taobao Desktop is not frontmost.");
+    });
+    const zeroProgress = await new CollectionRunner(
+      zeroProgressDriver,
+      new AtomicCheckpointStore(join(root, "zero-progress"))
+    ).run({ ...job, runId: "driver-not-frontmost-zero-progress" }, job.collectorId);
+    assert.equal(zeroProgress.status, "FAILED");
+    assert.equal(zeroProgress.issues.some((entry) => entry.code === "TAOBAO_NOT_FRONTMOST"), true);
+
+    const progressedBase = await FixtureDriver.fromFile(fixturePath);
+    const progressedDriver: TaobaoDesktopDriver = {
+      diagnose: () => progressedBase.diagnose(),
+      openOwnListing: (url) => progressedBase.openOwnListing(url),
+      search: (query, limit) => progressedBase.search(query, limit),
+      openSearchPosition: (position) => progressedBase.openSearchPosition(position),
+      selectSku: (selection) => progressedBase.selectSku(selection),
+      returnToSearch: async () => {
+        throw new DriverIssueError("TAOBAO_NOT_FRONTMOST", "Taobao Desktop is not frontmost.");
+      }
+    };
+    const progressed = await new CollectionRunner(
+      progressedDriver,
+      new AtomicCheckpointStore(join(root, "progressed"))
+    ).run({ ...job, runId: "driver-not-frontmost-progressed" }, job.collectorId);
+    assert.equal(progressed.status, "PARTIAL_FAILED");
+    assert.equal(progressed.issues.some((entry) => entry.code === "TAOBAO_NOT_FRONTMOST"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
