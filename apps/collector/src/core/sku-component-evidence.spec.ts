@@ -264,6 +264,18 @@ test("treats a joined core model and product type as core evidence", () => {
   }]);
 });
 
+test("preserves explicit quantity on joined core model and product type evidence", () => {
+  const result = deriveSkuComponents({
+    brand: "RODE",
+    standardModel: "NT1S",
+    selectedLabels: { "套餐类型": "NT1S麦克风2件" },
+    explicitComponents: undefined
+  });
+
+  assert.equal(result.find((item) => item.role === "CORE")?.quantity, 2);
+  assert.equal(result.some((item) => item.role === "UNKNOWN"), false);
+});
+
 test("keeps a distinct accessory model beside joined core evidence", () => {
   const result = deriveSkuComponents({
     brand: "RODE",
