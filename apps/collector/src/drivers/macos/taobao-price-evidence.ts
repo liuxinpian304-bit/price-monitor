@@ -2,6 +2,8 @@ import type { PromotionEvidence } from "@stau-price-monitor/contracts";
 
 import { UiContractChangedError, type DriverSkuView } from "../../core/desktop-driver.ts";
 import { axNodeText, findAxNode, type AxNode } from "./ax-node.ts";
+import { readLiveSelectedSkuEvidence } from "./taobao-live-price-evidence.ts";
+import { taobaoSelectorProfile } from "./taobao-selector-profile.ts";
 
 export interface SelectedSkuEvidence {
   listPriceText: string;
@@ -121,7 +123,7 @@ function stackGroupFor(node: AxNode): string | null {
   return null;
 }
 
-export function readSelectedSkuEvidence(root: AxNode): SelectedSkuEvidence {
+function syntheticReadSelectedSkuEvidence(root: AxNode): SelectedSkuEvidence {
   const priceRegion = findAxNode(root, (node) => node.identifier === "selected-sku-price"
     && node.role === "AXGroup" && node.title === "已选规格价格");
   if (!priceRegion) throw new UiContractChangedError("Selected-SKU price region is missing");
@@ -158,4 +160,10 @@ export function readSelectedSkuEvidence(root: AxNode): SelectedSkuEvidence {
     promotions,
     promotionTexts
   };
+}
+
+export function readSelectedSkuEvidence(root: AxNode): SelectedSkuEvidence {
+  return taobaoSelectorProfile(root) === "SYNTHETIC"
+    ? syntheticReadSelectedSkuEvidence(root)
+    : readLiveSelectedSkuEvidence(root);
 }

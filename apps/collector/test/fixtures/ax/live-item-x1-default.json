@@ -46,9 +46,22 @@
                 {
                   "path": [0, 0, 0, 5], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": "已选规格价格", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
                   "children": [
-                    { "path": [0, 0, 0, 5, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "活动价", "value": "活动价 699.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+                    { "path": [0, 0, 0, 5, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "原价", "value": "原价 799.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 0, 5, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "活动价", "value": "活动价 699.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 0, 5, 2], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "预估到手价", "value": "预估到手价 679.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 0, 5, 3], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "库存状态", "value": "有货", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 0, 5, 4], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "优惠", "value": "满500减20", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 0, 5, 5], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "优惠", "value": "88VIP专享", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 0, 5, 6], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "运费", "value": "包邮", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
                   ]
                 }
+              ]
+            },
+            {
+              "path": [0, 0, 1], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": "相关推荐", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+              "children": [
+                { "path": [0, 0, 1, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "推荐价格", "value": "活动价 399.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                { "path": [0, 0, 1, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "推荐价格", "value": "原价 499.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
               ]
             }
           ]
