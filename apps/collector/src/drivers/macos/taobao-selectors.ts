@@ -6,29 +6,22 @@ import {
   type SkuSelection
 } from "../../core/desktop-driver.ts";
 import { axNodeText, findAxNode, walkAxNodes, type AxNode } from "./ax-node.ts";
+import {
+  liveAssertNoStopState,
+  liveFindSearchField,
+  liveFindSearchResultContainer,
+  liveHasSearchEndMarker,
+  liveReadSearchCards,
+  liveReadSearchResultQuery
+} from "./taobao-live-selectors.ts";
+import type { SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
+import { taobaoSelectorProfile } from "./taobao-selector-profile.ts";
+import { canonicalItemIdentity } from "./taobao-url.ts";
+
+export type { SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
+export { canonicalItemIdentity } from "./taobao-url.ts";
 
 const PROFILE_ERROR = "Taobao Accessibility tree does not match the approved 2.4.5 build 15 profile";
-
-export interface SelectedDetailPage {
-  platformItemId: string | null;
-  url: string;
-  title: string;
-  shopName: string;
-  shareNode: AxNode | null;
-}
-
-export interface SelectedSearchCard {
-  rank: number;
-  platformItemId: string | null;
-  url: string;
-  title: string;
-  shopName: string;
-  displayPriceMinText: string;
-  displayPriceMaxText: string;
-  sponsored: boolean;
-  actionNode: AxNode;
-  cardNode: AxNode;
-}
 
 function profileError(): never {
   throw new UiContractChangedError(PROFILE_ERROR);
@@ -43,22 +36,7 @@ function requiredText(node: AxNode | null): string {
   return text ?? profileError();
 }
 
-export function canonicalItemIdentity(rawUrl: string | null): { platformItemId: string | null; url: string } {
-  if (!rawUrl) return profileError();
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return profileError();
-  }
-  parsed.hash = "";
-  const candidate = parsed.searchParams.get("id")?.trim() ?? "";
-  const platformItemId = /^[A-Za-z0-9_-]+$/.test(candidate) ? candidate : null;
-  parsed.searchParams.sort();
-  return { platformItemId, url: parsed.toString() };
-}
-
-export function assertNoStopState(root: AxNode): void {
+function syntheticAssertNoStopState(root: AxNode): void {
   const login = findAxNode(root, (node) => node.identifier === "login-required-dialog"
     && node.role === "AXWindow" && node.subrole === "AXDialog");
   if (login) throw new LoginRequiredError("Taobao login is required.");
@@ -68,8 +46,12 @@ export function assertNoStopState(root: AxNode): void {
   if (challenge) throw new PlatformChallengeError("Taobao platform challenge requires manual handling.");
 }
 
-export function findSearchField(root: AxNode): AxNode {
-  assertNoStopState(root);
+export function assertNoStopState(root: AxNode): void {
+  syntheticAssertNoStopState(root);
+  liveAssertNoStopState(root);
+}
+
+function syntheticFindSearchField(root: AxNode): AxNode {
   const region = findAxNode(root, (node) => node.identifier === "search-region"
     && node.role === "AXGroup" && node.title === "商品搜索");
   if (!region) return profileError();
@@ -80,18 +62,36 @@ export function findSearchField(root: AxNode): AxNode {
   return fields[0] ?? profileError();
 }
 
-export function findSearchResultContainer(root: AxNode): AxNode {
+export function findSearchField(root: AxNode): AxNode {
   assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC" ? syntheticFindSearchField(root) : liveFindSearchField(root);
+}
+
+function syntheticFindSearchResultContainer(root: AxNode): AxNode {
   return findAxNode(root, (node) => node.identifier === "search-result-list"
     && node.role === "AXScrollArea" && node.title === "商品搜索结果") ?? profileError();
 }
 
-export function readSearchResultQuery(root: AxNode): string {
-  const container = findSearchResultContainer(root);
+export function findSearchResultContainer(root: AxNode): AxNode {
+  assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC"
+    ? syntheticFindSearchResultContainer(root)
+    : liveFindSearchResultContainer(root);
+}
+
+function syntheticReadSearchResultQuery(root: AxNode): string {
+  const container = syntheticFindSearchResultContainer(root);
   const markers = container.children.filter((node) => node.identifier === "search-result-query-marker"
     && node.role === "AXStaticText" && node.description === "结果查询");
   if (markers.length !== 1) return profileError();
   return requiredText(markers[0] ?? null);
+}
+
+export function readSearchResultQuery(root: AxNode): string {
+  assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC"
+    ? syntheticReadSearchResultQuery(root)
+    : liveReadSearchResultQuery(root);
 }
 
 function readPriceRange(card: AxNode): [string, string] {
@@ -103,8 +103,8 @@ function readPriceRange(card: AxNode): [string, string] {
   return [min, max];
 }
 
-export function readSearchCards(root: AxNode): SelectedSearchCard[] {
-  const container = findSearchResultContainer(root);
+function syntheticReadSearchCards(root: AxNode): SelectedSearchCard[] {
+  const container = syntheticFindSearchResultContainer(root);
   const cards = container.children.filter((node) => node.identifier === "result-card"
     && node.role === "AXGroup" && node.title === "商品结果");
   return cards.map((cardNode, index) => {
@@ -131,10 +131,22 @@ export function readSearchCards(root: AxNode): SelectedSearchCard[] {
   });
 }
 
-export function hasSearchEndMarker(root: AxNode): boolean {
-  const container = findSearchResultContainer(root);
+export function readSearchCards(root: AxNode): SelectedSearchCard[] {
+  assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC" ? syntheticReadSearchCards(root) : liveReadSearchCards(root);
+}
+
+function syntheticHasSearchEndMarker(root: AxNode): boolean {
+  const container = syntheticFindSearchResultContainer(root);
   return container.children.some((node) => node.identifier === "search-end-marker"
     && axNodeText(node) === "已到底");
+}
+
+export function hasSearchEndMarker(root: AxNode): boolean {
+  assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC"
+    ? syntheticHasSearchEndMarker(root)
+    : liveHasSearchEndMarker(root);
 }
 
 export function readDetailPage(root: AxNode): SelectedDetailPage {
