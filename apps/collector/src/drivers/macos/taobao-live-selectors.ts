@@ -9,11 +9,14 @@ import {
 } from "../../core/desktop-driver.ts";
 import { axNodeText, walkAxNodes, type AxNode } from "./ax-node.ts";
 import type { SearchAdvance, SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
-import { canonicalItemIdentity, parseLiveItemUrl } from "./taobao-url.ts";
+import { canonicalItemIdentity, isSupportedLiveItemUrl, parseLiveItemUrl } from "./taobao-url.ts";
 
 const PROFILE_ERROR = "Taobao Accessibility tree does not match the approved 2.4.5 build 15 profile";
 const LOGIN_TITLES = new Set(["请登录", "账号登录", "扫码登录"]);
 const CHALLENGE_TITLES = new Set(["安全验证", "滑块验证", "请完成验证"]);
+const ACCOUNT_MANAGEMENT_TITLES = new Set(["Account Settings", "账号管理"]);
+const SIGN_OUT_TITLES = new Set(["Sign out", "退出登录"]);
+const SWITCH_ACCOUNT_TITLES = new Set(["Switch account", "切换账号"]);
 const END_MARKERS = new Set(["没有更多了", "已到底", "已经到底了"]);
 const PRICE_PATTERN = /^\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?)(?:\s*[-–—至]\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?))?\s*$/;
 
@@ -43,6 +46,7 @@ function parseUrl(rawUrl: string | null): URL | null {
 function isSearchWebArea(node: AxNode): boolean {
   const parsed = parseUrl(node.url);
   return node.role === "AXWebArea"
+    && (parsed?.protocol === "http:" || parsed?.protocol === "https:")
     && parsed?.hostname.toLowerCase() === "s.taobao.com"
     && parsed.pathname === "/search";
 }
@@ -297,12 +301,25 @@ function isScopedState(node: AxNode): boolean {
 
 function hasStateUrl(node: AxNode, pattern: RegExp): boolean {
   const parsed = parseUrl(node.url);
-  return (parsed?.protocol === "http:" || parsed?.protocol === "https:")
+  return (parsed?.protocol === "http:" || parsed?.protocol === "https:" || parsed?.protocol === "file:")
     && pattern.test(`${parsed.hostname}${parsed.pathname}`);
 }
 
+function isConfirmedAccountManagementFrame(node: AxNode): boolean {
+  const parsed = parseUrl(node.url);
+  if (node.role !== "AXWebArea" || parsed?.protocol !== "file:"
+    || !/\/account-panel\/loginPop\//i.test(parsed.pathname)
+    || !ACCOUNT_MANAGEMENT_TITLES.has(node.title?.trim() ?? "")) return false;
+  const texts = new Set(walkAxNodes(node).flatMap((candidate) => {
+    const text = axNodeText(candidate);
+    return text ? [normalizeText(text)] : [];
+  }));
+  return [...SIGN_OUT_TITLES].some((title) => texts.has(title))
+    && [...SWITCH_ACCOUNT_TITLES].some((title) => texts.has(title));
+}
+
 export function liveAssertNoStopState(root: AxNode): void {
-  const scopes = walkAxNodes(root).filter(isScopedState);
+  const scopes = walkAxNodes(root).filter((node) => isScopedState(node) && !isConfirmedAccountManagementFrame(node));
   if (scopes.some((node) => hasStateUrl(node, /login/i) || LOGIN_TITLES.has(node.title?.trim() ?? ""))) {
     throw new LoginRequiredError("Taobao login is required.");
   }
@@ -345,6 +362,7 @@ export function liveReadSearchCards(root: AxNode): SelectedSearchCard[] {
   const seenScopes = new Map<string, { platformItemId: string | null; url: string }>();
   for (const { node: actionNode, ancestors } of scopedNodes(searchArea)) {
     if (actionNode.role !== "AXLink" || !actionNode.actions.includes("AXPress")) continue;
+    if (!isSupportedLiveItemUrl(actionNode.url)) continue;
     const scope = deepestCardScope(searchArea, ancestors);
     const scopePath = scope.cardNode.path.join(",");
     const item = parseLiveItemUrl(actionNode.url);

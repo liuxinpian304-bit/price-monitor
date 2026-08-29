@@ -33,6 +33,7 @@ function resolvePath(root: AxNode, path: number[]): AxNode {
 class LiveFakeClient implements TaobaoAxClient {
   readonly commands: CommandRecord[] = [];
   readonly snapshotQueue: AxNode[] = [];
+  readonly copiedTextQueue: string[] = [];
   copiedText: string | null = null;
   private activeRoot: AxNode | null = null;
 
@@ -61,8 +62,9 @@ class LiveFakeClient implements TaobaoAxClient {
     this.commands.push({ command, fields: structuredClone(fields) });
     if (["setValue", "perform", "captureCopiedText"].includes(command)) this.assertRawTarget(command, fields);
     if (command === "captureCopiedText") {
-      if (this.copiedText === null) throw new Error("Copied text was not explicitly configured for this test");
-      return { text: this.copiedText } as T;
+      const copiedText = this.copiedTextQueue.shift() ?? this.copiedText;
+      if (copiedText === null) throw new Error("Copied text was not explicitly configured for this test");
+      return { text: copiedText } as T;
     }
     return { performed: true } as T;
   }
@@ -162,6 +164,14 @@ function withoutDetailIdentity(root: AxNode): AxNode {
   const detailArea = walkAxNodes(clone).find((node) => node.role === "AXWebArea" && node.title === "商品详情");
   assert.ok(detailArea);
   detailArea.url = "https://detail.tmall.com/item.htm";
+  return clone;
+}
+
+function withSelectedSkuEvidence(root: AxNode, description: string, value: string): AxNode {
+  const clone = structuredClone(root);
+  const matches = walkAxNodes(clone).filter((node) => node.description === description);
+  assert.equal(matches.length, 1, `Expected one ${description} evidence node`);
+  matches[0]!.value = value;
   return clone;
 }
 
@@ -332,6 +342,20 @@ test("recovers an ID-less live detail through the exact raw copied-link action",
   });
 });
 
+test("rejects an unsupported copied link during ID-less live detail recovery", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const search = withoutFirstCardIdentity(await fixture("live-search-results.json"));
+  const detail = withoutDetailIdentity(await fixture("live-item-x1-default.json"));
+  client.copiedText = "custom://item.taobao.com/account?id=example-x1-a";
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search));
+  const result = await driver.search(QUERY, 1);
+  const position = result.positions[0] ?? assert.fail("Live search position is missing");
+  client.snapshotQueue.push(search, ...stable(detail));
+
+  await assert.rejects(driver.openSearchPosition(position), UiContractChangedError);
+});
+
 test("reconstructs a global duplicate rank instead of opening a sponsored same-ID overlap path", async () => {
   const client = new LiveFakeClient();
   const driver = liveDriver(client);
@@ -445,6 +469,116 @@ test("presses raw live SKU nodes, re-snapshots, and returns stable bundle eviden
   ]);
   assert.equal(client.snapshotQueue.length, 0);
 });
+
+test("rejects direct live item identity disappearance after a SKU action", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const detail = await fixture("live-item-x1-default.json");
+  const idlessBundle = withoutDetailIdentity(await fixture("live-item-x1-bundle.json"));
+  client.snapshotQueue.push(detail, idlessBundle, idlessBundle, idlessBundle, idlessBundle);
+
+  await assert.rejects(
+    driver.selectSku({ 套餐: "麦克风套装", 颜色: "黑色" }),
+    UiContractChangedError
+  );
+});
+
+test("requires fresh copied-link identity after ID-less live SKU actions", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const search = withoutFirstCardIdentity(await fixture("live-search-results.json"));
+  const detail = withoutDetailIdentity(await fixture("live-item-x1-default.json"));
+  const bundle = withoutDetailIdentity(await fixture("live-item-x1-bundle.json"));
+  const itemUrl = "https://detail.tmall.com/item.htm?id=example-x1-a";
+  client.copiedTextQueue.push(itemUrl, itemUrl);
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search));
+  const searchResult = await driver.search(QUERY, 1);
+  const position = searchResult.positions[0] ?? assert.fail("Live search position is missing");
+  client.snapshotQueue.push(search, ...stable(detail));
+  await driver.openSearchPosition(position);
+  client.snapshotQueue.push(detail, bundle, bundle, bundle, bundle);
+
+  const result = await driver.selectSku({ 套餐: "麦克风套装", 颜色: "黑色" });
+
+  assert.equal(result.availability, "AVAILABLE");
+  assert.equal(client.commands.filter(({ command }) => command === "captureCopiedText").length, 2);
+});
+
+test("rejects changed copied-link identity after ID-less live SKU actions", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const search = withoutFirstCardIdentity(await fixture("live-search-results.json"));
+  const detail = withoutDetailIdentity(await fixture("live-item-x1-default.json"));
+  const bundle = withoutDetailIdentity(await fixture("live-item-x1-bundle.json"));
+  client.copiedTextQueue.push(
+    "https://detail.tmall.com/item.htm?id=example-x1-a",
+    "https://detail.tmall.com/item.htm?id=example-x1-changed"
+  );
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search));
+  const searchResult = await driver.search(QUERY, 1);
+  const position = searchResult.positions[0] ?? assert.fail("Live search position is missing");
+  client.snapshotQueue.push(search, ...stable(detail));
+  await driver.openSearchPosition(position);
+  client.snapshotQueue.push(detail, bundle, bundle, bundle, bundle);
+
+  await assert.rejects(
+    driver.selectSku({ 套餐: "麦克风套装", 颜色: "黑色" }),
+    UiContractChangedError
+  );
+});
+
+const completeSkuStabilityCases = [
+  {
+    name: "stock",
+    description: "库存状态",
+    first: "有货",
+    second: "无货",
+    field: "stockState",
+    expected: "OUT_OF_STOCK"
+  },
+  {
+    name: "list price",
+    description: "原价",
+    first: "原价 799.00",
+    second: "原价 809.00",
+    field: "listPriceText",
+    expected: "809.00"
+  },
+  {
+    name: "estimated payable",
+    description: "预估到手价",
+    first: "预估到手价 679.00",
+    second: "预估到手价 689.00",
+    field: "officialEstimatedPayablePriceText",
+    expected: "689.00"
+  },
+  {
+    name: "mandatory fee",
+    description: "运费",
+    first: "包邮",
+    second: "10.00",
+    field: "mandatoryFeeText",
+    expected: "10.00"
+  }
+] as const;
+
+for (const evidenceCase of completeSkuStabilityCases) {
+  test(`requires three stable ${evidenceCase.name} observations`, async () => {
+    const client = new LiveFakeClient();
+    const driver = liveDriver(client);
+    const detail = await fixture("live-item-x1-default.json");
+    const first = withSelectedSkuEvidence(detail, evidenceCase.description, evidenceCase.first);
+    const second = withSelectedSkuEvidence(detail, evidenceCase.description, evidenceCase.second);
+    client.snapshotQueue.push(detail, detail, first, second, first, second, second, second);
+
+    const result = await driver.selectSku({ 套餐: "单机", 颜色: "银色" });
+
+    assert.equal(result.availability, "AVAILABLE");
+    if (result.availability !== "AVAILABLE") return;
+    assert.equal(result.view[evidenceCase.field], evidenceCase.expected);
+    assert.equal(client.snapshotQueue.length, 0);
+  });
+}
 
 test("returns through the unique exact-query raw tab and waits for the exact search signature", async () => {
   const client = new LiveFakeClient();
