@@ -171,7 +171,7 @@ function optionGroup(node: AxNode): AxNode | null {
 }
 
 function liveSkuDimensionParts(node: AxNode): LiveSkuDimensionParts | null {
-  if (node.role !== "AXGroup") return null;
+  if (node.role !== "AXGroup" || node.children.length !== 2) return null;
   const label = node.children[0];
   const group = node.children[1];
   const name = label ? axNodeText(label) : null;

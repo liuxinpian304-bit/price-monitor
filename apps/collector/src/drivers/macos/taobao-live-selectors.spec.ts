@@ -212,6 +212,13 @@ test("rejects a live SKU dimension with a second descendant option group", async
   assert.throws(() => readSkuDimensions(root), UiContractChangedError);
 });
 
+test("rejects a live SKU dimension with a third non-option child", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  const dimension = purchaseRegion(root).children[3] ?? assert.fail("package dimension is missing");
+  dimension.children.push(staticText([0, 0, 0, 3, 2], "仅作提示", "规格提示"));
+  assert.throws(() => readSkuDimensions(root), UiContractChangedError);
+});
+
 test("rejects a live SKU dimension with no selected option", async () => {
   const root = structuredClone(await fixture("live-item-x1-default.json"));
   skuOption(root, 0, 0).selected = false;
