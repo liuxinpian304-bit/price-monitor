@@ -112,6 +112,12 @@ test("rejects unrelated activity keyword copy when the semantic activity price i
   assert.throws(() => readSelectedSkuEvidence(root), UiContractChangedError);
 });
 
+test("rejects arbitrary one-number values behind an exact activity label", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  priceEvidence(root, "活动价").value = "新品编号 2026";
+  assert.throws(() => readSelectedSkuEvidence(root), UiContractChangedError);
+});
+
 test("ignores shipping-insurance copy when explicit shipping evidence is absent", async () => {
   const root = structuredClone(await fixture("live-item-x1-default.json"));
   removePriceEvidence(root, "运费");
@@ -119,10 +125,26 @@ test("ignores shipping-insurance copy when explicit shipping evidence is absent"
   assert.equal(readSelectedSkuEvidence(root).mandatoryFeeText, "0.00");
 });
 
+test("reads shipping evidence described as a delivery service", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  const shipping = priceEvidence(root, "运费");
+  shipping.value = "运费 12.50";
+  shipping.description = "配送服务";
+  assert.equal(readSelectedSkuEvidence(root).mandatoryFeeText, "12.50");
+});
+
 test("ignores generic promotion headings", async () => {
   const root = structuredClone(await fixture("live-item-x1-default.json"));
   appendPriceEvidence(root, "优惠信息", "优惠");
   assert.deepEqual(readSelectedSkuEvidence(root).promotionTexts, ["满500减20", "88VIP专享"]);
+});
+
+test("ignores generic audience-benefit headings", async () => {
+  for (const heading of ["88VIP", "88VIP权益", "会员权益"]) {
+    const root = structuredClone(await fixture("live-item-x1-default.json"));
+    appendPriceEvidence(root, heading, "优惠");
+    assert.deepEqual(readSelectedSkuEvidence(root).promotionTexts, ["满500减20", "88VIP专享"], heading);
+  }
 });
 
 test("reads an exact strikethrough subrole as live list-price evidence", async () => {
@@ -132,6 +154,15 @@ test("reads an exact strikethrough subrole as live list-price evidence", async (
   listPrice.description = "价格";
   listPrice.subrole = "AXStrikethrough";
   assert.equal(readSelectedSkuEvidence(root).listPriceText, "799.00");
+});
+
+test("ignores a strikethrough node whose text is not amount-only", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  const listPrice = priceEvidence(root, "原价");
+  listPrice.value = "优惠失效 88.00";
+  listPrice.description = "价格";
+  listPrice.subrole = "AXStrikethrough";
+  assert.equal(readSelectedSkuEvidence(root).listPriceText, "699.00");
 });
 
 test("ignores recommendation prices outside the live purchase region", async () => {

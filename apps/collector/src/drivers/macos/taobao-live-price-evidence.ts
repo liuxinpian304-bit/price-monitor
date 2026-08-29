@@ -19,9 +19,9 @@ const ESTIMATED_PAYABLE_LABELS = ["预估到手价", "预计到手价"];
 const SHIPPING_LABELS = ["运费"];
 const IN_STOCK_TEXTS = new Set(["有货", "现货", "库存充足"]);
 const OUT_OF_STOCK_TEXTS = new Set(["无货", "售罄", "缺货"]);
-const SERVICE_COPY = /(?:运费险|保险|赔付|服务)/;
+const SERVICE_COPY = /(?:运费险|保险|赔付)/;
 const CONCRETE_PROMOTION = /^(?:(?:店铺券|平台满减|优惠券)\s*)?满\s*\d+(?:\.\d{1,2})?\s*减\s*\d+(?:\.\d{1,2})?(?:\s*元)?$|^(?:(?:店铺|平台)?优惠券?\s*)?\d+(?:\.\d{1,2})?\s*元券$|^(?:(?:店铺|平台)?优惠\s*)?立减\s*\d+(?:\.\d{1,2})?\s*元$/;
-const CONCRETE_AUDIENCE_BENEFIT = /^(?:88\s*VIP(?:\s*(?:专享|权益|\d+(?:\.\d+)?折))?|(?:该)?(?:账号|账户)\s*专享(?:\s*\d+(?:\.\d{1,2})?\s*元券)?|会员\s*(?:专享|权益)|个人红包(?:\s*\d+(?:\.\d{1,2})?\s*元)?)$/i;
+const CONCRETE_AUDIENCE_BENEFIT = /^(?:88\s*VIP\s*(?:专享|\d+(?:\.\d+)?折)|(?:该)?(?:账号|账户)\s*专享(?:\s*\d+(?:\.\d{1,2})?\s*元券)?|会员\s*专享|个人红包(?:\s*\d+(?:\.\d{1,2})?\s*元)?)$/i;
 
 function normalizeText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
@@ -53,8 +53,13 @@ function hasAnchoredLabelAndAmount(evidence: LiveTextEvidence, labels: string[])
   ).test(evidence.text));
 }
 
+function isAmountOnly(text: string): boolean {
+  return /^[¥￥]?\s*\d+(?:\.\d{1,2})?\s*$/.test(text);
+}
+
 function isSemanticAmountEvidence(evidence: LiveTextEvidence, labels: string[]): boolean {
-  return hasExactLabel(evidence, labels) || hasAnchoredLabelAndAmount(evidence, labels);
+  return hasAnchoredLabelAndAmount(evidence, labels)
+    || (hasExactLabel(evidence, labels) && isAmountOnly(evidence.text));
 }
 
 function contractError(field: string): never {
@@ -138,7 +143,7 @@ export function readLiveSelectedSkuEvidence(root: AxNode): SelectedSkuEvidence {
   const listPriceFen = optionalAmount(
     texts,
     (evidence) => isSemanticAmountEvidence(evidence, LIST_PRICE_LABELS)
-      || evidence.subrole === "AXStrikethrough",
+      || (evidence.subrole === "AXStrikethrough" && isAmountOnly(evidence.text)),
     "list price"
   ) ?? activityPriceFen;
   const estimatedPayableFen = optionalAmount(
