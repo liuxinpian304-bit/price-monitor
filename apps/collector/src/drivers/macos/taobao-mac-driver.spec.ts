@@ -24,6 +24,10 @@ async function fixture(name: string): Promise<AxNode> {
   return JSON.parse(await readFile(url, "utf8")) as AxNode;
 }
 
+function stable(root: AxNode): AxNode[] {
+  return [root, root, root];
+}
+
 interface CommandRecord {
   command: AxHelperCommandName;
   fields: AxHelperCommandFields;
@@ -327,6 +331,79 @@ test("resolves a host-only detail URL through restored copied-link capture", asy
   const page = await driver.openSearchPosition(hostOnlyPosition());
   assert.equal(page.platformItemId, "example-7506");
   assert.equal(client.commands.some((entry) => entry.command === "captureCopiedText"), true);
+});
+
+test("returns from an ID-less detail after fresh copied-link evidence confirms the recovered item", async () => {
+  const client = new FakeClient();
+  const search = await fixture("search-results.json");
+  const detail = await fixture("item-7506-default.json");
+  detail.children[0]!.url = "https://item.example.test/";
+  client.snapshotQueue.push(search, ...stable(detail), detail, ...stable(search));
+  const driver = new TaobaoMacDriver({ client, capturedAt: () => "2026-08-24T00:00:00.000Z" });
+
+  await driver.openSearchPosition(hostOnlyPosition());
+  await driver.returnToSearch();
+
+  assert.deepEqual(client.commands.filter(({ command }) => command === "captureCopiedText"), [
+    {
+      command: "captureCopiedText",
+      fields: {
+        nodePath: [0, 1, 2],
+        action: "AXPress",
+        fingerprint: { role: "AXButton", title: "复制链接", identifier: "copy-item-link" }
+      }
+    },
+    {
+      command: "captureCopiedText",
+      fields: {
+        nodePath: [0, 1, 2],
+        action: "AXPress",
+        fingerprint: { role: "AXButton", title: "复制链接", identifier: "copy-item-link" }
+      }
+    }
+  ]);
+  assert.deepEqual(client.commands.at(-1), {
+    command: "perform",
+    fields: {
+      nodePath: [0, 0],
+      action: "AXPress",
+      fingerprint: { role: "AXButton", title: "返回", identifier: "navigation-back" }
+    }
+  });
+});
+
+test("rejects mismatched fresh copied-link evidence before returning from an ID-less detail", async () => {
+  const client = new FakeClient();
+  const search = await fixture("search-results.json");
+  const detail = await fixture("item-7506-default.json");
+  detail.children[0]!.url = "https://item.example.test/";
+  client.snapshotQueue.push(search, ...stable(detail), detail);
+  const driver = new TaobaoMacDriver({ client, capturedAt: () => "2026-08-24T00:00:00.000Z" });
+
+  await driver.openSearchPosition(hostOnlyPosition());
+  const performsBeforeReturn = client.commands.filter(({ command }) => command === "perform").length;
+  client.copiedText = "https://item.example.test/item.htm?id=example-mismatch";
+  await assert.rejects(driver.returnToSearch(), UiContractChangedError);
+
+  assert.equal(client.commands.filter(({ command }) => command === "captureCopiedText").length, 2);
+  assert.equal(client.commands.filter(({ command }) => command === "perform").length, performsBeforeReturn);
+});
+
+test("rejects stale copied-link evidence without an item ID before returning from an ID-less detail", async () => {
+  const client = new FakeClient();
+  const search = await fixture("search-results.json");
+  const detail = await fixture("item-7506-default.json");
+  detail.children[0]!.url = "https://item.example.test/";
+  client.snapshotQueue.push(search, ...stable(detail), detail);
+  const driver = new TaobaoMacDriver({ client, capturedAt: () => "2026-08-24T00:00:00.000Z" });
+
+  await driver.openSearchPosition(hostOnlyPosition());
+  const performsBeforeReturn = client.commands.filter(({ command }) => command === "perform").length;
+  client.copiedText = "https://item.example.test/";
+  await assert.rejects(driver.returnToSearch(), UiContractChangedError);
+
+  assert.equal(client.commands.filter(({ command }) => command === "captureCopiedText").length, 2);
+  assert.equal(client.commands.filter(({ command }) => command === "perform").length, performsBeforeReturn);
 });
 
 test("emits MISSING_ITEM_ID when neither AXURL nor copied link has stable identity", async () => {

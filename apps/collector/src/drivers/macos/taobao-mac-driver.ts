@@ -35,6 +35,7 @@ import {
   readSearchResultQuery,
   readSelectedLabels,
   readSkuDimensions,
+  type SelectedDetailPage,
   type SelectedSearchCard
 } from "./taobao-selectors.ts";
 
@@ -233,6 +234,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
   private currentSearchTopContextSignature: string | null = null;
   private currentSearchContextSignature: string | null = null;
   private currentItemId: string | null = null;
+  private currentItemIdentityRecoveredFromCopiedLink = false;
 
   constructor(options: TaobaoMacDriverOptions = {}) {
     this.client = options.client ?? new AxHelperClient();
@@ -387,21 +389,20 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
 
     const detailRoot = await this.waitForStableDetail();
     let detail = readDetailPage(detailRoot);
-    if (!detail.platformItemId && detail.shareNode) {
-      const copied = await this.client.command<{ text?: unknown }>("captureCopiedText", {
-        nodePath: detail.shareNode.path,
-        action: "AXPress",
-        fingerprint: fingerprintFor(detail.shareNode)
-      });
-      const copiedText = typeof copied?.text === "string" ? copied.text : null;
-      const identity = canonicalItemIdentity(copiedText);
-      if (identity.platformItemId) detail = { ...detail, ...identity };
+    let recoveredFromCopiedLink = false;
+    if (!detail.platformItemId) {
+      const identity = await this.captureCopiedItemIdentity(detail);
+      if (identity?.platformItemId) {
+        detail = { ...detail, ...identity };
+        recoveredFromCopiedLink = true;
+      }
     }
     if (!detail.platformItemId) throw new MissingItemIdError();
     if (position.platformItemId !== null && detail.platformItemId !== position.platformItemId) {
       throw new UiContractChangedError("Taobao detail item identity changed after opening the result.");
     }
     this.currentItemId = detail.platformItemId;
+    this.currentItemIdentityRecoveredFromCopiedLink = recoveredFromCopiedLink;
     const capturedAt = this.capturedAt();
     return {
       platformItemId: detail.platformItemId,
@@ -483,11 +484,16 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     await this.ensureSupported();
     if (!this.currentSearchQuery) {
       this.currentItemId = null;
+      this.currentItemIdentityRecoveredFromCopiedLink = false;
       return;
     }
     const detail = await this.client.snapshot();
     assertNoStopState(detail);
-    const detailItemId = readDetailPage(detail).platformItemId;
+    const detailPage = readDetailPage(detail);
+    let detailItemId = detailPage.platformItemId;
+    if (!detailItemId && this.currentItemIdentityRecoveredFromCopiedLink) {
+      detailItemId = (await this.captureCopiedItemIdentity(detailPage))?.platformItemId ?? null;
+    }
     if (!this.currentItemId || detailItemId !== this.currentItemId) {
       throw new UiContractChangedError("Taobao detail item identity changed before returning to search.");
     }
@@ -502,6 +508,20 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     }
     await this.waitForStableSearchReturn(this.currentSearchQuery, this.currentSearchContextSignature);
     this.currentItemId = null;
+    this.currentItemIdentityRecoveredFromCopiedLink = false;
+  }
+
+  private async captureCopiedItemIdentity(
+    detail: SelectedDetailPage
+  ): Promise<{ platformItemId: string | null; url: string } | null> {
+    if (!detail.shareNode) return null;
+    const copied = await this.client.command<{ text?: unknown }>("captureCopiedText", {
+      nodePath: detail.shareNode.path,
+      action: "AXPress",
+      fingerprint: fingerprintFor(detail.shareNode)
+    });
+    const copiedText = typeof copied?.text === "string" ? copied.text : null;
+    return canonicalItemIdentity(copiedText);
   }
 
   private async ensureSupported(): Promise<AxHelperDiagnosticPayload> {
@@ -521,7 +541,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
   private async waitForStableSearch(
     query: string,
     preActionSignature: string | null,
-    allowUnparsableTransition = false
+    allowLatchedTransition = false
   ): Promise<AxNode> {
     const deadline = this.now() + STABILITY_TIMEOUT_MS;
     let previous = "";
@@ -533,10 +553,10 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
       try {
         const field = findSearchField(root);
         const context = readSearchContext(root);
-        if (preActionSignature === null || context.signature !== preActionSignature) {
-          sawTransition = true;
-        }
+        const signatureChanged = preActionSignature === null || context.signature !== preActionSignature;
+        if (signatureChanged) sawTransition = true;
         const matchesFinalState = sawTransition
+          && (allowLatchedTransition || signatureChanged)
           && field.value === query
           && context.query === query;
         consecutive = matchesFinalState && context.signature === previous
@@ -546,7 +566,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
         if (consecutive === STABLE_OBSERVATION_COUNT) return root;
       } catch (error) {
         if (!(error instanceof UiContractChangedError)) throw error;
-        if (allowUnparsableTransition) sawTransition = true;
+        if (allowLatchedTransition) sawTransition = true;
         previous = "";
         consecutive = 0;
       }
