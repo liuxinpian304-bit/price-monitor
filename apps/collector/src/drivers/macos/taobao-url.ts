@@ -36,6 +36,24 @@ function stableItemId(parsed: URL, required: boolean): string | null {
   return distinct[0] ?? null;
 }
 
+function liveItemUrlKind(parsed: URL): "DIRECT" | "SPONSORED" | null {
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  const host = parsed.hostname.toLowerCase();
+  if ((host === "detail.tmall.com" || host === "item.taobao.com") && parsed.pathname === "/item.htm") {
+    return "DIRECT";
+  }
+  return host.endsWith(".simba.taobao.com") && parsed.pathname === "/auction" ? "SPONSORED" : null;
+}
+
+export function isSupportedLiveItemUrl(rawUrl: string | null): boolean {
+  if (!rawUrl) return false;
+  try {
+    return liveItemUrlKind(new URL(rawUrl)) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export function canonicalItemIdentity(rawUrl: string | null): { platformItemId: string | null; url: string } {
   const parsed = parseUrl(rawUrl);
   parsed.hash = "";
@@ -47,13 +65,18 @@ export function canonicalItemIdentity(rawUrl: string | null): { platformItemId: 
 
 export function parseLiveItemUrl(rawUrl: string | null): ParsedLiveItemUrl {
   const parsed = parseUrl(rawUrl);
-  const host = parsed.hostname.toLowerCase();
-  const direct = host === "detail.tmall.com" || host === "item.taobao.com";
-  const sponsored = host.endsWith(".simba.taobao.com");
-  if (!direct && !sponsored) return profileError();
+  const kind = liveItemUrlKind(parsed);
+  if (kind === null) return profileError();
+  const sponsored = kind === "SPONSORED";
   return {
     platformItemId: stableItemId(parsed, sponsored),
     url: canonicalUrl(parsed),
     sponsored
   };
+}
+
+export function parseLiveDirectItemUrl(rawUrl: string | null): Omit<ParsedLiveItemUrl, "sponsored"> {
+  const parsed = parseLiveItemUrl(rawUrl);
+  if (parsed.sponsored) return profileError();
+  return { platformItemId: parsed.platformItemId, url: parsed.url };
 }

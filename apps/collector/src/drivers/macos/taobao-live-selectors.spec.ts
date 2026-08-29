@@ -20,6 +20,7 @@ import {
   readSelectedLabels,
   readSkuDimensions
 } from "./taobao-selectors.ts";
+import { parseLiveItemUrl } from "./taobao-url.ts";
 
 async function fixture(name: string): Promise<AxNode> {
   const url = new URL(`../../../test/fixtures/ax/${name}`, import.meta.url);
@@ -130,6 +131,17 @@ test("ignores a fictional internal account-management loginPop frame", () => {
   assert.doesNotThrow(() => assertNoStopState(root));
 });
 
+test("does not exempt a loginPop frame without confirmed account-management controls", () => {
+  const root = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    title: "Account Settings",
+    url: "file:///fictional/client/account-panel/loginPop/index.html",
+    children: [axNode([1, 0], { role: "AXStaticText", value: "Account profile" })]
+  }));
+
+  assert.throws(() => assertNoStopState(root), LoginRequiredError);
+});
+
 const stopStateCases: Array<{
   name: string;
   scope: StopStateScope;
@@ -177,6 +189,20 @@ const stopStateCases: Array<{
     scope: "WEB_AREA",
     title: null,
     url: "https://portal.example.test/punish",
+    expected: "CHALLENGE"
+  },
+  {
+    name: "stops for a title-less app-bundled file login URL",
+    scope: "WEB_AREA",
+    title: null,
+    url: "file:///Applications/FictionalTaobao.app/Contents/Resources/login/index.html",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for a title-less app-bundled file challenge URL",
+    scope: "WEB_AREA",
+    title: null,
+    url: "file:///Applications/FictionalTaobao.app/Contents/Resources/security/challenge.html",
     expected: "CHALLENGE"
   },
   {
@@ -270,6 +296,36 @@ test("preserves displayed duplicates and raw live action nodes", async () => {
   assert.notDeepEqual(cards[0]?.actionNode.path, cards[1]?.actionNode.path);
 });
 
+test("ignores a pressable shop link inside a live product card", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  firstCardScope(root).children.push(axNode([0, 0, 1, 0, 0, 4], {
+    role: "AXLink",
+    title: "Example Audio A",
+    url: "https://shop.taobao.com/shop/view_shop.htm?user_number_id=fictional-a",
+    enabled: true,
+    actions: ["AXPress"]
+  }));
+
+  const cards = readSearchCards(root);
+
+  assert.deepEqual(cards.map((card) => card.platformItemId), ["example-x1-a", "example-x1-a"]);
+});
+
+test("ignores a pressable page navigation link outside live product cards", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  searchArea(root).children.push(axNode([0, 0, 2], {
+    role: "AXLink",
+    title: "Next results page",
+    url: "https://s.taobao.com/search?page=2",
+    enabled: true,
+    actions: ["AXPress"]
+  }));
+
+  const cards = readSearchCards(root);
+
+  assert.deepEqual(cards.map((card) => card.platformItemId), ["example-x1-a", "example-x1-a"]);
+});
+
 test("keeps sponsored positions and recognizes a verified live end", async () => {
   const root = await fixture("live-search-results-next.json");
   const cards = readSearchCards(root);
@@ -305,6 +361,28 @@ test("rejects conflicting product URLs within one live card scope", async () => 
   const root = structuredClone(await fixture("live-search-results.json"));
   firstCardScope(root).children[1]!.url = "https://detail.tmall.com/item.htm?id=example-x1-c";
   assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
+test("rejects non-web and non-item live product URLs", () => {
+  for (const url of [
+    "ftp://detail.tmall.com/item.htm?id=example-x1-a",
+    "custom://item.taobao.com/account?id=example-x1-a",
+    "https://detail.tmall.com/account?id=example-x1-a",
+    "https://click.simba.taobao.com/account?id=example-x1-a"
+  ]) {
+    assert.throws(() => parseLiveItemUrl(url), UiContractChangedError, url);
+  }
+});
+
+test("requires an HTTP(S) Taobao search URL at the exact search path", async () => {
+  for (const url of [
+    "custom://s.taobao.com/search?q=Example%20Interface%20X1",
+    "https://s.taobao.com/account?q=Example%20Interface%20X1"
+  ]) {
+    const root = structuredClone(await fixture("live-search-results.json"));
+    searchArea(root).url = url;
+    assert.throws(() => findSearchResultContainer(root), UiContractChangedError, url);
+  }
 });
 
 test("rejects a live search query that disagrees with its URL", async () => {

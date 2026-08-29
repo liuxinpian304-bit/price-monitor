@@ -22,6 +22,8 @@ import {
 } from "./ax-helper-client.ts";
 import { fingerprintFor, type AxJsonValue, type AxNode } from "./ax-node.ts";
 import { readSelectedSkuEvidence } from "./taobao-price-evidence.ts";
+import { taobaoSelectorProfile } from "./taobao-selector-profile.ts";
+import { parseLiveDirectItemUrl } from "./taobao-url.ts";
 import {
   assertNoStopState,
   canonicalItemIdentity,
@@ -391,7 +393,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     let detail = readDetailPage(detailRoot);
     let recoveredFromCopiedLink = false;
     if (!detail.platformItemId) {
-      const identity = await this.captureCopiedItemIdentity(detail);
+      const identity = await this.captureCopiedItemIdentity(detail, detailRoot);
       if (identity?.platformItemId) {
         detail = { ...detail, ...identity };
         recoveredFromCopiedLink = true;
@@ -442,6 +444,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     }
 
     const stable = await this.waitForStableSku(root);
+    await this.confirmCurrentItemIdentity(stable);
     const selectedLabels = readSelectedLabels(stable);
     const evidence = readSelectedSkuEvidence(stable);
 
@@ -492,7 +495,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     const detailPage = readDetailPage(detail);
     let detailItemId = detailPage.platformItemId;
     if (!detailItemId && this.currentItemIdentityRecoveredFromCopiedLink) {
-      detailItemId = (await this.captureCopiedItemIdentity(detailPage))?.platformItemId ?? null;
+      detailItemId = (await this.captureCopiedItemIdentity(detailPage, detail))?.platformItemId ?? null;
     }
     if (!this.currentItemId || detailItemId !== this.currentItemId) {
       throw new UiContractChangedError("Taobao detail item identity changed before returning to search.");
@@ -512,7 +515,8 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
   }
 
   private async captureCopiedItemIdentity(
-    detail: SelectedDetailPage
+    detail: SelectedDetailPage,
+    root: AxNode
   ): Promise<{ platformItemId: string | null; url: string } | null> {
     if (!detail.shareNode) return null;
     const copied = await this.client.command<{ text?: unknown }>("captureCopiedText", {
@@ -521,7 +525,9 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
       fingerprint: fingerprintFor(detail.shareNode)
     });
     const copiedText = typeof copied?.text === "string" ? copied.text : null;
-    return canonicalItemIdentity(copiedText);
+    return taobaoSelectorProfile(root) === "LIVE"
+      ? parseLiveDirectItemUrl(copiedText)
+      : canonicalItemIdentity(copiedText);
   }
 
   private async ensureSupported(): Promise<AxHelperDiagnosticPayload> {
@@ -692,7 +698,14 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
       const current = JSON.stringify([
         selectionKey(selectedLabels),
         detail.platformItemId ?? this.currentItemId,
+        evidence.listPriceText,
+        evidence.listPriceFen,
         evidence.activityPriceText,
+        evidence.activityPriceFen,
+        evidence.officialEstimatedPayablePriceText,
+        evidence.mandatoryFeeText,
+        evidence.stockState,
+        evidence.promotions,
         evidence.promotionTexts
       ]);
       consecutive = current === previous ? consecutive + 1 : 1;
@@ -709,7 +722,21 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
       if (!observedItemId) throw new MissingItemIdError();
       this.currentItemId = observedItemId;
     }
-    if (observedItemId && observedItemId !== this.currentItemId) {
+    if (observedItemId === null && !this.currentItemIdentityRecoveredFromCopiedLink) {
+      throw new UiContractChangedError("Taobao selected-SKU item identity disappeared.");
+    }
+    if (observedItemId !== null && observedItemId !== this.currentItemId) {
+      throw new UiContractChangedError("Taobao selected-SKU item identity changed.");
+    }
+  }
+
+  private async confirmCurrentItemIdentity(root: AxNode): Promise<void> {
+    const detail = readDetailPage(root);
+    let observedItemId = detail.platformItemId;
+    if (observedItemId === null && this.currentItemIdentityRecoveredFromCopiedLink) {
+      observedItemId = (await this.captureCopiedItemIdentity(detail, root))?.platformItemId ?? null;
+    }
+    if (!this.currentItemId || observedItemId !== this.currentItemId) {
       throw new UiContractChangedError("Taobao selected-SKU item identity changed.");
     }
   }
