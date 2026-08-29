@@ -127,6 +127,50 @@ test("accepts equivalent explicit core quantities and ignores implicit alias cou
   }
 });
 
+test("reconciles package-token and quantity-dimension core evidence", () => {
+  for (const {
+    name,
+    selectedLabels,
+    expectedQuantity,
+    expectedUnknown
+  } of [
+    {
+      name: "conflicting quantities",
+      selectedLabels: { "套餐类型": "单机2件", "麦克风数量": "3只" },
+      expectedQuantity: 2,
+      expectedUnknown: true
+    },
+    {
+      name: "equivalent quantities",
+      selectedLabels: { "套餐类型": "单机2件", "麦克风数量": "2只" },
+      expectedQuantity: 2,
+      expectedUnknown: false
+    },
+    {
+      name: "conflicting quantities in reverse field order",
+      selectedLabels: { "麦克风数量": "3只", "套餐类型": "单机2件" },
+      expectedQuantity: 2,
+      expectedUnknown: true
+    },
+    {
+      name: "explicit package quantity one conflicts with quantity dimension",
+      selectedLabels: { "套餐类型": "单机1件", "麦克风数量": "2只" },
+      expectedQuantity: 1,
+      expectedUnknown: true
+    }
+  ] as const) {
+    const result = deriveSkuComponents({
+      brand: "RODE",
+      standardModel: "NT1S",
+      selectedLabels,
+      explicitComponents: undefined
+    });
+
+    assert.equal(result.find((item) => item.role === "CORE")?.quantity, expectedQuantity, name);
+    assert.equal(result.some((item) => item.role === "UNKNOWN"), expectedUnknown, name);
+  }
+});
+
 test("attributes package quantity to the identified paid accessory", () => {
   const single = deriveSkuComponents({
     brand: "RODE",
