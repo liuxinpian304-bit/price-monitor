@@ -99,8 +99,20 @@ test("rejects two distinct shop labels in one live card", async () => {
   assert.throws(() => readSearchCards(root), UiContractChangedError);
 });
 
+test("rejects conflicting product URLs within one live card scope", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  firstCardScope(root).children[1]!.url = "https://detail.tmall.com/item.htm?id=example-x1-c";
+  assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
 test("rejects a live search query that disagrees with its URL", async () => {
   const root = structuredClone(await fixture("live-search-results.json"));
   searchArea(root).url = "https://s.taobao.com/search?q=Different%20Query";
+  assert.throws(() => readSearchResultQuery(root), UiContractChangedError);
+});
+
+test("rejects conflicting repeated q parameters in a live search URL", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  searchArea(root).url = "https://s.taobao.com/search?q=Example%20Interface%20X1&q=Different%20Query";
   assert.throws(() => readSearchResultQuery(root), UiContractChangedError);
 });
