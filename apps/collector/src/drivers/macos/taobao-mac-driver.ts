@@ -230,6 +230,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
   private readonly workDir: string | undefined;
   private diagnostic: AxHelperDiagnosticPayload | null = null;
   private currentSearchQuery: string | null = null;
+  private currentSearchTopContextSignature: string | null = null;
   private currentSearchContextSignature: string | null = null;
   private currentItemId: string | null = null;
 
@@ -311,7 +312,8 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     });
     await this.client.command("keyPress", { keyCode: 36 });
 
-    const firstResult = await this.waitForStableSearch(query, preSubmitSignature);
+    const firstResult = await this.waitForStableSearch(query, preSubmitSignature, true);
+    const topContextSignature = readSearchContext(firstResult).signature;
     let viewportCards = readSearchCards(firstResult);
     const cards = [...viewportCards];
     let root = firstResult;
@@ -334,6 +336,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     }
 
     this.currentSearchQuery = query;
+    this.currentSearchTopContextSignature = topContextSignature;
     this.currentSearchContextSignature = readSearchContext(root).signature;
     const capturedAt = this.capturedAt();
     const positions = cards.slice(0, limit).map((card, index) => ({
@@ -484,6 +487,10 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     }
     const detail = await this.client.snapshot();
     assertNoStopState(detail);
+    const detailItemId = readDetailPage(detail).platformItemId;
+    if (!this.currentItemId || detailItemId !== this.currentItemId) {
+      throw new UiContractChangedError("Taobao detail item identity changed before returning to search.");
+    }
     const back = findBackAction(detail, this.currentSearchQuery);
     await this.client.command("perform", {
       nodePath: back.path,
@@ -511,7 +518,11 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     return diagnostic;
   }
 
-  private async waitForStableSearch(query: string, preActionSignature: string | null): Promise<AxNode> {
+  private async waitForStableSearch(
+    query: string,
+    preActionSignature: string | null,
+    allowUnparsableTransition = false
+  ): Promise<AxNode> {
     const deadline = this.now() + STABILITY_TIMEOUT_MS;
     let previous = "";
     let consecutive = 0;
@@ -535,7 +546,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
         if (consecutive === STABLE_OBSERVATION_COUNT) return root;
       } catch (error) {
         if (!(error instanceof UiContractChangedError)) throw error;
-        sawTransition = true;
+        if (allowUnparsableTransition) sawTransition = true;
         previous = "";
         consecutive = 0;
       }
@@ -548,51 +559,67 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
 
   private tryLocateVisibleCard(root: AxNode, position: DriverSearchPosition): SelectedSearchCard | null {
     const cards = readSearchCards(root);
-    const sameIdentity = (card: SelectedSearchCard) => this.cardMatchesPosition(card, position);
-    const candidates = cards.filter(sameIdentity);
-    const priorDuplicateCount = Math.max(0, position.rank - 1);
-    const sameBefore = cards.slice(0, priorDuplicateCount).filter(sameIdentity).length;
-    return candidates[sameBefore] ?? candidates[0] ?? null;
+    const candidate = cards[position.rank - 1];
+    return candidate && this.cardMatchesPosition(candidate, position) ? candidate : null;
   }
 
   private async locateCard(
     root: AxNode,
     position: DriverSearchPosition
   ): Promise<{ card: SelectedSearchCard; root: AxNode }> {
-    const visible = this.tryLocateVisibleCard(root, position);
-    if (visible) return { card: visible, root };
-    if (!this.currentSearchQuery) {
+    if (!this.currentSearchQuery || !this.currentSearchTopContextSignature) {
+      const visible = this.tryLocateVisibleCard(root, position);
+      if (visible) return { card: visible, root };
       throw new UiContractChangedError("Taobao search result position is no longer visible.");
     }
 
-    const beforeHome = readSearchContext(root).signature;
-    await this.client.command("keyPress", { keyCode: 115 });
-    let current = await this.waitForStableSearch(this.currentSearchQuery, beforeHome);
+    const initialContext = readSearchContext(root);
+    if (initialContext.query !== this.currentSearchQuery) {
+      throw new UiContractChangedError("Taobao search query changed before locating the result.");
+    }
+    let current = root;
+    if (initialContext.signature !== this.currentSearchTopContextSignature) {
+      await this.client.command("keyPress", { keyCode: 115 });
+      current = await this.waitForStableSearchReturn(
+        this.currentSearchQuery,
+        this.currentSearchTopContextSignature
+      );
+    }
     let aggregate: SelectedSearchCard[] = [];
     let previousViewport: SelectedSearchCard[] = [];
-    for (let scrollCount = 0; scrollCount <= 50; scrollCount += 1) {
+    let advanceCount = 0;
+    while (true) {
       const next = readSearchCards(current);
       aggregate = mergeSearchCardViewports(aggregate, next, previousViewport);
       previousViewport = next;
       const target = aggregate[position.rank - 1];
       if (target) {
-        const candidate = next.find((card) => strictCardKey(card) === strictCardKey(target));
-        if (candidate && this.cardMatchesPosition(candidate, position)) {
-          return { card: candidate, root: current };
+        if (!this.cardMatchesPosition(target, position)) {
+          throw new UiContractChangedError("Taobao ranked search result evidence changed.");
         }
+        const candidate = next.find((card) => strictCardKey(card) === strictCardKey(target));
+        if (!candidate) {
+          throw new UiContractChangedError("Taobao ranked search result occurrence is no longer actionable.");
+        }
+        return { card: candidate, root: current };
       }
-      if (hasSearchEndMarker(current)) break;
+      if (hasSearchEndMarker(current) || advanceCount === 50) break;
       const beforeScroll = readSearchContext(current).signature;
       await this.advanceSearch(current);
+      advanceCount += 1;
       current = await this.waitForStableSearch(this.currentSearchQuery, beforeScroll);
     }
     throw new UiContractChangedError("Taobao search result position is no longer visible.");
   }
 
   private cardMatchesPosition(card: SelectedSearchCard, position: DriverSearchPosition): boolean {
-    return position.platformItemId !== null
-      ? card.platformItemId === position.platformItemId
-      : card.url === position.url && card.title === position.title && card.shopName === position.shopName;
+    return card.platformItemId === position.platformItemId
+      && card.url === position.url
+      && card.title === position.title
+      && card.shopName === position.shopName
+      && card.displayPriceMinText === position.displayPriceMinText
+      && card.displayPriceMaxText === position.displayPriceMaxText
+      && card.sponsored === position.sponsored;
   }
 
   private async advanceSearch(root: AxNode): Promise<void> {
@@ -667,7 +694,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     }
   }
 
-  private async waitForStableSearchReturn(query: string, expectedSignature: string): Promise<void> {
+  private async waitForStableSearchReturn(query: string, expectedSignature: string): Promise<AxNode> {
     const deadline = this.now() + STABILITY_TIMEOUT_MS;
     let consecutive = 0;
     while (true) {
@@ -680,7 +707,7 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
           && context.query === query
           && context.signature === expectedSignature;
         consecutive = matches ? consecutive + 1 : 0;
-        if (consecutive === STABLE_OBSERVATION_COUNT) return;
+        if (consecutive === STABLE_OBSERVATION_COUNT) return root;
       } catch (error) {
         if (!(error instanceof UiContractChangedError)) throw error;
         consecutive = 0;

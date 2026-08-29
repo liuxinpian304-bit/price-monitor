@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { isDeepStrictEqual } from "node:util";
 
-import { UiContractChangedError } from "../../core/desktop-driver.ts";
+import { UiContractChangedError, type DriverSearchPosition } from "../../core/desktop-driver.ts";
 import type { AxHelperCommandFields, AxHelperCommandName, AxHelperDiagnosticPayload } from "./ax-helper-client.ts";
-import { walkAxNodes, type AxJsonValue, type AxNode } from "./ax-node.ts";
+import { fingerprintFor, walkAxNodes, type AxJsonValue, type AxNode } from "./ax-node.ts";
 import { TaobaoMacDriver, type TaobaoAxClient } from "./taobao-mac-driver.ts";
 
 const QUERY = "Example Interface X1";
@@ -71,10 +72,7 @@ class LiveFakeClient implements TaobaoAxClient {
       throw new UiContractChangedError("Fake helper requires a current raw accessibility target.");
     }
     const node = resolvePath(this.activeRoot, fields.nodePath);
-    const fingerprint = fields.fingerprint;
-    if ((fingerprint?.role !== undefined && fingerprint.role !== node.role)
-      || (fingerprint?.title !== undefined && fingerprint.title !== node.title)
-      || (fingerprint?.identifier !== undefined && fingerprint.identifier !== node.identifier)) {
+    if (!isDeepStrictEqual(fields.fingerprint, fingerprintFor(node))) {
       throw new UiContractChangedError("Fake helper rejected a changed accessibility fingerprint.");
     }
     if ((command === "perform" || command === "captureCopiedText")
@@ -96,6 +94,59 @@ function withSearchQuery(root: AxNode, query: string): AxNode {
   assert.ok(searchField);
   searchArea.url = `https://s.taobao.com/search?q=${encodeURIComponent(query)}`;
   searchField.value = query;
+  return clone;
+}
+
+function searchResultRegion(root: AxNode): AxNode {
+  return walkAxNodes(root).find((node) => node.description === "搜索结果")
+    ?? assert.fail("Live search result region is missing");
+}
+
+function searchPageVariant(root: AxNode, page: number): AxNode {
+  const clone = structuredClone(root);
+  const region = searchResultRegion(clone);
+  region.children.forEach((card, cardIndex) => {
+    const itemId = `page-${page}-${cardIndex}`;
+    for (const node of walkAxNodes(card)) {
+      if (node.role === "AXLink") {
+        node.title = `${QUERY} ${itemId}`;
+        node.url = `https://detail.tmall.com/item.htm?id=${itemId}`;
+      }
+      if (node.description === "店铺") node.value = `Example Audio ${itemId}`;
+      if (node.description === "价格") node.value = `${700 + page}.${String(cardIndex).padStart(2, "0")}`;
+    }
+  });
+  return clone;
+}
+
+function sponsoredFirstCard(root: AxNode): AxNode {
+  const clone = structuredClone(root);
+  const firstCard = searchResultRegion(clone).children[0] ?? assert.fail("First live search card is missing");
+  for (const link of walkAxNodes(firstCard).filter((node) => node.role === "AXLink")) {
+    link.url = "https://click.simba.taobao.com/auction?tracking=overlap-probe&id=example-x1-a";
+  }
+  return clone;
+}
+
+function unreachablePosition(base: DriverSearchPosition, rank: number): DriverSearchPosition {
+  return {
+    ...base,
+    rank,
+    platformItemId: "example-x1-unreachable",
+    url: "https://detail.tmall.com/item.htm?id=example-x1-unreachable",
+    title: "Example Interface X1 Unreachable",
+    shopName: "Example Audio Unreachable",
+    displayPriceMinText: "999.00",
+    displayPriceMaxText: "999.00",
+    sponsored: false
+  };
+}
+
+function withoutDetailIdentity(root: AxNode): AxNode {
+  const clone = structuredClone(root);
+  const detailArea = walkAxNodes(clone).find((node) => node.role === "AXWebArea" && node.title === "商品详情");
+  assert.ok(detailArea);
+  detailArea.url = "https://detail.tmall.com/item.htm";
   return clone;
 }
 
@@ -174,6 +225,14 @@ test("pages a live search with Page Down and preserves duplicate and sponsored r
     ["keyPress", 36],
     ["keyPress", 121]
   ]);
+  assert.deepEqual(client.commands[0], {
+    command: "setValue",
+    fields: {
+      nodePath: [0, 0, 0, 0],
+      value: QUERY,
+      fingerprint: { role: "AXTextField" }
+    }
+  });
 });
 
 test("rejects Page Down when the stable live search signature does not change", async () => {
@@ -212,6 +271,68 @@ test("opens a live position with the exact raw path and no invented identifier f
     }
   });
   assert.equal(Object.hasOwn(press?.fields.fingerprint ?? {}, "identifier"), false);
+});
+
+test("reconstructs a global duplicate rank instead of opening a sponsored same-ID overlap path", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const search = await fixture("live-search-results.json");
+  const overlap = sponsoredFirstCard(await fixture("live-search-results-next.json"));
+  const detail = await fixture("live-item-x1-default.json");
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search), ...stable(overlap));
+  const result = await driver.search(QUERY, 3);
+  const first = result.positions[0] ?? assert.fail("First live search position is missing");
+  assert.equal(first.sponsored, false);
+  assert.equal(first.url, "https://detail.tmall.com/item.htm?id=example-x1-a");
+  const beforeOpen = client.commands.length;
+  client.snapshotQueue.push(overlap, ...stable(search), ...stable(detail));
+
+  await driver.openSearchPosition(first);
+
+  assert.deepEqual(client.commands.slice(beforeOpen), [
+    { command: "keyPress", fields: { keyCode: 115 } },
+    {
+      command: "perform",
+      fields: {
+        nodePath: [0, 0, 1, 0, 0, 0],
+        action: "AXPress",
+        fingerprint: { role: "AXLink", title: QUERY }
+      }
+    }
+  ]);
+});
+
+test("rejects locate paging when an unparsable snapshot returns to the unchanged signature", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const result = await searchOnce(client, driver);
+  const search = await fixture("live-search-results.json");
+  const offTop = searchPageVariant(search, 900);
+  const unparsable = structuredClone(search);
+  unparsable.children = [];
+  const target = unreachablePosition(result.positions[0] ?? assert.fail("Live search position is missing"), 100);
+  client.snapshotQueue.push(offTop, ...stable(search), unparsable, ...Array.from({ length: 70 }, () => search));
+
+  await assert.rejects(driver.openSearchPosition(target), UiContractChangedError);
+
+  const pageDowns = client.commands.filter(({ command, fields }) => command === "keyPress" && fields.keyCode === 121);
+  assert.equal(pageDowns.length, 1);
+});
+
+test("attempts at most 50 search advances while recovering a ranked position", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const result = await searchOnce(client, driver);
+  const search = await fixture("live-search-results.json");
+  const offTop = searchPageVariant(search, 900);
+  const target = unreachablePosition(result.positions[0] ?? assert.fail("Live search position is missing"), 10_000);
+  const pages = Array.from({ length: 51 }, (_, index) => searchPageVariant(search, index + 1));
+  client.snapshotQueue.push(offTop, ...stable(search), ...pages.flatMap(stable));
+
+  await assert.rejects(driver.openSearchPosition(target), UiContractChangedError);
+
+  const pageDowns = client.commands.filter(({ command, fields }) => command === "keyPress" && fields.keyCode === 121);
+  assert.equal(pageDowns.length, 50);
 });
 
 test("presses raw live SKU nodes, re-snapshots, and returns stable bundle evidence", async () => {
@@ -279,7 +400,42 @@ test("uses one raw 返回 button only when no exact-query live tab exists", asyn
 
   await driver.returnToSearch();
 
-  assert.deepEqual(client.commands.at(-1)?.fields.nodePath, [0, 2]);
+  assert.deepEqual(client.commands.at(-1), {
+    command: "perform",
+    fields: {
+      nodePath: [0, 2],
+      action: "AXPress",
+      fingerprint: { role: "AXButton", title: "返回" }
+    }
+  });
+});
+
+test("rejects a changed live detail item before return mutation", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const { search, detail } = await openDefaultDetail(client, driver);
+  const changed = structuredClone(detail);
+  const detailArea = walkAxNodes(changed).find((node) => node.role === "AXWebArea" && node.title === "商品详情");
+  assert.ok(detailArea);
+  detailArea.url = "https://detail.tmall.com/item.htm?id=example-x1-changed";
+  const beforeReturn = client.commands.length;
+  client.snapshotQueue.push(changed, ...stable(search));
+
+  await assert.rejects(driver.returnToSearch(), UiContractChangedError);
+
+  assert.equal(client.commands.length, beforeReturn);
+});
+
+test("rejects missing live detail identity before return mutation", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const { search, detail } = await openDefaultDetail(client, driver);
+  const beforeReturn = client.commands.length;
+  client.snapshotQueue.push(withoutDetailIdentity(detail), ...stable(search));
+
+  await assert.rejects(driver.returnToSearch(), UiContractChangedError);
+
+  assert.equal(client.commands.length, beforeReturn);
 });
 
 test("rejects multiple exact-query live tabs", async () => {
@@ -313,6 +469,19 @@ test("rejects a stale raw exact-query tab path", async () => {
   client.snapshotQueue.push(detail);
 
   await assert.rejects(driver.returnToSearch(), UiContractChangedError);
+});
+
+test("live fake rejects a node mutation without its complete raw fingerprint", async () => {
+  const client = new LiveFakeClient();
+  const search = await fixture("live-search-results.json");
+  client.snapshotQueue.push(search);
+  await client.snapshot();
+
+  await assert.rejects(client.command("setValue", {
+    nodePath: [0, 0, 0, 0],
+    value: QUERY,
+    fingerprint: {}
+  }), UiContractChangedError);
 });
 
 test("rejects a live detail whose item ID changed after opening", async () => {
