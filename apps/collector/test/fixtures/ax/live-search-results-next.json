@@ -1,0 +1,51 @@
+{
+  "fixtureMetadata": {
+    "kind": "live-sanitized",
+    "profile": "taobao-desktop-2.4.5-build-15"
+  },
+  "path": [], "role": "AXApplication", "subrole": null, "identifier": null, "title": "淘宝", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+  "children": [
+    {
+      "path": [0], "role": "AXWindow", "subrole": "AXStandardWindow", "identifier": null, "title": "淘宝", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+      "children": [
+        {
+          "path": [0, 0], "role": "AXWebArea", "subrole": null, "identifier": null, "title": "淘宝搜索", "description": null, "value": null, "url": "https://s.taobao.com/search?q=Example%20Interface%20X1", "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+          "children": [
+            { "path": [0, 0, 0], "role": "AXTextField", "subrole": "AXSearchField", "identifier": null, "title": null, "description": "请输入搜索文字", "value": "Example Interface X1", "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXConfirm"], "children": [] },
+            {
+              "path": [0, 0, 1], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": "搜索结果", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+              "children": [
+                {
+                  "path": [0, 0, 1, 0], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+                  "children": [
+                    { "path": [0, 0, 1, 0, 0], "role": "AXLink", "subrole": null, "identifier": null, "title": "Example Interface X1", "description": null, "value": null, "url": "https://detail.tmall.com/item.htm?id=example-x1-a", "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+                    { "path": [0, 0, 1, 0, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "店铺", "value": "Example Audio A", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 1, 0, 2], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "价格", "value": "699.00-799.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+                  ]
+                },
+                {
+                  "path": [0, 0, 1, 1], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+                  "children": [
+                    { "path": [0, 0, 1, 1, 0], "role": "AXLink", "subrole": null, "identifier": null, "title": "Example Interface X1", "description": null, "value": null, "url": "https://click.simba.taobao.com/auction?tracking=fictional&id=example-x1-b", "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+                    { "path": [0, 0, 1, 1, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "广告", "value": "广告", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 1, 1, 2], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "店铺", "value": "Example Audio B", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 1, 1, 3], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "价格", "value": "688.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+                  ]
+                },
+                {
+                  "path": [0, 0, 1, 2], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+                  "children": [
+                    { "path": [0, 0, 1, 2, 0], "role": "AXLink", "subrole": null, "identifier": null, "title": "Example Interface X1", "description": null, "value": null, "url": "https://detail.tmall.com/item.htm?id=example-x1-c", "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+                    { "path": [0, 0, 1, 2, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "店铺", "value": "Example Audio C", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 1, 2, 2], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "价格", "value": "720.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+                  ]
+                },
+                { "path": [0, 0, 1, 3], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "没有更多了", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
