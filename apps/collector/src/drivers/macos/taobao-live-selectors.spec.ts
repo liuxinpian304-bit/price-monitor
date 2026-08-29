@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { UiContractChangedError } from "../../core/desktop-driver.ts";
+import {
+  LoginRequiredError,
+  PlatformChallengeError,
+  UiContractChangedError
+} from "../../core/desktop-driver.ts";
 import { findAxNode, type AxNode } from "./ax-node.ts";
 import {
+  assertNoStopState,
   findSkuOption,
   findSearchField,
   findSearchResultContainer,
@@ -47,6 +52,85 @@ function staticText(path: number[], value: string, description: string): AxNode 
     children: []
   };
 }
+
+function axNode(path: number[], values: Partial<Omit<AxNode, "path" | "children">> & { children?: AxNode[] } = {}): AxNode {
+  return {
+    path,
+    role: "AXGroup",
+    subrole: null,
+    identifier: null,
+    title: null,
+    description: null,
+    value: null,
+    url: null,
+    enabled: null,
+    selected: null,
+    position: null,
+    size: null,
+    actions: [],
+    children: [],
+    ...values
+  };
+}
+
+function stopStateRoot(stateScope: AxNode): AxNode {
+  return axNode([], {
+    role: "AXApplication",
+    children: [
+      axNode([0], {
+        role: "AXWebArea",
+        title: "Example Results",
+        url: "https://catalog.example.test/browse"
+      }),
+      stateScope
+    ]
+  });
+}
+
+test("ignores a fictional internal account-management loginPop frame", () => {
+  const root = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    title: "Account Settings",
+    url: "file:///fictional/client/account-panel/loginPop/index.html",
+    children: [
+      axNode([1, 0], { role: "AXStaticText", value: "Account profile" }),
+      axNode([1, 1], { role: "AXButton", title: "Sign out" }),
+      axNode([1, 2], { role: "AXButton", title: "Switch account" })
+    ]
+  }));
+
+  assert.doesNotThrow(() => assertNoStopState(root));
+});
+
+test("keeps explicit internal login and challenge titles terminal", () => {
+  const loginRoot = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    title: "请登录",
+    url: "file:///fictional/client/account-panel/loginPop/index.html"
+  }));
+  const challengeRoot = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    title: "安全验证",
+    url: "file:///fictional/client/account-panel/security.html"
+  }));
+
+  assert.throws(() => assertNoStopState(loginRoot), LoginRequiredError);
+  assert.throws(() => assertNoStopState(challengeRoot), PlatformChallengeError);
+});
+
+test("keeps external Taobao login and challenge URLs terminal", () => {
+  const loginRoot = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    url: "https://login.taobao.com/login?target=fictional"
+  }));
+  const challengeRoot = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    url: "https://security.taobao.com/punish?target=fictional"
+  }));
+
+  assert.throws(() => assertNoStopState(loginRoot), LoginRequiredError);
+  assert.throws(() => assertNoStopState(challengeRoot), PlatformChallengeError);
+});
 
 function detailArea(root: AxNode): AxNode {
   return findAxNode(root, (node) => node.role === "AXWebArea" && node.title === "商品详情")
