@@ -54,6 +54,11 @@ function priceEvidence(root: AxNode, description: string): AxNode {
     ?? assert.fail(`${description} evidence is missing`);
 }
 
+function removePriceEvidence(root: AxNode, description: string): void {
+  const region = priceRegion(root);
+  region.children = region.children.filter((node) => node.description !== description);
+}
+
 function recommendationRegion(root: AxNode): AxNode {
   return detailArea(root).children.find((node) => node.description === "相关推荐")
     ?? assert.fail("recommendation region is missing");
@@ -98,6 +103,35 @@ test("rejects malformed live price precision in the purchase region", async () =
   const root = structuredClone(await fixture("live-item-x1-default.json"));
   priceEvidence(root, "活动价").value = "活动价 699.000";
   assert.throws(() => readSelectedSkuEvidence(root), TypeError);
+});
+
+test("rejects unrelated activity keyword copy when the semantic activity price is absent", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  removePriceEvidence(root, "活动价");
+  appendPriceEvidence(root, "2026 活动价精选商品", "商品文案");
+  assert.throws(() => readSelectedSkuEvidence(root), UiContractChangedError);
+});
+
+test("ignores shipping-insurance copy when explicit shipping evidence is absent", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  removePriceEvidence(root, "运费");
+  appendPriceEvidence(root, "退货运费险最高赔付 10.00", "服务");
+  assert.equal(readSelectedSkuEvidence(root).mandatoryFeeText, "0.00");
+});
+
+test("ignores generic promotion headings", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  appendPriceEvidence(root, "优惠信息", "优惠");
+  assert.deepEqual(readSelectedSkuEvidence(root).promotionTexts, ["满500减20", "88VIP专享"]);
+});
+
+test("reads an exact strikethrough subrole as live list-price evidence", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  const listPrice = priceEvidence(root, "原价");
+  listPrice.value = "799.00";
+  listPrice.description = "价格";
+  listPrice.subrole = "AXStrikethrough";
+  assert.equal(readSelectedSkuEvidence(root).listPriceText, "799.00");
 });
 
 test("ignores recommendation prices outside the live purchase region", async () => {
