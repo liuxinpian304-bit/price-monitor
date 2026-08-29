@@ -44,11 +44,13 @@ function unambiguousQuantity(label: string): number | undefined {
 }
 
 function componentTokenQuantity(rawToken: string):
-  | { kind: "VALID"; token: string; quantity: number }
+  | { kind: "VALID"; token: string; quantity: number; quantityIsExplicit: boolean }
   | { kind: "INVALID" } {
   const token = rawToken.normalize("NFKC").trim();
   const evidence = [...token.matchAll(QUANTITY_EVIDENCE_PATTERN)];
-  if (evidence.length === 0) return { kind: "VALID", token, quantity: 1 };
+  if (evidence.length === 0) {
+    return { kind: "VALID", token, quantity: 1, quantityIsExplicit: false };
+  }
   if (evidence.length !== 1) return { kind: "INVALID" };
 
   const match = evidence[0]!;
@@ -59,7 +61,7 @@ function componentTokenQuantity(rawToken: string):
   const quantity = unambiguousQuantity(match[0]);
   const componentToken = token.slice(0, matchStart).trim();
   if (quantity === undefined || componentToken.length === 0) return { kind: "INVALID" };
-  return { kind: "VALID", token: componentToken, quantity };
+  return { kind: "VALID", token: componentToken, quantity, quantityIsExplicit: true };
 }
 
 function modelLikeIdentifiers(token: string): string[] {
@@ -148,6 +150,24 @@ export function deriveSkuComponents(
   const components: CollectedSkuComponent[] = [core];
   const coreIdentifiers = new Set(modelLikeIdentifiers(input.standardModel).map(normalized));
   const quantityDimensions: Array<{ dimension: string; label: string }> = [];
+  let explicitCoreQuantity: number | undefined;
+
+  const applyCoreQuantity = (
+    quantity: number,
+    quantityIsExplicit: boolean,
+    dimension: string,
+    label: string
+  ): void => {
+    if (!quantityIsExplicit) return;
+    if (explicitCoreQuantity === undefined) {
+      explicitCoreQuantity = quantity;
+      core.quantity = quantity;
+      return;
+    }
+    if (explicitCoreQuantity !== quantity) {
+      components.push(unknownQuantity(dimension, label));
+    }
+  };
 
   for (const [dimension, label] of Object.entries(input.selectedLabels)) {
     if (QUANTITY_DIMENSION_PATTERN.test(dimension)) {
@@ -169,12 +189,13 @@ export function deriveSkuComponents(
         });
         continue;
       }
-      const { token, quantity } = parsedQuantity;
+      const { token, quantity, quantityIsExplicit } = parsedQuantity;
       if (token.length === 0
         || normalized(token) === normalized(input.standardModel)
         || SINGLE_PRODUCT_LABELS.has(normalized(token))) {
-        if (quantity !== 1 && normalized(token) === normalized(input.standardModel)) {
-          core.quantity = quantity;
+        if (normalized(token) === normalized(input.standardModel)
+          || SINGLE_PRODUCT_LABELS.has(normalized(token))) {
+          applyCoreQuantity(quantity, quantityIsExplicit, dimension, label);
         }
         continue;
       }
@@ -202,11 +223,7 @@ export function deriveSkuComponents(
         );
         const normalizedResidual = normalized(residual);
         if (normalizedResidual.length === 0 || CORE_PRODUCT_DESCRIPTORS.has(normalizedResidual)) {
-          if (core.quantity !== 1 && core.quantity !== quantity) {
-            components.push(unknownQuantity(dimension, label));
-          } else {
-            core.quantity = quantity;
-          }
+          applyCoreQuantity(quantity, quantityIsExplicit, dimension, label);
           continue;
         }
         components.push({
@@ -247,8 +264,15 @@ export function deriveSkuComponents(
   for (const { dimension, label } of quantityDimensions) {
     const quantity = unambiguousQuantity(label);
     const target = quantityTarget(dimension, components, input.standardModel);
-    if (quantity === undefined || target === undefined
-      || (target.quantity !== 1 && target.quantity !== quantity)) {
+    if (quantity === undefined || target === undefined) {
+      components.push(unknownQuantity(dimension, label));
+      continue;
+    }
+    if (target.role === "CORE") {
+      applyCoreQuantity(quantity, true, dimension, label);
+      continue;
+    }
+    if (target.quantity !== 1 && target.quantity !== quantity) {
       components.push(unknownQuantity(dimension, label));
       continue;
     }
