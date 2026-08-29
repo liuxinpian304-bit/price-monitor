@@ -140,24 +140,30 @@ export function liveReadSearchResultQuery(root: AxNode): string {
   const searchArea = uniqueSearchWebArea(root);
   const query = requiredFieldQuery(liveSearchField(searchArea));
   const parsed = parseUrl(searchArea.url) ?? profileError();
-  const urlQuery = parsed.searchParams.get("q");
-  if (urlQuery !== null && normalizedQuery(query) !== normalizedQuery(urlQuery)) return profileError();
+  const urlQueries = parsed.searchParams.getAll("q").map(normalizedQuery);
+  const distinctUrlQueries = [...new Set(urlQueries)];
+  if (distinctUrlQueries.length > 1) return profileError();
+  if (distinctUrlQueries[0] !== undefined && normalizedQuery(query) !== distinctUrlQueries[0]) return profileError();
   return query;
 }
 
 export function liveReadSearchCards(root: AxNode): SelectedSearchCard[] {
   const searchArea = uniqueSearchWebArea(root);
   const cards: SelectedSearchCard[] = [];
-  const seenScopes = new Set<string>();
+  const seenScopes = new Map<string, { platformItemId: string | null; url: string }>();
   for (const { node: actionNode, ancestors } of scopedNodes(searchArea)) {
     if (actionNode.role !== "AXLink" || !actionNode.actions.includes("AXPress")) continue;
     const scope = deepestCardScope(searchArea, ancestors);
     const scopePath = scope.cardNode.path.join(",");
-    if (seenScopes.has(scopePath)) continue;
     const item = parseLiveItemUrl(actionNode.url);
+    const existing = seenScopes.get(scopePath);
+    if (existing) {
+      if (existing.platformItemId !== item.platformItemId || existing.url !== item.url) return profileError();
+      continue;
+    }
     const title = axNodeText(actionNode);
     if (!title) return profileError();
-    seenScopes.add(scopePath);
+    seenScopes.set(scopePath, item);
     cards.push({
       rank: cards.length + 1,
       platformItemId: item.platformItemId,
