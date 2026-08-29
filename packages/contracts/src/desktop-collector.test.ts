@@ -148,7 +148,10 @@ test("requires claimed jobs and successful reports to include an own listing", (
   assert.throws(() => collectorJobSchema.parse({ ...job, ownListings: [] }));
   assert.throws(() => collectorReportSchema.parse({ ...report, ownItems: [] }));
 
-  for (const status of ["PARTIAL_FAILED", "FAILED"] as const) {
+  for (const [status, code] of [
+    ["PARTIAL_FAILED", "APP_VERSION_UNSUPPORTED"],
+    ["FAILED", "TAOBAO_NOT_FRONTMOST"]
+  ] as const) {
     assert.doesNotThrow(() => collectorReportSchema.parse({
       ...report,
       status,
@@ -156,7 +159,7 @@ test("requires claimed jobs and successful reports to include an own listing", (
       ownItems: [],
       competitorItems: [],
       issues: [{
-        code: "APP_VERSION_UNSUPPORTED" as const,
+        code,
         message: "Collector could not start",
         capturedAt
       }]

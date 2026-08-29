@@ -111,7 +111,8 @@ export type DriverIssueCode =
   | "TAOBAO_NOT_INSTALLED"
   | "TAOBAO_NOT_RUNNING"
   | "ACCESSIBILITY_PERMISSION_REQUIRED"
-  | "SCREEN_RECORDING_PERMISSION_REQUIRED";
+  | "SCREEN_RECORDING_PERMISSION_REQUIRED"
+  | "TAOBAO_NOT_FRONTMOST";
 
 export class DriverIssueError extends Error {
   readonly code: DriverIssueCode;
