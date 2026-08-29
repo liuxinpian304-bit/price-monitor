@@ -77,6 +77,56 @@ test("changes core quantity only for one unambiguous count token", () => {
   assert.equal(ambiguous.some((item) => item.role === "UNKNOWN"), true);
 });
 
+test("preserves explicit core quantity on recognized single-product aliases", () => {
+  for (const [label, expectedQuantity] of [
+    ["单机2件", 2],
+    ["裸机2件", 2],
+    ["单品3个", 3],
+    ["单麦克风2只", 2]
+  ] as const) {
+    const result = deriveSkuComponents({
+      brand: "RODE",
+      standardModel: "NT1S",
+      selectedLabels: { "套餐类型": label },
+      explicitComponents: undefined
+    });
+
+    assert.equal(result.find((item) => item.role === "CORE")?.quantity, expectedQuantity, label);
+    assert.equal(result.some((item) => item.role === "UNKNOWN"), false, label);
+  }
+});
+
+test("marks conflicting explicit core quantities unknown", () => {
+  for (const label of [
+    "NT1S2件/单机3件",
+    "NT1S2件/单机1件",
+    "单机1件/NT1S2件"
+  ]) {
+    const result = deriveSkuComponents({
+      brand: "RODE",
+      standardModel: "NT1S",
+      selectedLabels: { "套餐类型": label },
+      explicitComponents: undefined
+    });
+
+    assert.equal(result.some((item) => item.role === "UNKNOWN"), true, label);
+  }
+});
+
+test("accepts equivalent explicit core quantities and ignores implicit alias counts", () => {
+  for (const label of ["单机2件/NT1S2件", "NT1S2件/单机"]) {
+    const result = deriveSkuComponents({
+      brand: "RODE",
+      standardModel: "NT1S",
+      selectedLabels: { "套餐类型": label },
+      explicitComponents: undefined
+    });
+
+    assert.equal(result.find((item) => item.role === "CORE")?.quantity, 2, label);
+    assert.equal(result.some((item) => item.role === "UNKNOWN"), false, label);
+  }
+});
+
 test("attributes package quantity to the identified paid accessory", () => {
   const single = deriveSkuComponents({
     brand: "RODE",
