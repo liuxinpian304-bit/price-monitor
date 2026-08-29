@@ -1,11 +1,15 @@
+import { createHash } from "node:crypto";
+
 import {
   LoginRequiredError,
   PlatformChallengeError,
-  UiContractChangedError
+  UiContractChangedError,
+  type SkuDimension,
+  type SkuSelection
 } from "../../core/desktop-driver.ts";
 import { axNodeText, walkAxNodes, type AxNode } from "./ax-node.ts";
-import type { SelectedSearchCard } from "./taobao-selector-contract.ts";
-import { parseLiveItemUrl } from "./taobao-url.ts";
+import type { SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
+import { canonicalItemIdentity, parseLiveItemUrl } from "./taobao-url.ts";
 
 const PROFILE_ERROR = "Taobao Accessibility tree does not match the approved 2.4.5 build 15 profile";
 const LOGIN_TITLES = new Set(["请登录", "账号登录", "扫码登录"]);
@@ -50,6 +54,10 @@ function uniqueSearchWebArea(root: AxNode): AxNode {
 }
 
 function normalizedQuery(value: string): string {
+  return normalizeText(value);
+}
+
+function normalizeText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
@@ -107,6 +115,180 @@ function deepestCardScope(searchArea: AxNode, ancestors: AxNode[]): { cardNode: 
     if (evidence) return { cardNode: candidate, evidence };
   }
   return profileError();
+}
+
+interface LiveSkuOption {
+  id: string;
+  label: string;
+  enabled: boolean;
+  node: AxNode;
+}
+
+interface LiveSkuDimension {
+  name: string;
+  options: LiveSkuOption[];
+}
+
+interface LiveSkuDimensionParts {
+  name: string;
+  optionNodes: AxNode[];
+}
+
+const TITLE_DESCRIPTIONS = new Set(["商品标题", "商品名称"]);
+const SHOP_DESCRIPTIONS = new Set(["店铺", "店铺名称"]);
+const SELECTED_STATE_TEXTS = new Set(["已选", "已选择", "已选中", "selected"]);
+
+function uniqueDetailWebArea(root: AxNode): AxNode {
+  const areas = walkAxNodes(root).filter((node) => node.role === "AXWebArea" && node.title === "商品详情");
+  if (areas.length !== 1) return profileError();
+  const area = areas[0] ?? profileError();
+  if (parseLiveItemUrl(area.url).sponsored) return profileError();
+  return area;
+}
+
+function semanticText(scope: AxNode, descriptions: Set<string>): string | null {
+  const values = new Set(walkAxNodes(scope).flatMap((node) => {
+    if (!node.description || !descriptions.has(node.description)) return [];
+    const text = axNodeText(node);
+    return text ? [normalizeText(text)] : [];
+  }));
+  if (values.size !== 1) return null;
+  return values.values().next().value ?? null;
+}
+
+function isSelectedSkuPriceRegion(node: AxNode): boolean {
+  if (node.role !== "AXGroup") return false;
+  return [node.title, node.description].some((value) => value !== null && normalizeText(value) === "已选规格价格");
+}
+
+function isOptionNode(node: AxNode): boolean {
+  return (node.role === "AXButton" || node.role === "AXRadioButton") && axNodeText(node) !== null;
+}
+
+function optionGroup(node: AxNode): AxNode | null {
+  if (node.role !== "AXGroup" || node.children.length === 0 || !node.children.every(isOptionNode)) return null;
+  return node;
+}
+
+function liveSkuDimensionParts(node: AxNode): LiveSkuDimensionParts | null {
+  if (node.role !== "AXGroup") return null;
+  const label = node.children[0];
+  const group = node.children[1];
+  const name = label ? axNodeText(label) : null;
+  if (!name || !group || optionGroup(group) === null) return null;
+  if (walkAxNodes(node).filter((child) => optionGroup(child) !== null).length !== 1) return null;
+  return { name: normalizeText(name), optionNodes: group.children };
+}
+
+function isSkuDimensionCandidate(node: AxNode): boolean {
+  return node.role === "AXGroup"
+    && axNodeText(node.children[0] ?? node) !== null
+    && node.children.slice(1).some((child) => child.role === "AXGroup");
+}
+
+function isPurchaseRegion(node: AxNode): boolean {
+  if (node.role !== "AXGroup") return false;
+  return semanticText(node, TITLE_DESCRIPTIONS) !== null
+    && semanticText(node, SHOP_DESCRIPTIONS) !== null
+    && walkAxNodes(node).filter(isSelectedSkuPriceRegion).length === 1
+    && node.children.some((child) => liveSkuDimensionParts(child) !== null);
+}
+
+export function findLivePurchaseRegion(root: AxNode): AxNode {
+  const detailArea = uniqueDetailWebArea(root);
+  const candidates = walkAxNodes(detailArea).filter(isPurchaseRegion);
+  const deepestPathLength = Math.max(...candidates.map((node) => node.path.length));
+  const deepest = candidates.filter((node) => node.path.length === deepestPathLength);
+  if (deepest.length !== 1) return profileError();
+  return deepest[0] ?? profileError();
+}
+
+function skuOptionDataId(dimension: string, label: string): string {
+  const normalized = `${normalizeText(dimension)}\u0000${normalizeText(label)}`;
+  return `live-sku-${createHash("sha256").update(normalized).digest("hex").slice(0, 24)}`;
+}
+
+function isSelectedSkuOption(option: AxNode): boolean {
+  return option.selected === true
+    || option.value === true
+    || walkAxNodes(option).slice(1).some((node) => {
+      const text = axNodeText(node);
+      return text !== null && SELECTED_STATE_TEXTS.has(normalizeText(text).toLowerCase());
+    });
+}
+
+function liveSkuDimensions(root: AxNode): LiveSkuDimension[] {
+  const dimensionNodes = findLivePurchaseRegion(root).children.filter(isSkuDimensionCandidate);
+  if (dimensionNodes.length === 0) return profileError();
+  const parts = dimensionNodes.map((node) => liveSkuDimensionParts(node) ?? profileError());
+
+  const dimensionNames = new Set<string>();
+  return parts.map(({ name, optionNodes }) => {
+    if (dimensionNames.has(name)) return profileError();
+    dimensionNames.add(name);
+
+    const labels = new Set<string>();
+    const options = optionNodes.map((node) => {
+      const label = axNodeText(node);
+      if (!label) return profileError();
+      const normalizedLabel = normalizeText(label);
+      if (labels.has(normalizedLabel)) return profileError();
+      labels.add(normalizedLabel);
+      if (node.enabled !== false && !node.actions.includes("AXPress")) return profileError();
+      return {
+        id: skuOptionDataId(name, normalizedLabel),
+        label: normalizedLabel,
+        enabled: node.enabled !== false,
+        node
+      };
+    });
+    return { name, options };
+  });
+}
+
+function uniqueShareNode(purchaseRegion: AxNode): AxNode | null {
+  const shares = walkAxNodes(purchaseRegion).filter((node) => {
+    if (!node.actions.includes("AXPress")) return false;
+    return [node.title, node.description].some((value) => value !== null && /分享|复制链接|share|copy link/i.test(value));
+  });
+  if (shares.length > 1) return profileError();
+  return shares[0] ?? null;
+}
+
+export function liveReadDetailPage(root: AxNode): SelectedDetailPage {
+  const detailArea = uniqueDetailWebArea(root);
+  const purchaseRegion = findLivePurchaseRegion(root);
+  const title = semanticText(purchaseRegion, TITLE_DESCRIPTIONS);
+  const shopName = semanticText(purchaseRegion, SHOP_DESCRIPTIONS);
+  if (!title || !shopName) return profileError();
+  return {
+    ...canonicalItemIdentity(detailArea.url),
+    title,
+    shopName,
+    shareNode: uniqueShareNode(purchaseRegion)
+  };
+}
+
+export function liveReadSkuDimensions(root: AxNode): SkuDimension[] {
+  return liveSkuDimensions(root).map(({ name, options }) => ({
+    name,
+    options: options.map(({ id, label, enabled }) => ({ id, label, enabled }))
+  }));
+}
+
+export function liveReadSelectedLabels(root: AxNode): SkuSelection {
+  return Object.fromEntries(liveSkuDimensions(root).map(({ name, options }) => {
+    const selected = options.filter((option) => isSelectedSkuOption(option.node));
+    if (selected.length !== 1) return profileError();
+    return [name, selected[0]?.label ?? profileError()];
+  }));
+}
+
+export function liveFindSkuOption(root: AxNode, dimensionName: string, label: string): AxNode {
+  const dimension = liveSkuDimensions(root).find((candidate) => candidate.name === normalizeText(dimensionName));
+  if (!dimension) return profileError();
+  const option = dimension.options.find((candidate) => candidate.label === normalizeText(label));
+  return option?.node ?? profileError();
 }
 
 function isScopedState(node: AxNode): boolean {

@@ -5,11 +5,15 @@ import test from "node:test";
 import { UiContractChangedError } from "../../core/desktop-driver.ts";
 import { findAxNode, type AxNode } from "./ax-node.ts";
 import {
+  findSkuOption,
   findSearchField,
   findSearchResultContainer,
   hasSearchEndMarker,
+  readDetailPage,
   readSearchCards,
-  readSearchResultQuery
+  readSearchResultQuery,
+  readSelectedLabels,
+  readSkuDimensions
 } from "./taobao-selectors.ts";
 
 async function fixture(name: string): Promise<AxNode> {
@@ -42,6 +46,20 @@ function staticText(path: number[], value: string, description: string): AxNode 
     actions: [],
     children: []
   };
+}
+
+function detailArea(root: AxNode): AxNode {
+  return findAxNode(root, (node) => node.role === "AXWebArea" && node.title === "商品详情")
+    ?? assert.fail("detail web area is missing");
+}
+
+function purchaseRegion(root: AxNode): AxNode {
+  return detailArea(root).children[0] ?? assert.fail("purchase region is missing");
+}
+
+function skuOption(root: AxNode, dimensionIndex: number, optionIndex: number): AxNode {
+  return purchaseRegion(root).children[dimensionIndex + 3]?.children[1]?.children[optionIndex]
+    ?? assert.fail("SKU option is missing");
 }
 
 test("reads the unique live search field and query", async () => {
@@ -115,4 +133,93 @@ test("rejects conflicting repeated q parameters in a live search URL", async () 
   const root = structuredClone(await fixture("live-search-results.json"));
   searchArea(root).url = "https://s.taobao.com/search?q=Example%20Interface%20X1&q=Different%20Query";
   assert.throws(() => readSearchResultQuery(root), UiContractChangedError);
+});
+
+test("reads a unique live detail and all SKU dimensions", async () => {
+  const root = await fixture("live-item-x1-default.json");
+  const detail = readDetailPage(root);
+  assert.deepEqual({
+    id: detail.platformItemId,
+    title: detail.title,
+    shop: detail.shopName
+  }, {
+    id: "example-x1-a",
+    title: "Example Interface X1",
+    shop: "Example Audio A"
+  });
+  assert.strictEqual(detail.shareNode, purchaseRegion(root).children[2]);
+
+  const dimensions = readSkuDimensions(root);
+  assert.deepEqual(dimensions.map((dimension) => [
+    dimension.name,
+    dimension.options.map((option) => option.label)
+  ]), [
+    ["套餐", ["单机", "麦克风套装"]],
+    ["颜色", ["银色", "黑色"]]
+  ]);
+  for (const option of dimensions.flatMap((dimension) => dimension.options)) {
+    assert.match(option.id, /^live-sku-[a-f0-9]{24}$/);
+  }
+  assert.equal(dimensions[0]?.options[0]?.id, "live-sku-001cfeaba2e5d72e5673b495");
+});
+
+test("returns raw action nodes while SKU IDs remain data only", async () => {
+  const root = await fixture("live-item-x1-default.json");
+  const option = findSkuOption(root, "套餐", "麦克风套装");
+  assert.equal(option.identifier, null);
+  assert.equal(option.actions.includes("AXPress"), true);
+  assert.strictEqual(option, skuOption(root, 0, 1));
+  assert.deepEqual(readSelectedLabels(root), { "套餐": "单机", "颜色": "银色" });
+});
+
+test("reads the selected labels from the bundle detail fixture", async () => {
+  assert.deepEqual(readSelectedLabels(await fixture("live-item-x1-bundle.json")), {
+    "套餐": "麦克风套装",
+    "颜色": "黑色"
+  });
+});
+
+test("rejects two live detail web areas", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  root.children[0]?.children.push(structuredClone(detailArea(root)));
+  assert.throws(() => readDetailPage(root), UiContractChangedError);
+});
+
+test("rejects two live purchase regions", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  detailArea(root).children.push(structuredClone(purchaseRegion(root)));
+  assert.throws(() => readDetailPage(root), UiContractChangedError);
+});
+
+test("rejects duplicate live SKU dimension labels", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  const colorLabel = purchaseRegion(root).children[4]?.children[0] ?? assert.fail("color label is missing");
+  colorLabel.value = "套餐";
+  assert.throws(() => readSkuDimensions(root), UiContractChangedError);
+});
+
+test("rejects duplicate live SKU option labels", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  skuOption(root, 0, 1).title = "单机";
+  assert.throws(() => readSkuDimensions(root), UiContractChangedError);
+});
+
+test("rejects a live SKU dimension with a second descendant option group", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  const dimension = purchaseRegion(root).children[3] ?? assert.fail("package dimension is missing");
+  const optionGroup = dimension.children[1] ?? assert.fail("package option group is missing");
+  dimension.children.push({ ...structuredClone(optionGroup), children: [structuredClone(optionGroup)] });
+  assert.throws(() => readSkuDimensions(root), UiContractChangedError);
+});
+
+test("rejects a live SKU dimension with no selected option", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  skuOption(root, 0, 0).selected = false;
+  assert.throws(() => readSelectedLabels(root), UiContractChangedError);
+});
+
+test("rejects a live SKU dimension with two selected options", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  skuOption(root, 0, 1).selected = true;
+  assert.throws(() => readSelectedLabels(root), UiContractChangedError);
 });

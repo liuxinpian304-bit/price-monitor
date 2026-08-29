@@ -10,9 +10,13 @@ import {
   liveAssertNoStopState,
   liveFindSearchField,
   liveFindSearchResultContainer,
+  liveFindSkuOption,
   liveHasSearchEndMarker,
+  liveReadDetailPage,
   liveReadSearchCards,
-  liveReadSearchResultQuery
+  liveReadSearchResultQuery,
+  liveReadSelectedLabels,
+  liveReadSkuDimensions
 } from "./taobao-live-selectors.ts";
 import type { SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
 import { taobaoSelectorProfile } from "./taobao-selector-profile.ts";
@@ -149,8 +153,7 @@ export function hasSearchEndMarker(root: AxNode): boolean {
     : liveHasSearchEndMarker(root);
 }
 
-export function readDetailPage(root: AxNode): SelectedDetailPage {
-  assertNoStopState(root);
+function syntheticReadDetailPage(root: AxNode): SelectedDetailPage {
   const detailWindow = findAxNode(root, (node) => node.identifier === "item-detail-window"
     && node.role === "AXWindow" && node.title === "商品详情");
   const header = detailWindow ? childByIdentifier(detailWindow, "item-header") : null;
@@ -164,8 +167,12 @@ export function readDetailPage(root: AxNode): SelectedDetailPage {
   };
 }
 
-export function readSkuDimensions(root: AxNode): SkuDimension[] {
+export function readDetailPage(root: AxNode): SelectedDetailPage {
   assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC" ? syntheticReadDetailPage(root) : liveReadDetailPage(root);
+}
+
+function syntheticReadSkuDimensions(root: AxNode): SkuDimension[] {
   const region = findAxNode(root, (node) => node.identifier === "sku-region"
     && node.role === "AXGroup" && node.title === "规格选择");
   if (!region) return profileError();
@@ -181,8 +188,13 @@ export function readSkuDimensions(root: AxNode): SkuDimension[] {
     }));
 }
 
-export function readSelectedLabels(root: AxNode): SkuSelection {
-  const dimensions = readSkuDimensions(root);
+export function readSkuDimensions(root: AxNode): SkuDimension[] {
+  assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC" ? syntheticReadSkuDimensions(root) : liveReadSkuDimensions(root);
+}
+
+function syntheticReadSelectedLabels(root: AxNode): SkuSelection {
+  const dimensions = syntheticReadSkuDimensions(root);
   const result: SkuSelection = {};
   const region = findAxNode(root, (node) => node.identifier === "sku-region") ?? profileError();
   for (const dimension of dimensions) {
@@ -196,7 +208,14 @@ export function readSelectedLabels(root: AxNode): SkuSelection {
   return result;
 }
 
-export function findSkuOption(root: AxNode, dimensionName: string, label: string): AxNode {
+export function readSelectedLabels(root: AxNode): SkuSelection {
+  assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC"
+    ? syntheticReadSelectedLabels(root)
+    : liveReadSelectedLabels(root);
+}
+
+function syntheticFindSkuOption(root: AxNode, dimensionName: string, label: string): AxNode {
   const region = findAxNode(root, (node) => node.identifier === "sku-region") ?? profileError();
   const dimension = region.children.find((node) => node.identifier === "sku-dimension"
     && axNodeText(node) === dimensionName) ?? profileError();
@@ -204,6 +223,12 @@ export function findSkuOption(root: AxNode, dimensionName: string, label: string
     && axNodeText(node) === label);
   if (matches.length !== 1) return profileError();
   return matches[0] ?? profileError();
+}
+
+export function findSkuOption(root: AxNode, dimensionName: string, label: string): AxNode {
+  return taobaoSelectorProfile(root) === "SYNTHETIC"
+    ? syntheticFindSkuOption(root, dimensionName, label)
+    : liveFindSkuOption(root, dimensionName, label);
 }
 
 export function findBackAction(root: AxNode): AxNode {
