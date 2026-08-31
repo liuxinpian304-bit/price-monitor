@@ -29,6 +29,7 @@ import {
   canonicalItemIdentity,
   findBackAction,
   findSearchField,
+  findSearchSubmitAction,
   findSkuOption,
   hasSearchEndMarker,
   readDetailPage,
@@ -118,6 +119,11 @@ function safeObserved(value: string | null): string {
   if (!value) return "unknown";
   const safe = value.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 80);
   return safe || "unknown";
+}
+
+function normalizedSearchValue(value: AxJsonValue): string | null {
+  if (typeof value !== "string") return null;
+  return value.trim().replace(/\s+/g, " ");
 }
 
 function defaultSleep(milliseconds: number): Promise<void> {
@@ -314,7 +320,19 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
       value: query,
       fingerprint: fingerprintFor(field)
     });
-    await this.client.command("keyPress", { keyCode: 36 });
+    const postWrite = await this.client.snapshot();
+    assertNoStopState(postWrite);
+    const postWriteField = findSearchField(postWrite);
+    const requestedValue = query.trim().replace(/\s+/g, " ");
+    if (normalizedSearchValue(postWriteField.value) !== requestedValue) {
+      throw new UiContractChangedError("Taobao search field did not retain the requested query.");
+    }
+    const submit = findSearchSubmitAction(postWrite);
+    await this.client.command("perform", {
+      nodePath: submit.node.path,
+      action: submit.action,
+      fingerprint: fingerprintFor(submit.node)
+    });
 
     const firstResult = await this.waitForStableSearch(query, preSubmitSignature, true);
     const topContextSignature = readSearchContext(firstResult).signature;

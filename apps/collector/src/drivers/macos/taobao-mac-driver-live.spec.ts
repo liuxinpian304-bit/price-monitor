@@ -88,6 +88,10 @@ function stable(root: AxNode): AxNode[] {
   return [root, root, root];
 }
 
+function postWriteThenStable(root: AxNode): AxNode[] {
+  return [root, ...stable(root)];
+}
+
 function withSearchQuery(root: AxNode, query: string): AxNode {
   const clone = structuredClone(root);
   const searchArea = walkAxNodes(clone).find((node) => node.role === "AXWebArea" && node.url?.startsWith("https://s.taobao.com/search"));
@@ -217,7 +221,7 @@ function exactQueryTab(root: AxNode): AxNode {
 
 async function searchOnce(client: LiveFakeClient, driver: TaobaoMacDriver): Promise<Awaited<ReturnType<TaobaoMacDriver["search"]>>> {
   const search = await fixture("live-search-results.json");
-  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search));
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...postWriteThenStable(search));
   return driver.search(QUERY, 1);
 }
 
@@ -236,7 +240,7 @@ test("pages a live search with Page Down and preserves duplicate and sponsored r
   const driver = liveDriver(client);
   const search = await fixture("live-search-results.json");
   const next = await fixture("live-search-results-next.json");
-  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search), ...stable(next));
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...postWriteThenStable(search), ...stable(next));
 
   const result = await driver.search(QUERY, 3);
 
@@ -245,9 +249,12 @@ test("pages a live search with Page Down and preserves duplicate and sponsored r
     { rank: 2, platformItemId: "example-x1-a", sponsored: false },
     { rank: 3, platformItemId: "example-x1-b", sponsored: true }
   ]);
-  assert.deepEqual(client.commands.map(({ command, fields }) => [command, fields.keyCode ?? fields.value]), [
+  assert.deepEqual(client.commands.map(({ command, fields }) => [
+    command,
+    fields.action ?? fields.keyCode ?? fields.value
+  ]), [
     ["setValue", QUERY],
-    ["keyPress", 36],
+    ["perform", "AXPress"],
     ["keyPress", 121]
   ]);
   assert.deepEqual(client.commands[0], {
@@ -258,6 +265,29 @@ test("pages a live search with Page Down and preserves duplicate and sponsored r
       fingerprint: { role: "AXTextField" }
     }
   });
+  assert.deepEqual(client.commands[1], {
+    command: "perform",
+    fields: {
+      nodePath: [0, 0, 0, 1],
+      action: "AXPress",
+      fingerprint: { role: "AXButton", title: "搜索" }
+    }
+  });
+  assert.equal(client.commands.some(({ command, fields }) =>
+    command === "keyPress" && fields.keyCode === 36), false);
+});
+
+test("does not submit when the freshly observed search value differs from the request", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const search = await fixture("live-search-results.json");
+  client.snapshotQueue.push(
+    withSearchQuery(search, "Previous Query"),
+    withSearchQuery(search, "Different Query")
+  );
+
+  await assert.rejects(driver.search(QUERY, 1), UiContractChangedError);
+  assert.deepEqual(client.commands.map(({ command }) => command), ["setValue"]);
 });
 
 test("uses the exact raw live AXScrollDown action before the Page Down fallback", async () => {
@@ -265,7 +295,7 @@ test("uses the exact raw live AXScrollDown action before the Page Down fallback"
   const driver = liveDriver(client);
   const search = withRawSearchAdvance(await fixture("live-search-results.json"));
   const next = await fixture("live-search-results-next.json");
-  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search), ...stable(next));
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...postWriteThenStable(search), ...stable(next));
 
   await driver.search(QUERY, 3);
 
@@ -286,7 +316,7 @@ test("rejects Page Down when the stable live search signature does not change", 
   const search = await fixture("live-search-results.json");
   client.snapshotQueue.push(
     withSearchQuery(search, "Previous Query"),
-    ...stable(search),
+    ...postWriteThenStable(search),
     ...Array.from({ length: 61 }, () => search)
   );
 
@@ -306,7 +336,7 @@ test("opens a live position with the exact raw path and no invented identifier f
   const page = await driver.openSearchPosition(position);
 
   assert.equal(page.platformItemId, "example-x1-a");
-  const press = client.commands.find(({ command }) => command === "perform");
+  const press = client.commands.at(-1);
   assert.deepEqual(press, {
     command: "perform",
     fields: {
@@ -324,7 +354,7 @@ test("recovers an ID-less live detail through the exact raw copied-link action",
   const search = withoutFirstCardIdentity(await fixture("live-search-results.json"));
   const detail = withoutDetailIdentity(await fixture("live-item-x1-default.json"));
   client.copiedText = "https://detail.tmall.com/item.htm?id=example-x1-a";
-  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search));
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...postWriteThenStable(search));
   const result = await driver.search(QUERY, 1);
   const position = result.positions[0] ?? assert.fail("Live search position is missing");
   client.snapshotQueue.push(search, ...stable(detail));
@@ -348,7 +378,7 @@ test("rejects an unsupported copied link during ID-less live detail recovery", a
   const search = withoutFirstCardIdentity(await fixture("live-search-results.json"));
   const detail = withoutDetailIdentity(await fixture("live-item-x1-default.json"));
   client.copiedText = "custom://item.taobao.com/account?id=example-x1-a";
-  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search));
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...postWriteThenStable(search));
   const result = await driver.search(QUERY, 1);
   const position = result.positions[0] ?? assert.fail("Live search position is missing");
   client.snapshotQueue.push(search, ...stable(detail));
@@ -362,7 +392,7 @@ test("reconstructs a global duplicate rank instead of opening a sponsored same-I
   const search = await fixture("live-search-results.json");
   const overlap = sponsoredFirstCard(await fixture("live-search-results-next.json"));
   const detail = await fixture("live-item-x1-default.json");
-  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search), ...stable(overlap));
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...postWriteThenStable(search), ...stable(overlap));
   const result = await driver.search(QUERY, 3);
   const first = result.positions[0] ?? assert.fail("First live search position is missing");
   assert.equal(first.sponsored, false);
@@ -491,7 +521,7 @@ test("requires fresh copied-link identity after ID-less live SKU actions", async
   const bundle = withoutDetailIdentity(await fixture("live-item-x1-bundle.json"));
   const itemUrl = "https://detail.tmall.com/item.htm?id=example-x1-a";
   client.copiedTextQueue.push(itemUrl, itemUrl);
-  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search));
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...postWriteThenStable(search));
   const searchResult = await driver.search(QUERY, 1);
   const position = searchResult.positions[0] ?? assert.fail("Live search position is missing");
   client.snapshotQueue.push(search, ...stable(detail));
@@ -514,7 +544,7 @@ test("rejects changed copied-link identity after ID-less live SKU actions", asyn
     "https://detail.tmall.com/item.htm?id=example-x1-a",
     "https://detail.tmall.com/item.htm?id=example-x1-changed"
   );
-  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...stable(search));
+  client.snapshotQueue.push(withSearchQuery(search, "Previous Query"), ...postWriteThenStable(search));
   const searchResult = await driver.search(QUERY, 1);
   const position = searchResult.positions[0] ?? assert.fail("Live search position is missing");
   client.snapshotQueue.push(search, ...stable(detail));

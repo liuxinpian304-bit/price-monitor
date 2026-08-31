@@ -28,6 +28,10 @@ function stable(root: AxNode): AxNode[] {
   return [root, root, root];
 }
 
+function postWriteThenStable(root: AxNode): AxNode[] {
+  return [root, ...stable(root)];
+}
+
 interface CommandRecord {
   command: AxHelperCommandName;
   fields: AxHelperCommandFields;
@@ -214,7 +218,7 @@ test("gates app presence and permissions before version without UI mutation", as
 test("searches semantically and preserves duplicate result positions", async () => {
   const client = new FakeClient();
   const search = await fixture("search-results.json");
-  client.snapshotQueue.push(withResultQuery(search, "旧查询"), search, search, search);
+  client.snapshotQueue.push(withResultQuery(search, "旧查询"), ...postWriteThenStable(search));
   const driver = new TaobaoMacDriver({ client, capturedAt: () => "2026-08-24T00:00:00.000Z" });
 
   const results = await driver.search("索尼 7506", 3);
@@ -222,15 +226,26 @@ test("searches semantically and preserves duplicate result positions", async () 
   assert.deepEqual(results.positions.map((entry) => [entry.rank, entry.platformItemId]), [
     [1, "example-7506"], [2, "example-7506"], [3, null]
   ]);
-  assert.deepEqual(client.commands.map((entry) => entry.command), ["setValue", "keyPress"]);
-  assert.equal(client.commands[0]?.fields.value, "索尼 7506");
-  assert.equal(client.commands[1]?.fields.keyCode, 36);
+  assert.deepEqual(client.commands.map((entry) => [entry.command, entry.fields.action ?? entry.fields.value]), [
+    ["setValue", "索尼 7506"],
+    ["perform", "AXConfirm"]
+  ]);
+  assert.deepEqual(client.commands[1], {
+    command: "perform",
+    fields: {
+      nodePath: [0, 0, 0],
+      action: "AXConfirm",
+      fingerprint: { role: "AXTextField", identifier: "search-input" }
+    }
+  });
+  assert.equal(client.commands.some(({ command, fields }) =>
+    command === "keyPress" && fields.keyCode === 36), false);
 });
 
 test("reports a verified early end separately from reaching the requested limit", async () => {
   const client = new FakeClient();
   const search = await fixture("search-results.json");
-  client.snapshotQueue.push(withResultQuery(search, "旧查询"), search, search, search);
+  client.snapshotQueue.push(withResultQuery(search, "旧查询"), ...postWriteThenStable(search));
   const driver = new TaobaoMacDriver({ client });
 
   const result = await driver.search("索尼 7506", 5);
@@ -248,7 +263,7 @@ test("rejects the pre-submit stale list until the result query context transitio
     .find((node) => node.identifier === "item-link");
   assert.ok(staleLink);
   staleLink.title = "旧结果";
-  client.snapshotQueue.push(stale, stale, search, search, search);
+  client.snapshotQueue.push(stale, search, stale, search, search, search);
   const sleeps: number[] = [];
   let now = 0;
   const driver = new TaobaoMacDriver({
@@ -267,7 +282,7 @@ test("accepts repeated-query results after a loading miss latches the submit tra
   const search = await fixture("search-results.json");
   const loading = blankSearchPage(search);
   client.snapshotQueue.push(
-    search,
+    search, search,
     loading,
     search, search, search,
     ...Array.from({ length: 58 }, () => search)
@@ -288,7 +303,7 @@ test("accepts repeated-query results after a loading miss latches the submit tra
 test("starts a search from a blank page without a pre-submit result context", async () => {
   const client = new FakeClient();
   const search = await fixture("search-results.json");
-  client.snapshotQueue.push(blankSearchPage(search), search, search, search);
+  client.snapshotQueue.push(blankSearchPage(search), ...postWriteThenStable(search));
   const sleeps: number[] = [];
   let now = 0;
   const driver = new TaobaoMacDriver({
@@ -305,7 +320,7 @@ test("starts a search from a blank page without a pre-submit result context", as
 test("times out when repeated-query results never show a post-submit transition", async () => {
   const client = new FakeClient();
   const search = await fixture("search-results.json");
-  client.snapshotQueue.push(search, ...Array.from({ length: 61 }, () => search));
+  client.snapshotQueue.push(search, search, ...Array.from({ length: 61 }, () => search));
   const sleeps: number[] = [];
   let now = 0;
   const driver = new TaobaoMacDriver({
@@ -499,7 +514,7 @@ test("preserves A1,A2 then A2,A3 continuity across a duplicate scroll boundary",
 
   client.snapshotQueue.push(
     withResultQuery(before, "旧查询"),
-    before, before, before,
+    ...postWriteThenStable(before),
     boundary, boundary, boundary
   );
   let now = 0;
@@ -519,7 +534,7 @@ test("preserves A1,A2 then A2,A3 continuity across a duplicate scroll boundary",
     const source = index < 2 ? before : boundary;
     assert.equal(resolvePath(source, path).identifier, "item-link");
   });
-  assert.equal(client.commands.filter((entry) => entry.command === "perform").length, 1);
+  assert.equal(client.commands.filter((entry) => entry.command === "perform").length, 2);
 });
 
 test("waits for exactly three stable observations and writes a flat collision-resistant PNG", async () => {
@@ -656,7 +671,7 @@ test("waits through unrelated and empty results until the original search contex
   unrelatedLink.title = "无关商品";
   const empty = emptySearchResults(search);
   client.snapshotQueue.push(
-    withResultQuery(search, "旧查询"), search, search, search,
+    withResultQuery(search, "旧查询"), ...postWriteThenStable(search),
     search, detail, detail, detail,
     detail, unrelated, empty, search, search, search
   );
@@ -685,7 +700,7 @@ test("rejects a stable unrelated result list after accessible back", async () =>
     link.title = `无关商品 ${card.path.join(".")}`;
   }
   client.snapshotQueue.push(
-    withResultQuery(search, "旧查询"), search, search, search,
+    withResultQuery(search, "旧查询"), ...postWriteThenStable(search),
     search, detail, detail, detail,
     detail,
     ...Array.from({ length: 61 }, () => unrelated)
@@ -710,7 +725,7 @@ test("rejects a stable empty result list after accessible back", async () => {
   const detail = await fixture("item-7506-default.json");
   const empty = emptySearchResults(search);
   client.snapshotQueue.push(
-    withResultQuery(search, "旧查询"), search, search, search,
+    withResultQuery(search, "旧查询"), ...postWriteThenStable(search),
     search, detail, detail, detail,
     detail,
     ...Array.from({ length: 61 }, () => empty)
