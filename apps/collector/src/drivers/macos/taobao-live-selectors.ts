@@ -15,6 +15,7 @@ const PROFILE_ERROR = "Taobao Accessibility tree does not match the approved 2.4
 const LOGIN_TITLES = new Set(["请登录", "账号登录", "扫码登录"]);
 const CHALLENGE_TITLES = new Set(["安全验证", "滑块验证", "请完成验证"]);
 const ACCOUNT_MANAGEMENT_TITLES = new Set(["Account Settings", "账号管理"]);
+const ACCOUNT_MANAGEMENT_PATH = /\/(?:account-panel|pages)\/loginPop\/index\.html$/i;
 const SIGN_OUT_TITLES = new Set(["Sign out", "退出登录"]);
 const SWITCH_ACCOUNT_TITLES = new Set(["Switch account", "切换账号"]);
 const END_MARKERS = new Set(["没有更多了", "已到底", "已经到底了"]);
@@ -308,7 +309,7 @@ function hasStateUrl(node: AxNode, pattern: RegExp): boolean {
 function isConfirmedAccountManagementFrame(node: AxNode): boolean {
   const parsed = parseUrl(node.url);
   if (node.role !== "AXWebArea" || parsed?.protocol !== "file:"
-    || !/\/account-panel\/loginPop\//i.test(parsed.pathname)
+    || !ACCOUNT_MANAGEMENT_PATH.test(parsed.pathname)
     || !ACCOUNT_MANAGEMENT_TITLES.has(node.title?.trim() ?? "")) return false;
   const texts = new Set(walkAxNodes(node).flatMap((candidate) => {
     const text = axNodeText(candidate);
