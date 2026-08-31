@@ -169,6 +169,33 @@ test("does not exempt the Taobao pages/loginPop frame when either logged-in cont
   }
 });
 
+test("ignores the Taobao pages/loginPop 登陆 title when logged-in controls are present", () => {
+  const root = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    title: "登陆",
+    url: "file:///Applications/Taobao.app/Contents/Resources/app/pages/loginPop/index.html",
+    children: [
+      axNode([1, 0], { role: "AXButton", title: "退出登录" }),
+      axNode([1, 1], { role: "AXButton", title: "切换账号" })
+    ]
+  }));
+
+  assert.doesNotThrow(() => assertNoStopState(root));
+});
+
+test("does not exempt the Taobao pages/loginPop 登陆 title when either logged-in control is missing", () => {
+  for (const onlyControl of ["退出登录", "切换账号"] as const) {
+    const root = stopStateRoot(axNode([1], {
+      role: "AXWebArea",
+      title: "登陆",
+      url: "file:///Applications/Taobao.app/Contents/Resources/app/pages/loginPop/index.html",
+      children: [axNode([1, 0], { role: "AXButton", title: onlyControl })]
+    }));
+
+    assert.throws(() => assertNoStopState(root), LoginRequiredError, onlyControl);
+  }
+});
+
 const stopStateCases: Array<{
   name: string;
   scope: StopStateScope;

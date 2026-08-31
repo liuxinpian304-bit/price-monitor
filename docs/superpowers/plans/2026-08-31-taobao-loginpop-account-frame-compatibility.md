@@ -12,9 +12,10 @@
 
 - Modify production behavior only in `apps/collector/src/drivers/macos/taobao-live-selectors.ts`.
 - Add regression coverage only in `apps/collector/src/drivers/macos/taobao-live-selectors.spec.ts`.
-- Follow strict TDD: observe the new real-path test fail with `LoginRequiredError` before changing production code.
+- Follow strict TDD: observe the new positive `登陆` title test fail with `LoginRequiredError` before changing production code.
 - Accept only local `file:` URLs ending in either `account-panel/loginPop/index.html` or `pages/loginPop/index.html`.
-- Never exempt a frame based on path alone. `AXWebArea`, approved title, sign-out text, and switch-account text all remain required.
+- Approved account-management titles are `账号管理`, `Account Settings`, and `登陆`.
+- Never exempt a frame based on path or title alone. `AXWebArea`, `file:`, exact approved path, approved title, sign-out text, and switch-account text all remain required.
 - HTTP/HTTPS login URLs, login dialogs, challenge URLs, challenge dialogs, and incomplete local account frames must continue to stop collection.
 - Do not change collection logic, SKU parsing, database schema, report generation, Enterprise WeChat behavior, or repricing behavior.
 - Do not print `.env`, API tokens, collector tokens, or other secrets.
@@ -129,7 +130,7 @@ Run:
 node --test --test-concurrency=1 apps/collector/src/drivers/macos/taobao-live-selectors.spec.ts
 ```
 
-Expected: every test in the selector file passes, including the old `account-panel` case, the new `pages` case, both missing-control cases, and all login/challenge stop-state cases.
+Expected: every test in the selector file passes, including the old `account-panel` case, the `pages` cases, all missing-control cases, and all login/challenge stop-state cases. The approved account-management title variants are `账号管理`, `Account Settings`, and `登陆`.
 
 - [ ] **Step 4: Run collector regression tests and type checking**
 
@@ -149,6 +150,10 @@ Expected: all commands exit successfully with no new warnings or formatting erro
 git add apps/collector/src/drivers/macos/taobao-live-selectors.ts apps/collector/src/drivers/macos/taobao-live-selectors.spec.ts
 git commit -m "fix: accept logged-in Taobao loginPop frame"
 ```
+
+#### Runtime Evidence Addendum: Task 2 Fix Round 1
+
+After the Task 2 path repair passed its focused and full verification, three consecutive live AX snapshots showed the same logged-in frame: `AXWebArea`, `file:`, terminal `pages/loginPop/index.html` path, title `登陆`, and both `退出登录` and `切换账号` controls. The user approved `登陆` only under the unchanged complete evidence gate. Add the positive and missing-control regressions first, observe only the positive case fail with `LoginRequiredError`, then make the minimal production change by adding `登陆` to `ACCOUNT_MANAGEMENT_TITLES`.
 
 ---
 

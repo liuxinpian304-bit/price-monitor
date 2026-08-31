@@ -14,7 +14,7 @@ import { canonicalItemIdentity, isSupportedLiveItemUrl, parseLiveItemUrl } from 
 const PROFILE_ERROR = "Taobao Accessibility tree does not match the approved 2.4.5 build 15 profile";
 const LOGIN_TITLES = new Set(["请登录", "账号登录", "扫码登录"]);
 const CHALLENGE_TITLES = new Set(["安全验证", "滑块验证", "请完成验证"]);
-const ACCOUNT_MANAGEMENT_TITLES = new Set(["Account Settings", "账号管理"]);
+const ACCOUNT_MANAGEMENT_TITLES = new Set(["Account Settings", "账号管理", "登陆"]);
 const ACCOUNT_MANAGEMENT_PATH = /\/(?:account-panel|pages)\/loginPop\/index\.html$/i;
 const SIGN_OUT_TITLES = new Set(["Sign out", "退出登录"]);
 const SWITCH_ACCOUNT_TITLES = new Set(["Switch account", "切换账号"]);
