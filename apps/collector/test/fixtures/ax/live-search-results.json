@@ -14,7 +14,8 @@
             {
               "path": [0, 0, 0], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
               "children": [
-                { "path": [0, 0, 0, 0], "role": "AXTextField", "subrole": "AXSearchField", "identifier": null, "title": null, "description": "请输入搜索文字", "value": "Example Interface X1", "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXConfirm"], "children": [] }
+                { "path": [0, 0, 0, 0], "role": "AXTextField", "subrole": "AXSearchField", "identifier": null, "title": null, "description": "请输入搜索文字", "value": "Example Interface X1", "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXConfirm"], "children": [] },
+                { "path": [0, 0, 0, 1], "role": "AXButton", "subrole": null, "identifier": null, "title": "搜索", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] }
               ]
             },
             {

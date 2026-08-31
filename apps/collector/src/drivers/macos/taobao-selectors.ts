@@ -10,6 +10,7 @@ import {
   liveAssertNoStopState,
   liveFindBackAction,
   liveFindSearchField,
+  liveFindSearchSubmitButton,
   liveFindSearchResultContainer,
   liveFindSkuOption,
   liveHasSearchEndMarker,
@@ -71,6 +72,25 @@ function syntheticFindSearchField(root: AxNode): AxNode {
 export function findSearchField(root: AxNode): AxNode {
   assertNoStopState(root);
   return taobaoSelectorProfile(root) === "SYNTHETIC" ? syntheticFindSearchField(root) : liveFindSearchField(root);
+}
+
+export interface SearchSubmitAction {
+  node: AxNode;
+  action: "AXConfirm" | "AXPress";
+}
+
+function syntheticFindSearchSubmitAction(root: AxNode): SearchSubmitAction {
+  const field = syntheticFindSearchField(root);
+  if (field.enabled !== true || !field.actions.includes("AXConfirm")) return profileError();
+  return { node: field, action: "AXConfirm" };
+}
+
+export function findSearchSubmitAction(root: AxNode): SearchSubmitAction {
+  assertNoStopState(root);
+  if (taobaoSelectorProfile(root) === "SYNTHETIC") {
+    return syntheticFindSearchSubmitAction(root);
+  }
+  return { node: liveFindSearchSubmitButton(root), action: "AXPress" };
 }
 
 function syntheticFindSearchResultContainer(root: AxNode): AxNode {

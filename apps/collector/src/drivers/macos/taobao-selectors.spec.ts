@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { LoginRequiredError, PlatformChallengeError } from "../../core/desktop-driver.ts";
-import type { AxNode } from "./ax-node.ts";
+import { LoginRequiredError, PlatformChallengeError, UiContractChangedError } from "../../core/desktop-driver.ts";
+import { walkAxNodes, type AxNode } from "./ax-node.ts";
 import {
   assertNoStopState,
   findSearchField,
+  findSearchSubmitAction,
   readDetailPage,
   readSearchCards,
   readSearchResultQuery,
@@ -24,6 +25,24 @@ test("finds the search field by semantic role within the search region", async (
   assert.deepEqual(field.path, [0, 0, 0]);
   assert.equal(field.position, null);
   assert.equal(field.size, null);
+});
+
+test("uses AXConfirm on the profiled synthetic search field", async () => {
+  const root = await fixture("search-results.json");
+  const submit = findSearchSubmitAction(root);
+
+  assert.equal(submit.action, "AXConfirm");
+  assert.equal(submit.node.identifier, "search-input");
+  assert.deepEqual(submit.node.path, [0, 0, 0]);
+});
+
+test("rejects a synthetic search field without AXConfirm", async () => {
+  const root = structuredClone(await fixture("search-results.json"));
+  const field = walkAxNodes(root).find((node) => node.identifier === "search-input");
+  assert.ok(field);
+  field.actions = [];
+
+  assert.throws(() => findSearchSubmitAction(root), UiContractChangedError);
 });
 
 test("reads ordered cards while preserving duplicate ranks and stable identities", async () => {
