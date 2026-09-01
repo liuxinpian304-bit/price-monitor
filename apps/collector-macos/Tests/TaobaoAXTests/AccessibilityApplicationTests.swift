@@ -4,12 +4,37 @@ import XCTest
 
 final class AccessibilityApplicationTests: XCTestCase {
     func testDiagnoseReturnsInstalledMetadataWhenRunningBundleIsMissingWithoutMutation() throws {
-        let strictRunningApplication = RunningApplicationInfo.fromRunningBundle(
-            processIdentifier: 321,
-            bundleURL: nil,
+        let installedBundleURL = try makeDiagnosticApplicationBundle(
+            bundleIdentifier: AccessibilityApplication.supportedBundleIdentifier,
             shortVersion: "2.4.5",
             build: "15"
         )
+        defer { try? FileManager.default.removeItem(at: installedBundleURL) }
+
+        var diagnosticRunningLookups: [String] = []
+        var installedApplicationLookups: [String] = []
+        var frontWindowPIDs: [pid_t] = []
+        let diagnoseInfo = AccessibilityApplication.makeDefaultDiagnoseInfoProvider(
+            bundleIdentifier: AccessibilityApplication.supportedBundleIdentifier,
+            runningApplication: { bundleIdentifier in
+                diagnosticRunningLookups.append(bundleIdentifier)
+                return DiagnosticRunningApplication(processIdentifier: 321, bundleURL: nil)
+            },
+            installedApplicationURL: { bundleIdentifier in
+                installedApplicationLookups.append(bundleIdentifier)
+                return installedBundleURL
+            },
+            accessibilityTrusted: { prompt in
+                XCTAssertFalse(prompt)
+                return true
+            },
+            screenRecordingTrusted: { false },
+            frontWindowAvailable: { processIdentifier in
+                frontWindowPIDs.append(processIdentifier)
+                return false
+            }
+        )
+        var mutationMetadataRequests = 0
         var activationRequests: [pid_t] = []
         var resolutionRequests = 0
         let poster = ApplicationTestUnicodePoster()
@@ -22,23 +47,20 @@ final class AccessibilityApplicationTests: XCTestCase {
                 sleep: { _ in }
             ),
             nativeSearchTextInput: NativeSearchTextInput(poster: poster),
-            runningApplicationInfo: { strictRunningApplication },
+            runningApplicationInfo: {
+                mutationMetadataRequests += 1
+                return RunningApplicationInfo.fromRunningBundle(
+                    processIdentifier: 321,
+                    bundleURL: nil,
+                    shortVersion: "2.4.5",
+                    build: "15"
+                )
+            },
             searchTextFieldResolver: { _, _ in
                 resolutionRequests += 1
                 return ApplicationTestTextField()
             },
-            diagnoseInfo: { _ in
-                DiagnoseInfo(
-                    appInstalled: true,
-                    trusted: true,
-                    screenRecordingTrusted: false,
-                    processIdentifier: 321,
-                    bundleIdentifier: AccessibilityApplication.supportedBundleIdentifier,
-                    shortVersion: "2.4.5",
-                    build: "15",
-                    frontWindowAvailable: false
-                )
-            }
+            diagnoseInfo: diagnoseInfo
         )
 
         let result = try application.diagnose(prompt: false)
@@ -54,6 +76,10 @@ final class AccessibilityApplicationTests: XCTestCase {
             "build": .string("15"),
             "frontWindowAvailable": .boolean(false),
         ]))
+        XCTAssertEqual(diagnosticRunningLookups, [AccessibilityApplication.supportedBundleIdentifier])
+        XCTAssertEqual(installedApplicationLookups, [AccessibilityApplication.supportedBundleIdentifier])
+        XCTAssertEqual(frontWindowPIDs, [321])
+        XCTAssertEqual(mutationMetadataRequests, 0)
         XCTAssertTrue(activationRequests.isEmpty)
         XCTAssertEqual(resolutionRequests, 0)
         XCTAssertTrue(poster.posts.isEmpty)
@@ -257,6 +283,31 @@ final class AccessibilityApplicationTests: XCTestCase {
             XCTAssertEqual(error as? HelperError, readError)
         }
     }
+}
+
+private func makeDiagnosticApplicationBundle(
+    bundleIdentifier: String,
+    shortVersion: String,
+    build: String
+) throws -> URL {
+    let bundleURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("TaobaoAXTests-\(UUID().uuidString)")
+        .appendingPathExtension("app")
+    let contentsURL = bundleURL.appendingPathComponent("Contents", isDirectory: true)
+    try FileManager.default.createDirectory(at: contentsURL, withIntermediateDirectories: true)
+    let propertyList: [String: Any] = [
+        "CFBundleIdentifier": bundleIdentifier,
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": shortVersion,
+        "CFBundleVersion": build,
+    ]
+    let data = try PropertyListSerialization.data(
+        fromPropertyList: propertyList,
+        format: .xml,
+        options: 0
+    )
+    try data.write(to: contentsURL.appendingPathComponent("Info.plist"), options: .atomic)
+    return bundleURL
 }
 
 private final class ApplicationTestTextField: SearchTextFieldEditing {

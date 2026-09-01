@@ -46,36 +46,67 @@ final class AccessibilityApplication {
         }
         self.searchTextFieldResolver = searchTextFieldResolver
         self.isProcessFrontmost = isProcessFrontmost
-        self.diagnoseInfoProvider = diagnoseInfo ?? { prompt in
-            let options = [
-                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt,
-            ] as CFDictionary
-            let trusted = AXIsProcessTrustedWithOptions(options)
-            let runningApplication = Self.runningApplication(bundleIdentifier: expectedBundleIdentifier)
-            let metadata = Self.bundleMetadata(
-                runningApplication: runningApplication,
-                bundleIdentifier: expectedBundleIdentifier
-            )
-            let appInstalled = runningApplication?.bundleURL != nil
-                || NSWorkspace.shared.urlForApplication(withBundleIdentifier: expectedBundleIdentifier) != nil
-            let frontWindowAvailable: Bool
-            if trusted, let runningApplication {
+        self.diagnoseInfoProvider = diagnoseInfo ?? Self.makeDefaultDiagnoseInfoProvider(
+            bundleIdentifier: expectedBundleIdentifier,
+            runningApplication: { bundleIdentifier in
+                Self.runningApplication(bundleIdentifier: bundleIdentifier).map {
+                    DiagnosticRunningApplication(
+                        processIdentifier: $0.processIdentifier,
+                        bundleURL: $0.bundleURL
+                    )
+                }
+            },
+            installedApplicationURL: {
+                NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
+            },
+            accessibilityTrusted: { prompt in
+                let options = [
+                    kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt,
+                ] as CFDictionary
+                return AXIsProcessTrustedWithOptions(options)
+            },
+            screenRecordingTrusted: { ScreenCapture().preflightAccess() },
+            frontWindowAvailable: { processIdentifier in
                 let root = LiveAXElement(
-                    element: AXUIElementCreateApplication(runningApplication.processIdentifier)
+                    element: AXUIElementCreateApplication(processIdentifier)
                 )
-                frontWindowAvailable = try Self.frontWindowAvailable(applicationRoot: root)
+                return try Self.frontWindowAvailable(applicationRoot: root)
+            }
+        )
+    }
+
+    static func makeDefaultDiagnoseInfoProvider(
+        bundleIdentifier: String,
+        runningApplication: @escaping (String) -> DiagnosticRunningApplication?,
+        installedApplicationURL: @escaping (String) -> URL?,
+        accessibilityTrusted: @escaping (Bool) -> Bool,
+        screenRecordingTrusted: @escaping () -> Bool,
+        frontWindowAvailable: @escaping (pid_t) throws -> Bool
+    ) -> (Bool) throws -> DiagnoseInfo {
+        { prompt in
+            let trusted = accessibilityTrusted(prompt)
+            let runningApplication = runningApplication(bundleIdentifier)
+            let installedURL = runningApplication?.bundleURL == nil
+                ? installedApplicationURL(bundleIdentifier)
+                : nil
+            let metadataURL = runningApplication?.bundleURL ?? installedURL
+            let metadata = metadataURL.flatMap(Self.runningBundleMetadata)
+                ?? BundleMetadata(bundleIdentifier: nil, shortVersion: nil, build: nil)
+            let isFrontWindowAvailable: Bool
+            if trusted, let runningApplication {
+                isFrontWindowAvailable = try frontWindowAvailable(runningApplication.processIdentifier)
             } else {
-                frontWindowAvailable = false
+                isFrontWindowAvailable = false
             }
             return DiagnoseInfo(
-                appInstalled: appInstalled,
+                appInstalled: runningApplication?.bundleURL != nil || installedURL != nil,
                 trusted: trusted,
-                screenRecordingTrusted: ScreenCapture().preflightAccess(),
+                screenRecordingTrusted: screenRecordingTrusted(),
                 processIdentifier: runningApplication?.processIdentifier,
                 bundleIdentifier: metadata.bundleIdentifier,
                 shortVersion: metadata.shortVersion,
                 build: metadata.build,
-                frontWindowAvailable: frontWindowAvailable
+                frontWindowAvailable: isFrontWindowAvailable
             )
         }
     }
@@ -282,22 +313,6 @@ final class AccessibilityApplication {
             .first
     }
 
-    private static func bundleMetadata(
-        runningApplication: NSRunningApplication?,
-        bundleIdentifier: String
-    ) -> BundleMetadata {
-        let bundleURL = runningApplication?.bundleURL
-            ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
-        guard let bundleURL, let bundle = Bundle(url: bundleURL) else {
-            return BundleMetadata(bundleIdentifier: nil, shortVersion: nil, build: nil)
-        }
-        return BundleMetadata(
-            bundleIdentifier: bundle.bundleIdentifier,
-            shortVersion: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
-            build: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-        )
-    }
-
     private static func runningBundleMetadata(bundleURL: URL) -> BundleMetadata? {
         guard let bundle = Bundle(url: bundleURL) else { return nil }
         return BundleMetadata(
@@ -427,6 +442,11 @@ struct DiagnoseInfo {
     let shortVersion: String?
     let build: String?
     let frontWindowAvailable: Bool
+}
+
+struct DiagnosticRunningApplication {
+    let processIdentifier: pid_t
+    let bundleURL: URL?
 }
 
 final class LiveAXElement: AXElementReading, SearchTextFieldEditing {
