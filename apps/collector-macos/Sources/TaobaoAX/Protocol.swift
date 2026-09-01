@@ -119,6 +119,14 @@ protocol CommandHandling {
 
 struct JSONLineProtocol {
     static let safeInvalidRequestID = "invalid-request"
+    private static let activateMutationFieldNames = [
+        "nodePath",
+        "value",
+        "fingerprint",
+        "action",
+        "keyCode",
+        "destination",
+    ]
 
     private let handler: any CommandHandling
 
@@ -139,8 +147,13 @@ struct JSONLineProtocol {
             return invalidRequest(id: id)
         }
 
-        guard CommandName(rawValue: commandName) != nil else {
+        guard let resolvedCommand = CommandName(rawValue: commandName) else {
             return failure(id: id, code: "UNSUPPORTED_COMMAND", message: "Unsupported command.")
+        }
+
+        if resolvedCommand == .activate,
+           Self.activateMutationFieldNames.contains(where: { object[$0] != nil }) {
+            return invalidRequest(id: id)
         }
 
         let command: HelperCommand

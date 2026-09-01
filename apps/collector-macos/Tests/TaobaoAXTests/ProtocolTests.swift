@@ -189,6 +189,27 @@ final class ProtocolTests: XCTestCase {
         }
     }
 
+    func testActivateRejectsExplicitNullMutationFieldsWithoutConstructingApplication() {
+        let fields = ["nodePath", "value", "fingerprint", "action", "keyCode", "destination"]
+
+        for field in fields {
+            var factoryCalls = 0
+            var activationCalls = 0
+            let protocolHandler = JSONLineProtocol(handler: MacOSCommandHandler(applicationFactory: { _ in
+                factoryCalls += 1
+                return ProtocolApplicationSpy(onActivate: { activationCalls += 1 })
+            }))
+            let response = protocolHandler.response(for: """
+            {"id":"activate-null-\(field)","command":"activate","bundleId":"com.taobao.pcdesktop","\(field)":null}
+            """)
+
+            XCTAssertFalse(response.ok, field)
+            XCTAssertEqual(response.error?.code, "INVALID_REQUEST", field)
+            XCTAssertEqual(factoryCalls, 0, field)
+            XCTAssertEqual(activationCalls, 0, field)
+        }
+    }
+
     func testActivateWithoutMutationFieldsStillCallsApplication() {
         var factoryCalls = 0
         var activationCalls = 0
