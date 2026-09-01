@@ -35,6 +35,8 @@ function firstCardScope(root: AxNode): AxNode {
   return findAxNode(root, (node) => node.path.join(",") === "0,0,1,0,0") ?? assert.fail("first card scope is missing");
 }
 
+const SEARCH_SHOP_DESCRIPTIONS = new Set(["店铺", "店铺名称"]);
+
 function staticText(path: number[], value: string, description: string): AxNode {
   return {
     path,
@@ -72,6 +74,24 @@ function axNode(path: number[], values: Partial<Omit<AxNode, "path" | "children"
     children: [],
     ...values
   };
+}
+
+function removeExplicitShopEvidence(scope: AxNode): void {
+  for (const node of walkAxNodes(scope)) {
+    if (node.description && SEARCH_SHOP_DESCRIPTIONS.has(node.description)) {
+      node.description = null;
+    }
+  }
+}
+
+function appendShopLink(scope: AxNode, childIndex: number, title: string, url: string): void {
+  scope.children.push(axNode([...scope.path, childIndex], {
+    role: "AXLink",
+    title,
+    url,
+    enabled: true,
+    actions: ["AXPress"]
+  }));
 }
 
 function stopStateRoot(stateScope: AxNode): AxNode {
@@ -350,19 +370,73 @@ test("preserves displayed duplicates and raw live action nodes", async () => {
   assert.notDeepEqual(cards[0]?.actionNode.path, cards[1]?.actionNode.path);
 });
 
-test("ignores a pressable shop link inside a live product card", async () => {
+test("keeps an explicit shop name authoritative over a shop-link fallback", async () => {
   const root = structuredClone(await fixture("live-search-results.json"));
-  firstCardScope(root).children.push(axNode([0, 0, 1, 0, 0, 4], {
-    role: "AXLink",
-    title: "Example Audio A",
-    url: "https://shop.taobao.com/shop/view_shop.htm?user_number_id=fictional-a",
-    enabled: true,
-    actions: ["AXPress"]
-  }));
+  const scope = firstCardScope(root);
+  appendShopLink(
+    scope,
+    4,
+    "Fallback Audio A",
+    "https://shop.taobao.com/shop/view_shop.htm?user_number_id=fictional-a"
+  );
 
-  const cards = readSearchCards(root);
+  assert.equal(readSearchCards(root)[0]?.shopName, "Example Audio A");
+});
 
-  assert.deepEqual(cards.map((card) => card.platformItemId), ["example-x1-a", "example-x1-a"]);
+test("uses one strict shop link when explicit shop evidence is absent", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  removeExplicitShopEvidence(scope);
+  appendShopLink(
+    scope,
+    4,
+    "Fallback Audio A",
+    "https://shop.taobao.com/shop/view_shop.htm?user_number_id=fictional-a"
+  );
+
+  assert.equal(readSearchCards(root)[0]?.shopName, "Fallback Audio A");
+});
+
+test("accepts the explicit shop-name accessibility description", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const shop = walkAxNodes(firstCardScope(root)).find((node) => node.description === "店铺");
+  assert.ok(shop);
+  shop.description = "店铺名称";
+
+  assert.equal(readSearchCards(root)[0]?.shopName, "Example Audio A");
+});
+
+test("rejects a live card with neither explicit shop evidence nor a shop link", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  removeExplicitShopEvidence(firstCardScope(root));
+
+  assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
+test("rejects multiple distinct shop-link fallback names", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  removeExplicitShopEvidence(scope);
+  appendShopLink(scope, 4, "Fallback Audio A", "https://shop.taobao.com/a");
+  appendShopLink(scope, 5, "Fallback Audio B", "https://store.tmall.com/b");
+
+  assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
+test("rejects invalid shop-link fallback URLs", async () => {
+  for (const url of [
+    "ftp://shop.taobao.com/a",
+    "https://shop.example.com/a",
+    "https://shopping.taobao.com/a",
+    "https://detail.tmall.com/item.htm?id=example-x1-a"
+  ]) {
+    const root = structuredClone(await fixture("live-search-results.json"));
+    const scope = firstCardScope(root);
+    removeExplicitShopEvidence(scope);
+    appendShopLink(scope, 4, "Not A Shop", url);
+
+    assert.throws(() => readSearchCards(root), UiContractChangedError, url);
+  }
 });
 
 test("ignores a pressable page navigation link outside live product cards", async () => {

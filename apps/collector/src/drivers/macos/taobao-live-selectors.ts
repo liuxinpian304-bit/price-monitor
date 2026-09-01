@@ -9,7 +9,7 @@ import {
 } from "../../core/desktop-driver.ts";
 import { axNodeText, walkAxNodes, type AxNode } from "./ax-node.ts";
 import type { SearchAdvance, SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
-import { canonicalItemIdentity, isSupportedLiveItemUrl, parseLiveItemUrl } from "./taobao-url.ts";
+import { canonicalItemIdentity, isSupportedLiveItemUrl, isSupportedLiveShopUrl, parseLiveItemUrl } from "./taobao-url.ts";
 
 const PROFILE_ERROR = "Taobao Accessibility tree does not match the approved 2.4.5 build 15 profile";
 const LOGIN_TITLES = new Set(["请登录", "账号登录", "扫码登录"]);
@@ -98,23 +98,54 @@ function distinctText(values: Array<string | null>): string[] {
   return [...new Set(values.filter((value): value is string => value !== null))];
 }
 
+const SHOP_DESCRIPTIONS = new Set(["店铺", "店铺名称"]);
+
+function explicitShopNames(nodes: AxNode[]): string[] {
+  return distinctText(nodes.map((node) =>
+    node.description !== null
+      && SHOP_DESCRIPTIONS.has(node.description)
+      && typeof node.value === "string"
+      && node.value.trim()
+      ? node.value.trim()
+      : null));
+}
+
+function fallbackShopNames(nodes: AxNode[]): string[] {
+  return distinctText(nodes.map((node) => {
+    if (node.role !== "AXLink"
+      || node.enabled === false
+      || !node.actions.includes("AXPress")
+      || !isSupportedLiveShopUrl(node.url)) return null;
+    return axNodeText(node);
+  }));
+}
+
+function searchShopName(scope: AxNode): string | null {
+  const nodes = walkAxNodes(scope);
+  const explicit = explicitShopNames(nodes);
+  if (explicit.length > 1) return null;
+  if (explicit.length === 1) return explicit[0] ?? null;
+  const fallback = fallbackShopNames(nodes);
+  return fallback.length === 1 ? fallback[0] ?? null : null;
+}
+
 function cardEvidence(scope: AxNode): CardEvidence | null {
   const priceTexts = distinctText(walkAxNodes(scope).map((node) => {
     const text = axNodeText(node);
     return text && priceRange(text) ? text : null;
   }));
-  const shops = distinctText(walkAxNodes(scope).map((node) =>
-    node.description === "店铺" && typeof node.value === "string" && node.value.trim()
-      ? node.value.trim()
-      : null));
-  if (priceTexts.length !== 1 || shops.length !== 1) return null;
+  const shopName = searchShopName(scope);
+  if (priceTexts.length !== 1 || !shopName) return null;
   const price = priceRange(priceTexts[0] ?? "");
   if (!price) return null;
-  return { price, shopName: shops[0] ?? profileError() };
+  return { price, shopName };
 }
 
 function deepestCardScope(searchArea: AxNode, ancestors: AxNode[]): { cardNode: AxNode; evidence: CardEvidence } {
-  const candidates = ancestors.filter((node) => node !== searchArea).reverse();
+  const candidates = ancestors.filter((node) => node !== searchArea
+    && node.children.some((child) => child.role === "AXLink"
+      && child.actions.includes("AXPress")
+      && isSupportedLiveItemUrl(child.url))).reverse();
   for (const candidate of candidates) {
     const evidence = cardEvidence(candidate);
     if (evidence) return { cardNode: candidate, evidence };
@@ -140,7 +171,6 @@ interface LiveSkuDimensionParts {
 }
 
 const TITLE_DESCRIPTIONS = new Set(["商品标题", "商品名称"]);
-const SHOP_DESCRIPTIONS = new Set(["店铺", "店铺名称"]);
 const SELECTED_STATE_TEXTS = new Set(["已选", "已选择", "已选中", "selected"]);
 
 function uniqueDetailWebArea(root: AxNode): AxNode {
