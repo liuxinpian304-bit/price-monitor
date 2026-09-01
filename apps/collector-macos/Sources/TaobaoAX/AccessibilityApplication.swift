@@ -5,13 +5,13 @@ import Foundation
 final class AccessibilityApplication {
     static let supportedBundleIdentifier = "com.taobao.pcdesktop"
 
-    private let bundleIdentifier: String
     private let treeSerializer: AXTreeSerializer
     private let applicationActivator: ApplicationActivator
     private let nativeSearchTextInput: NativeSearchTextInput
     private let runningApplicationInfoProvider: () -> RunningApplicationInfo?
     private let searchTextFieldResolver: (([Int], AXNodeFingerprint) throws -> any SearchTextFieldEditing)?
     private let isProcessFrontmost: (pid_t) -> Bool
+    private let diagnoseInfoProvider: (Bool) throws -> DiagnoseInfo
 
     init(
         bundleIdentifier: String,
@@ -22,13 +22,13 @@ final class AccessibilityApplication {
         searchTextFieldResolver: (([Int], AXNodeFingerprint) throws -> any SearchTextFieldEditing)? = nil,
         isProcessFrontmost: @escaping (pid_t) -> Bool = {
             NSWorkspace.shared.frontmostApplication?.processIdentifier == $0
-        }
+        },
+        diagnoseInfo: ((Bool) throws -> DiagnoseInfo)? = nil
     ) throws {
         guard bundleIdentifier == Self.supportedBundleIdentifier else {
             throw HelperError(code: "UNSUPPORTED_BUNDLE_ID", message: "Unsupported application.")
         }
         let expectedBundleIdentifier = bundleIdentifier
-        self.bundleIdentifier = bundleIdentifier
         self.treeSerializer = treeSerializer
         self.applicationActivator = applicationActivator
         self.nativeSearchTextInput = nativeSearchTextInput
@@ -46,37 +46,53 @@ final class AccessibilityApplication {
         }
         self.searchTextFieldResolver = searchTextFieldResolver
         self.isProcessFrontmost = isProcessFrontmost
+        self.diagnoseInfoProvider = diagnoseInfo ?? { prompt in
+            let options = [
+                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt,
+            ] as CFDictionary
+            let trusted = AXIsProcessTrustedWithOptions(options)
+            let runningApplication = Self.runningApplication(bundleIdentifier: expectedBundleIdentifier)
+            let metadata = Self.bundleMetadata(
+                runningApplication: runningApplication,
+                bundleIdentifier: expectedBundleIdentifier
+            )
+            let appInstalled = runningApplication?.bundleURL != nil
+                || NSWorkspace.shared.urlForApplication(withBundleIdentifier: expectedBundleIdentifier) != nil
+            let frontWindowAvailable: Bool
+            if trusted, let runningApplication {
+                let root = LiveAXElement(
+                    element: AXUIElementCreateApplication(runningApplication.processIdentifier)
+                )
+                frontWindowAvailable = try Self.frontWindowAvailable(applicationRoot: root)
+            } else {
+                frontWindowAvailable = false
+            }
+            return DiagnoseInfo(
+                appInstalled: appInstalled,
+                trusted: trusted,
+                screenRecordingTrusted: ScreenCapture().preflightAccess(),
+                processIdentifier: runningApplication?.processIdentifier,
+                bundleIdentifier: metadata.bundleIdentifier,
+                shortVersion: metadata.shortVersion,
+                build: metadata.build,
+                frontWindowAvailable: frontWindowAvailable
+            )
+        }
     }
 
     func diagnose(prompt: Bool) throws -> JSONValue {
-        let options = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt,
-        ] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(options)
-
-        let runningApplication = runningApplication()
-        let metadata = bundleMetadata(runningApplication: runningApplication)
-        let appInstalled = runningApplication?.bundleURL != nil
-            || NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil
-        let frontWindowAvailable: Bool
-        if trusted, runningApplication != nil {
-            let application = try supportedRunningApplicationInfo()
-            let root = LiveAXElement(element: AXUIElementCreateApplication(application.processIdentifier))
-            frontWindowAvailable = try Self.frontWindowAvailable(applicationRoot: root)
-        } else {
-            frontWindowAvailable = false
-        }
+        let info = try diagnoseInfoProvider(prompt)
 
         return .object([
-            "appInstalled": .boolean(appInstalled),
-            "trusted": .boolean(trusted),
-            "screenRecordingTrusted": .boolean(ScreenCapture().preflightAccess()),
-            "appRunning": .boolean(runningApplication != nil),
-            "pid": runningApplication.map { .number(Double($0.processIdentifier)) } ?? .null,
-            "bundleId": metadata.bundleIdentifier.map(JSONValue.string) ?? .null,
-            "shortVersion": metadata.shortVersion.map(JSONValue.string) ?? .null,
-            "build": metadata.build.map(JSONValue.string) ?? .null,
-            "frontWindowAvailable": .boolean(frontWindowAvailable),
+            "appInstalled": .boolean(info.appInstalled),
+            "trusted": .boolean(info.trusted),
+            "screenRecordingTrusted": .boolean(info.screenRecordingTrusted),
+            "appRunning": .boolean(info.processIdentifier != nil),
+            "pid": info.processIdentifier.map { .number(Double($0)) } ?? .null,
+            "bundleId": info.bundleIdentifier.map(JSONValue.string) ?? .null,
+            "shortVersion": info.shortVersion.map(JSONValue.string) ?? .null,
+            "build": info.build.map(JSONValue.string) ?? .null,
+            "frontWindowAvailable": .boolean(info.frontWindowAvailable),
         ])
     }
 
@@ -260,18 +276,10 @@ final class AccessibilityApplication {
         return application
     }
 
-    private func runningApplication() -> NSRunningApplication? {
-        Self.runningApplication(bundleIdentifier: bundleIdentifier)
-    }
-
     private static func runningApplication(bundleIdentifier: String) -> NSRunningApplication? {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
             .sorted { $0.processIdentifier < $1.processIdentifier }
             .first
-    }
-
-    private func bundleMetadata(runningApplication: NSRunningApplication?) -> BundleMetadata {
-        Self.bundleMetadata(runningApplication: runningApplication, bundleIdentifier: bundleIdentifier)
     }
 
     private static func bundleMetadata(
@@ -408,6 +416,17 @@ struct RunningApplicationInfo {
             build: build
         )
     }
+}
+
+struct DiagnoseInfo {
+    let appInstalled: Bool
+    let trusted: Bool
+    let screenRecordingTrusted: Bool
+    let processIdentifier: pid_t?
+    let bundleIdentifier: String?
+    let shortVersion: String?
+    let build: String?
+    let frontWindowAvailable: Bool
 }
 
 final class LiveAXElement: AXElementReading, SearchTextFieldEditing {

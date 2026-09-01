@@ -3,6 +3,62 @@ import XCTest
 @testable import TaobaoAX
 
 final class AccessibilityApplicationTests: XCTestCase {
+    func testDiagnoseReturnsInstalledMetadataWhenRunningBundleIsMissingWithoutMutation() throws {
+        let strictRunningApplication = RunningApplicationInfo.fromRunningBundle(
+            processIdentifier: 321,
+            bundleURL: nil,
+            shortVersion: "2.4.5",
+            build: "15"
+        )
+        var activationRequests: [pid_t] = []
+        var resolutionRequests = 0
+        let poster = ApplicationTestUnicodePoster()
+        let application = try AccessibilityApplication(
+            bundleIdentifier: AccessibilityApplication.supportedBundleIdentifier,
+            applicationActivator: ApplicationActivator(
+                requestActivation: { pid in activationRequests.append(pid); return true },
+                frontmostProcessIdentifier: { 321 },
+                now: { 0 },
+                sleep: { _ in }
+            ),
+            nativeSearchTextInput: NativeSearchTextInput(poster: poster),
+            runningApplicationInfo: { strictRunningApplication },
+            searchTextFieldResolver: { _, _ in
+                resolutionRequests += 1
+                return ApplicationTestTextField()
+            },
+            diagnoseInfo: { _ in
+                DiagnoseInfo(
+                    appInstalled: true,
+                    trusted: true,
+                    screenRecordingTrusted: false,
+                    processIdentifier: 321,
+                    bundleIdentifier: AccessibilityApplication.supportedBundleIdentifier,
+                    shortVersion: "2.4.5",
+                    build: "15",
+                    frontWindowAvailable: false
+                )
+            }
+        )
+
+        let result = try application.diagnose(prompt: false)
+
+        XCTAssertEqual(result, .object([
+            "appInstalled": .boolean(true),
+            "trusted": .boolean(true),
+            "screenRecordingTrusted": .boolean(false),
+            "appRunning": .boolean(true),
+            "pid": .number(321),
+            "bundleId": .string(AccessibilityApplication.supportedBundleIdentifier),
+            "shortVersion": .string("2.4.5"),
+            "build": .string("15"),
+            "frontWindowAvailable": .boolean(false),
+        ]))
+        XCTAssertTrue(activationRequests.isEmpty)
+        XCTAssertEqual(resolutionRequests, 0)
+        XCTAssertTrue(poster.posts.isEmpty)
+    }
+
     func testMissingRunningBundleRejectsInstalledMetadataBeforeActivationAndReplacement() throws {
         let installedShortVersion = "2.4.5"
         let installedBuild = "15"
