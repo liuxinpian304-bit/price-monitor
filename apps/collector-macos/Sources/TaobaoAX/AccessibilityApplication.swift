@@ -7,13 +7,22 @@ final class AccessibilityApplication {
 
     private let bundleIdentifier: String
     private let treeSerializer: AXTreeSerializer
+    private let applicationActivator: ApplicationActivator
+    private let nativeSearchTextInput: NativeSearchTextInput
 
-    init(bundleIdentifier: String, treeSerializer: AXTreeSerializer = AXTreeSerializer()) throws {
+    init(
+        bundleIdentifier: String,
+        treeSerializer: AXTreeSerializer = AXTreeSerializer(),
+        applicationActivator: ApplicationActivator = ApplicationActivator(),
+        nativeSearchTextInput: NativeSearchTextInput = NativeSearchTextInput(poster: CGUnicodeTextPoster())
+    ) throws {
         guard bundleIdentifier == Self.supportedBundleIdentifier else {
             throw HelperError(code: "UNSUPPORTED_BUNDLE_ID", message: "Unsupported application.")
         }
         self.bundleIdentifier = bundleIdentifier
         self.treeSerializer = treeSerializer
+        self.applicationActivator = applicationActivator
+        self.nativeSearchTextInput = nativeSearchTextInput
     }
 
     func diagnose(prompt: Bool) throws -> JSONValue {
@@ -90,6 +99,24 @@ final class AccessibilityApplication {
         )
         guard result == .success else { throw mappedActionError(result) }
         return .object(["valueSet": .boolean(true)])
+    }
+
+    func activate() throws -> JSONValue {
+        let pid = try runningProcessIdentifier()
+        try applicationActivator.activate(processIdentifier: pid, timeout: 2)
+        return .object(["activated": .boolean(true)])
+    }
+
+    func replaceText(path: [Int], value: String, fingerprint: AXNodeFingerprint) throws -> JSONValue {
+        let pid = try runningProcessIdentifier()
+        let field = try resolve(path: path, fingerprint: fingerprint)
+        try nativeSearchTextInput.replace(
+            field: field,
+            processIdentifier: pid,
+            value: value,
+            isFrontmost: { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }
+        )
+        return .object(["typed": .boolean(true)])
     }
 
     func keyPress(keyCode: Int) throws -> JSONValue {
@@ -298,7 +325,7 @@ private struct BundleMetadata {
     let build: String?
 }
 
-final class LiveAXElement: AXElementReading {
+final class LiveAXElement: AXElementReading, SearchTextFieldEditing {
     let element: AXUIElement
 
     init(element: AXUIElement) {
@@ -379,6 +406,40 @@ final class LiveAXElement: AXElementReading {
         }
         guard result == .success else { throw mappedReadError(result) }
         return copiedValue != nil
+    }
+
+    func isAttributeSettable(_ attribute: String) throws -> Bool {
+        var settable = DarwinBoolean(false)
+        let result = AXUIElementIsAttributeSettable(element, attribute as CFString, &settable)
+        if result == .success {
+            return settable.boolValue
+        }
+        if result == .attributeUnsupported || result == .noValue {
+            return false
+        }
+        throw mappedReadError(result)
+    }
+
+    func setFocused() throws {
+        let result = AXUIElementSetAttributeValue(
+            element,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        )
+        guard result == .success else { throw mappedReadError(result) }
+    }
+
+    func selectText(range: CFRange) throws {
+        var selection = range
+        guard let value = AXValueCreate(.cfRange, &selection) else {
+            throw HelperError(code: "ACCESSIBILITY_READ_FAILED", message: "Accessibility data could not be read.")
+        }
+        let result = AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            value
+        )
+        guard result == .success else { throw mappedReadError(result) }
     }
 
     func isSameElement(as other: any AXElementReading) -> Bool {
