@@ -94,6 +94,66 @@ function appendShopLink(scope: AxNode, childIndex: number, title: string, url: s
   }));
 }
 
+interface SplitPriceOptions {
+  major?: string;
+  fraction?: string;
+  currencyCount?: number;
+  majorRole?: string;
+  fractionRole?: string;
+  majorPosition?: { x: number; y: number } | null;
+  majorSize?: { width: number; height: number } | null;
+  fractionPosition?: { x: number; y: number } | null;
+  fractionSize?: { width: number; height: number } | null;
+  duplicateMajor?: boolean;
+  thirdNumeric?: string | null;
+}
+
+function replaceFirstCardPriceWithSplit(
+  root: AxNode,
+  options: SplitPriceOptions = {}
+): void {
+  const scope = firstCardScope(root);
+  const priceIndex = scope.children.findIndex((node) => node.description === "价格");
+  assert.notEqual(priceIndex, -1);
+  const major = options.major ?? "4999";
+  const fraction = options.fraction ?? "9";
+  const currencyCount = options.currencyCount ?? 1;
+  const majorNode = axNode([...scope.path, priceIndex], {
+    role: options.majorRole ?? "AXStaticText",
+    value: major,
+    enabled: true,
+    position: options.majorPosition === undefined ? { x: 120, y: 100 } : options.majorPosition,
+    size: options.majorSize === undefined ? { width: 100, height: 20 } : options.majorSize
+  });
+  const fractionNode = axNode([...scope.path, priceIndex + 1], {
+    role: options.fractionRole ?? "AXStaticText",
+    value: fraction,
+    enabled: true,
+    position: options.fractionPosition === undefined ? { x: 195, y: 100 } : options.fractionPosition,
+    size: options.fractionSize === undefined ? { width: 10, height: 20 } : options.fractionSize
+  });
+  const replacements: AxNode[] = [
+    ...Array.from({ length: currencyCount }, (_, index) => axNode([...scope.path, priceIndex + index + 2], {
+      role: "AXStaticText",
+      value: index === 0 ? "¥" : "￥",
+      enabled: true,
+      position: { x: 100 - index * 10, y: 100 },
+      size: { width: 10, height: 20 }
+    })),
+    majorNode,
+    fractionNode
+  ];
+  if (options.duplicateMajor) replacements.push(structuredClone(majorNode));
+  if (options.thirdNumeric) replacements.push(axNode([...scope.path, priceIndex + replacements.length], {
+    role: "AXStaticText",
+    value: options.thirdNumeric,
+    enabled: true,
+    position: { x: 250, y: 100 },
+    size: { width: 20, height: 20 }
+  }));
+  scope.children.splice(priceIndex, 1, ...replacements);
+}
+
 function stopStateRoot(stateScope: AxNode): AxNode {
   return axNode([], {
     role: "AXApplication",
@@ -387,6 +447,50 @@ test("uses enclosing card evidence when supported item links are nested", async 
   ];
 
   assert.equal(readSearchCards(root)[0]?.shopName, "Example Audio A");
+});
+
+test("combines a strict one-digit split-price tail", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  replaceFirstCardPriceWithSplit(root);
+
+  const card = readSearchCards(root)[0];
+  assert.equal(card?.displayPriceMinText, "4999.90");
+  assert.equal(card?.displayPriceMaxText, "4999.90");
+});
+
+test("preserves a strict two-digit split-price tail", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  replaceFirstCardPriceWithSplit(root, { fraction: "95" });
+
+  const card = readSearchCards(root)[0];
+  assert.equal(card?.displayPriceMinText, "4999.95");
+  assert.equal(card?.displayPriceMaxText, "4999.95");
+});
+
+test("rejects unsupported split-price accessibility shapes", async () => {
+  const cases: Array<[string, SplitPriceOptions]> = [
+    ["missing currency", { currencyCount: 0 }],
+    ["multiple currencies", { currencyCount: 2 }],
+    ["missing major position", { majorPosition: null }],
+    ["missing fraction size", { fractionSize: null }],
+    ["wrong major role", { majorRole: "AXGroup" }],
+    ["wrong fraction role", { fractionRole: "AXLink" }],
+    ["reversed layout", { fractionPosition: { x: 110, y: 100 } }],
+    ["vertically separated", { fractionPosition: { x: 195, y: 130 } }],
+    ["not contained", { fractionPosition: { x: 225, y: 100 } }],
+    ["not rightmost", { fractionPosition: { x: 140, y: 100 } }],
+    ["major too short", { major: "9", fraction: "5" }],
+    ["major too long", { major: "123456789", fraction: "5" }],
+    ["fraction too long", { fraction: "123" }],
+    ["duplicate major node", { duplicateMajor: true }],
+    ["third numeric text", { thirdNumeric: "7" }]
+  ];
+
+  for (const [name, options] of cases) {
+    const root = structuredClone(await fixture("live-search-results.json"));
+    replaceFirstCardPriceWithSplit(root, options);
+    assert.throws(() => readSearchCards(root), UiContractChangedError, name);
+  }
 });
 
 test("rejects a target item that can only borrow evidence from a nested sibling item", async () => {

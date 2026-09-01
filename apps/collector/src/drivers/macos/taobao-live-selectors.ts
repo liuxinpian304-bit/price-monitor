@@ -94,6 +94,70 @@ function priceRange(text: string): [string, string] | null {
   return [Number(match[1]).toFixed(2), Number(match[2] ?? match[1]).toFixed(2)];
 }
 
+interface NumericPriceCandidate {
+  text: string;
+  nodes: AxNode[];
+}
+
+function numericPriceCandidates(nodes: AxNode[]): NumericPriceCandidate[] {
+  const grouped = new Map<string, AxNode[]>();
+  for (const node of nodes) {
+    const text = axNodeText(node);
+    if (!text || !priceRange(text)) continue;
+    grouped.set(text, [...(grouped.get(text) ?? []), node]);
+  }
+  return [...grouped].map(([text, groupedNodes]) => ({ text, nodes: groupedNodes }));
+}
+
+function containsFrame(outer: AxNode, inner: AxNode): boolean {
+  if (!outer.position || !outer.size || !inner.position || !inner.size) return false;
+  return inner.position.x >= outer.position.x
+    && inner.position.y >= outer.position.y
+    && inner.position.x + inner.size.width <= outer.position.x + outer.size.width
+    && inner.position.y + inner.size.height <= outer.position.y + outer.size.height;
+}
+
+function splitPriceRange(nodes: AxNode[], candidates: NumericPriceCandidate[]): [string, string] | null {
+  if (candidates.length !== 2 || candidates.some((candidate) => candidate.nodes.length !== 1)) return null;
+  const ordered = [...candidates].sort((left, right) => right.text.length - left.text.length);
+  const [majorCandidate, fractionCandidate] = ordered;
+  const major = majorCandidate?.nodes[0];
+  const fraction = fractionCandidate?.nodes[0];
+  if (!majorCandidate || !fractionCandidate || !major || !fraction) return null;
+  if (!/^[1-9]\d{1,7}$/.test(majorCandidate.text)
+    || !/^\d{1,2}$/.test(fractionCandidate.text)
+    || Number(fractionCandidate.text) >= 100
+    || majorCandidate.text.length <= fractionCandidate.text.length) return null;
+  if (major.role !== "AXStaticText" || fraction.role !== "AXStaticText"
+    || major.enabled === false || fraction.enabled === false
+    || !major.position || !major.size || !fraction.position || !fraction.size) return null;
+  if (fraction.position.x <= major.position.x
+    || Math.abs(fraction.position.y - major.position.y) > 20
+    || !containsFrame(major, fraction)) return null;
+  const fractionCenter = fraction.position.x + fraction.size.width / 2;
+  if (fractionCenter < major.position.x + major.size.width * 0.75) return null;
+  const currencies = nodes.filter((node) => {
+    const text = axNodeText(node);
+    return node.enabled !== false && (text === "¥" || text === "￥") && node.position !== null;
+  });
+  if (currencies.length !== 1) return null;
+  const currency = currencies[0];
+  if (!currency?.position
+    || currency.position.x >= major.position.x
+    || Math.abs(currency.position.y - major.position.y) > 20
+    || major.position.x - currency.position.x > 120) return null;
+  const normalized = Number(
+    `${majorCandidate.text}.${fractionCandidate.text.padEnd(2, "0")}`
+  ).toFixed(2);
+  return [normalized, normalized];
+}
+
+function cardPriceRange(nodes: AxNode[]): [string, string] | null {
+  const candidates = numericPriceCandidates(nodes);
+  if (candidates.length === 1) return priceRange(candidates[0]?.text ?? "");
+  return splitPriceRange(nodes, candidates);
+}
+
 function distinctText(values: Array<string | null>): string[] {
   return [...new Set(values.filter((value): value is string => value !== null))];
 }
@@ -150,14 +214,9 @@ function cardEvidenceNodes(scope: AxNode, actionNode: AxNode): AxNode[] {
 
 function cardEvidence(scope: AxNode, actionNode: AxNode): CardEvidence | null {
   const nodes = cardEvidenceNodes(scope, actionNode);
-  const priceTexts = distinctText(nodes.map((node) => {
-    const text = axNodeText(node);
-    return text && priceRange(text) ? text : null;
-  }));
+  const price = cardPriceRange(nodes);
   const shopName = searchShopName(nodes);
-  if (priceTexts.length !== 1 || !shopName) return null;
-  const price = priceRange(priceTexts[0] ?? "");
-  if (!price) return null;
+  if (!price || !shopName) return null;
   return { price, shopName };
 }
 
