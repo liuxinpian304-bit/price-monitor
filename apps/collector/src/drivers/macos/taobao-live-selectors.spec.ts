@@ -370,6 +370,25 @@ test("preserves displayed duplicates and raw live action nodes", async () => {
   assert.notDeepEqual(cards[0]?.actionNode.path, cards[1]?.actionNode.path);
 });
 
+test("uses enclosing card evidence when supported item links are nested", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  const [firstItemLink, secondItemLink, ...evidence] = scope.children;
+  assert.ok(firstItemLink);
+  assert.ok(secondItemLink);
+  scope.children = [
+    axNode([...scope.path, 0], {
+      children: [
+        { ...firstItemLink, path: [...scope.path, 0, 0] },
+        { ...secondItemLink, path: [...scope.path, 0, 1] }
+      ]
+    }),
+    ...evidence.map((node, index) => ({ ...node, path: [...scope.path, index + 1] }))
+  ];
+
+  assert.equal(readSearchCards(root)[0]?.shopName, "Example Audio A");
+});
+
 test("keeps an explicit shop name authoritative over a shop-link fallback", async () => {
   const root = structuredClone(await fixture("live-search-results.json"));
   const scope = firstCardScope(root);

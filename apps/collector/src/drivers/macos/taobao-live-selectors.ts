@@ -120,8 +120,7 @@ function fallbackShopNames(nodes: AxNode[]): string[] {
   }));
 }
 
-function searchShopName(scope: AxNode): string | null {
-  const nodes = walkAxNodes(scope);
+function searchShopName(nodes: AxNode[]): string | null {
   const explicit = explicitShopNames(nodes);
   if (explicit.length > 1) return null;
   if (explicit.length === 1) return explicit[0] ?? null;
@@ -129,25 +128,36 @@ function searchShopName(scope: AxNode): string | null {
   return fallback.length === 1 ? fallback[0] ?? null : null;
 }
 
-function cardEvidence(scope: AxNode): CardEvidence | null {
-  const priceTexts = distinctText(walkAxNodes(scope).map((node) => {
+function isSupportedLiveItemAction(node: AxNode): boolean {
+  return node.role === "AXLink"
+    && node.actions.includes("AXPress")
+    && isSupportedLiveItemUrl(node.url);
+}
+
+function cardEvidenceNodes(scope: AxNode, actionNode: AxNode): AxNode[] {
+  return [scope, ...scope.children.flatMap((child) => {
+    const nodes = walkAxNodes(child);
+    return nodes.includes(actionNode) || !nodes.some(isSupportedLiveItemAction) ? nodes : [];
+  })];
+}
+
+function cardEvidence(scope: AxNode, actionNode: AxNode): CardEvidence | null {
+  const nodes = cardEvidenceNodes(scope, actionNode);
+  const priceTexts = distinctText(nodes.map((node) => {
     const text = axNodeText(node);
     return text && priceRange(text) ? text : null;
   }));
-  const shopName = searchShopName(scope);
+  const shopName = searchShopName(nodes);
   if (priceTexts.length !== 1 || !shopName) return null;
   const price = priceRange(priceTexts[0] ?? "");
   if (!price) return null;
   return { price, shopName };
 }
 
-function deepestCardScope(searchArea: AxNode, ancestors: AxNode[]): { cardNode: AxNode; evidence: CardEvidence } {
-  const candidates = ancestors.filter((node) => node !== searchArea
-    && node.children.some((child) => child.role === "AXLink"
-      && child.actions.includes("AXPress")
-      && isSupportedLiveItemUrl(child.url))).reverse();
+function deepestCardScope(searchArea: AxNode, actionNode: AxNode, ancestors: AxNode[]): { cardNode: AxNode; evidence: CardEvidence } {
+  const candidates = ancestors.filter((node) => node !== searchArea).reverse();
   for (const candidate of candidates) {
-    const evidence = cardEvidence(candidate);
+    const evidence = cardEvidence(candidate, actionNode);
     if (evidence) return { cardNode: candidate, evidence };
   }
   return profileError();
@@ -392,9 +402,8 @@ export function liveReadSearchCards(root: AxNode): SelectedSearchCard[] {
   const cards: SelectedSearchCard[] = [];
   const seenScopes = new Map<string, { platformItemId: string | null; url: string }>();
   for (const { node: actionNode, ancestors } of scopedNodes(searchArea)) {
-    if (actionNode.role !== "AXLink" || !actionNode.actions.includes("AXPress")) continue;
-    if (!isSupportedLiveItemUrl(actionNode.url)) continue;
-    const scope = deepestCardScope(searchArea, ancestors);
+    if (!isSupportedLiveItemAction(actionNode)) continue;
+    const scope = deepestCardScope(searchArea, actionNode, ancestors);
     const scopePath = scope.cardNode.path.join(",");
     const item = parseLiveItemUrl(actionNode.url);
     const existing = seenScopes.get(scopePath);
