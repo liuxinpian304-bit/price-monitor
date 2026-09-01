@@ -9,20 +9,45 @@ final class AccessibilityApplication {
     private let treeSerializer: AXTreeSerializer
     private let applicationActivator: ApplicationActivator
     private let nativeSearchTextInput: NativeSearchTextInput
+    private let runningApplicationInfoProvider: () -> RunningApplicationInfo?
+    private let searchTextFieldResolver: (([Int], AXNodeFingerprint) throws -> any SearchTextFieldEditing)?
+    private let isProcessFrontmost: (pid_t) -> Bool
 
     init(
         bundleIdentifier: String,
         treeSerializer: AXTreeSerializer = AXTreeSerializer(),
         applicationActivator: ApplicationActivator = ApplicationActivator(),
-        nativeSearchTextInput: NativeSearchTextInput = NativeSearchTextInput(poster: CGUnicodeTextPoster())
+        nativeSearchTextInput: NativeSearchTextInput = NativeSearchTextInput(poster: CGUnicodeTextPoster()),
+        runningApplicationInfo: (() -> RunningApplicationInfo?)? = nil,
+        searchTextFieldResolver: (([Int], AXNodeFingerprint) throws -> any SearchTextFieldEditing)? = nil,
+        isProcessFrontmost: @escaping (pid_t) -> Bool = {
+            NSWorkspace.shared.frontmostApplication?.processIdentifier == $0
+        }
     ) throws {
         guard bundleIdentifier == Self.supportedBundleIdentifier else {
             throw HelperError(code: "UNSUPPORTED_BUNDLE_ID", message: "Unsupported application.")
         }
+        let expectedBundleIdentifier = bundleIdentifier
         self.bundleIdentifier = bundleIdentifier
         self.treeSerializer = treeSerializer
         self.applicationActivator = applicationActivator
         self.nativeSearchTextInput = nativeSearchTextInput
+        self.runningApplicationInfoProvider = runningApplicationInfo ?? {
+            guard let application = Self.runningApplication(bundleIdentifier: expectedBundleIdentifier) else {
+                return nil
+            }
+            let metadata = Self.bundleMetadata(
+                runningApplication: application,
+                bundleIdentifier: expectedBundleIdentifier
+            )
+            return RunningApplicationInfo(
+                processIdentifier: application.processIdentifier,
+                shortVersion: metadata.shortVersion,
+                build: metadata.build
+            )
+        }
+        self.searchTextFieldResolver = searchTextFieldResolver
+        self.isProcessFrontmost = isProcessFrontmost
     }
 
     func diagnose(prompt: Bool) throws -> JSONValue {
@@ -36,8 +61,9 @@ final class AccessibilityApplication {
         let appInstalled = runningApplication?.bundleURL != nil
             || NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil
         let frontWindowAvailable: Bool
-        if trusted, let runningApplication {
-            let root = LiveAXElement(element: AXUIElementCreateApplication(runningApplication.processIdentifier))
+        if trusted, runningApplication != nil {
+            let application = try supportedRunningApplicationInfo()
+            let root = LiveAXElement(element: AXUIElementCreateApplication(application.processIdentifier))
             frontWindowAvailable = try Self.frontWindowAvailable(applicationRoot: root)
         } else {
             frontWindowAvailable = false
@@ -109,12 +135,12 @@ final class AccessibilityApplication {
 
     func replaceText(path: [Int], value: String, fingerprint: AXNodeFingerprint) throws -> JSONValue {
         let pid = try runningProcessIdentifier()
-        let field = try resolve(path: path, fingerprint: fingerprint)
+        let field = try resolveSearchTextField(path: path, fingerprint: fingerprint)
         try nativeSearchTextInput.replace(
             field: field,
             processIdentifier: pid,
             value: value,
-            isFrontmost: { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }
+            isFrontmost: { isProcessFrontmost(pid) }
         )
         return .object(["typed": .boolean(true)])
     }
@@ -125,9 +151,9 @@ final class AccessibilityApplication {
             throw HelperError(code: "KEY_NOT_ALLOWED", message: "Keyboard action is not allowed.")
         }
 
+        let processIdentifier = try runningProcessIdentifier()
         _ = try freshRoot().element
-        guard let application = runningApplication(),
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier else {
+        guard isProcessFrontmost(processIdentifier) else {
             throw HelperError(code: "APP_NOT_FRONTMOST", message: "Application is not frontmost.")
         }
         guard let source = CGEventSource(stateID: .hidSystemState),
@@ -136,8 +162,8 @@ final class AccessibilityApplication {
             throw HelperError(code: "KEY_EVENT_FAILED", message: "Keyboard action failed.")
         }
 
-        keyDown.postToPid(application.processIdentifier)
-        keyUp.postToPid(application.processIdentifier)
+        keyDown.postToPid(processIdentifier)
+        keyUp.postToPid(processIdentifier)
         return .object(["performed": .boolean(true)])
     }
 
@@ -164,10 +190,7 @@ final class AccessibilityApplication {
     }
 
     func runningProcessIdentifier() throws -> pid_t {
-        guard let application = runningApplication() else {
-            throw HelperError(code: "APP_NOT_RUNNING", message: "Application is not running.")
-        }
-        return application.processIdentifier
+        try supportedRunningApplicationInfo().processIdentifier
     }
 
     private func freshRoot() throws -> (element: LiveAXElement, scope: AXRootScope) {
@@ -177,9 +200,7 @@ final class AccessibilityApplication {
                 message: "Accessibility permission is required."
             )
         }
-        guard let application = runningApplication() else {
-            throw HelperError(code: "APP_NOT_RUNNING", message: "Application is not running.")
-        }
+        let application = try supportedRunningApplicationInfo()
         let applicationRoot = LiveAXElement(
             element: AXUIElementCreateApplication(application.processIdentifier)
         )
@@ -221,13 +242,44 @@ final class AccessibilityApplication {
         return current
     }
 
+    private func resolveSearchTextField(
+        path: [Int],
+        fingerprint: AXNodeFingerprint
+    ) throws -> any SearchTextFieldEditing {
+        if let searchTextFieldResolver {
+            return try searchTextFieldResolver(path, fingerprint)
+        }
+        return try resolve(path: path, fingerprint: fingerprint)
+    }
+
+    private func supportedRunningApplicationInfo() throws -> RunningApplicationInfo {
+        guard let application = runningApplicationInfoProvider() else {
+            throw HelperError(code: "APP_NOT_RUNNING", message: "Application is not running.")
+        }
+        guard application.shortVersion == "2.4.5", application.build == "15" else {
+            throw HelperError(code: "UNSUPPORTED_TAOBA_BUILD", message: "Unsupported Taobao application build.")
+        }
+        return application
+    }
+
     private func runningApplication() -> NSRunningApplication? {
+        Self.runningApplication(bundleIdentifier: bundleIdentifier)
+    }
+
+    private static func runningApplication(bundleIdentifier: String) -> NSRunningApplication? {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
             .sorted { $0.processIdentifier < $1.processIdentifier }
             .first
     }
 
     private func bundleMetadata(runningApplication: NSRunningApplication?) -> BundleMetadata {
+        Self.bundleMetadata(runningApplication: runningApplication, bundleIdentifier: bundleIdentifier)
+    }
+
+    private static func bundleMetadata(
+        runningApplication: NSRunningApplication?,
+        bundleIdentifier: String
+    ) -> BundleMetadata {
         let bundleURL = runningApplication?.bundleURL
             ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
         guard let bundleURL, let bundle = Bundle(url: bundleURL) else {
@@ -321,6 +373,12 @@ struct MacOSCommandHandler: CommandHandling {
 
 private struct BundleMetadata {
     let bundleIdentifier: String?
+    let shortVersion: String?
+    let build: String?
+}
+
+struct RunningApplicationInfo {
+    let processIdentifier: pid_t
     let shortVersion: String?
     let build: String?
 }

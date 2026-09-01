@@ -2,7 +2,7 @@ import XCTest
 @testable import TaobaoAX
 
 final class NativeTextInputTests: XCTestCase {
-    func testActivationWaitsForTheExactProcessAndReturnsNoSensitivePayload() throws {
+    func testActivationWaitsForTheExactProcess() throws {
         var frontmost: pid_t? = nil
         var activationRequests: [pid_t] = []
         var ticks = 0
