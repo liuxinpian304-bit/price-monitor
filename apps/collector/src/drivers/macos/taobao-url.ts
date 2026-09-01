@@ -2,11 +2,31 @@ import { UiContractChangedError } from "../../core/desktop-driver.ts";
 
 const PROFILE_ERROR = "Taobao Accessibility tree does not match the approved 2.4.5 build 15 profile";
 const ITEM_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+const SHOP_HOST_SEGMENTS = new Set(["shop", "store", "seller"]);
+const LIVE_PLATFORM_HOST_SUFFIXES = ["taobao.com", "tmall.com"];
 
 export interface ParsedLiveItemUrl {
   platformItemId: string | null;
   url: string;
   sponsored: boolean;
+}
+
+function isLivePlatformHost(host: string): boolean {
+  return LIVE_PLATFORM_HOST_SUFFIXES.some((suffix) =>
+    host === suffix || host.endsWith(`.${suffix}`));
+}
+
+export function isSupportedLiveShopUrl(rawUrl: string | null): boolean {
+  if (!rawUrl) return false;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase();
+    return isLivePlatformHost(host)
+      && host.split(".").some((segment) => SHOP_HOST_SEGMENTS.has(segment));
+  } catch {
+    return false;
+  }
 }
 
 function profileError(): never {
