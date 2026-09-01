@@ -29,7 +29,7 @@ import {
   canonicalItemIdentity,
   findBackAction,
   findSearchField,
-  findSearchSubmitAction,
+  findSyntheticSearchConfirmAction,
   findSkuOption,
   hasSearchEndMarker,
   readDetailPage,
@@ -311,28 +311,45 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
       throw new TypeError("Search limit must be an integer from 1 through 50");
     }
+    await this.client.command("activate");
     const initial = await this.client.snapshot();
     assertNoStopState(initial);
+    const profile = taobaoSelectorProfile(initial);
     const field = findSearchField(initial);
     const preSubmitSignature = optionalSearchContext(initial)?.signature ?? null;
-    await this.client.command("setValue", {
-      nodePath: field.path,
-      value: query,
-      fingerprint: fingerprintFor(field)
-    });
+    if (profile === "LIVE") {
+      await this.client.command("replaceText", {
+        nodePath: field.path,
+        value: query,
+        fingerprint: fingerprintFor(field)
+      });
+    } else {
+      await this.client.command("setValue", {
+        nodePath: field.path,
+        value: query,
+        fingerprint: fingerprintFor(field)
+      });
+    }
     const postWrite = await this.client.snapshot();
     assertNoStopState(postWrite);
+    if (taobaoSelectorProfile(postWrite) !== profile) {
+      throw new UiContractChangedError("Taobao search profile changed after replacing the query.");
+    }
     const postWriteField = findSearchField(postWrite);
     const requestedValue = query.trim().replace(/\s+/g, " ");
     if (normalizedSearchValue(postWriteField.value) !== requestedValue) {
       throw new UiContractChangedError("Taobao search field did not retain the requested query.");
     }
-    const submit = findSearchSubmitAction(postWrite);
-    await this.client.command("perform", {
-      nodePath: submit.node.path,
-      action: submit.action,
-      fingerprint: fingerprintFor(submit.node)
-    });
+    if (profile === "LIVE") {
+      await this.client.command("keyPress", { keyCode: 36 });
+    } else {
+      const submit = findSyntheticSearchConfirmAction(postWrite);
+      await this.client.command("perform", {
+        nodePath: submit.node.path,
+        action: submit.action,
+        fingerprint: fingerprintFor(submit.node)
+      });
+    }
 
     const firstResult = await this.waitForStableSearch(query, preSubmitSignature, true);
     const topContextSignature = readSearchContext(firstResult).signature;

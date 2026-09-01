@@ -333,16 +333,6 @@ export function liveFindSearchField(root: AxNode): AxNode {
   return liveSearchField(uniqueSearchWebArea(root));
 }
 
-export function liveFindSearchSubmitButton(root: AxNode): AxNode {
-  const searchArea = uniqueSearchWebArea(root);
-  const candidates = walkAxNodes(searchArea).filter((node) =>
-    node.role === "AXButton" && normalizeText(axNodeText(node) ?? "") === "搜索");
-  if (candidates.length !== 1) return profileError();
-  const button = candidates[0] ?? profileError();
-  if (button.enabled !== true || !button.actions.includes("AXPress")) return profileError();
-  return button;
-}
-
 export function liveFindSearchResultContainer(root: AxNode): AxNode {
   return uniqueSearchWebArea(root);
 }

@@ -7,17 +7,26 @@ import { walkAxNodes, type AxNode } from "./ax-node.ts";
 import {
   assertNoStopState,
   findSearchField,
-  findSearchSubmitAction,
+  findSyntheticSearchConfirmAction,
   readDetailPage,
   readSearchCards,
   readSearchResultQuery,
-  readSkuDimensions
+  readSkuDimensions,
+  type SyntheticSearchConfirmAction
 } from "./taobao-selectors.ts";
 
 async function fixture(name: string): Promise<AxNode> {
   const url = new URL(`../../../test/fixtures/ax/${name}`, import.meta.url);
   return JSON.parse(await readFile(url, "utf8")) as AxNode;
 }
+
+function syntheticSearchConfirmAction(root: AxNode): SyntheticSearchConfirmAction {
+  return findSyntheticSearchConfirmAction(root);
+}
+
+test("exports the synthetic-only search confirm selector", () => {
+  assert.equal(typeof findSyntheticSearchConfirmAction, "function");
+});
 
 test("finds the search field by semantic role within the search region", async () => {
   const field = findSearchField(await fixture("search-results.json"));
@@ -29,20 +38,34 @@ test("finds the search field by semantic role within the search region", async (
 
 test("uses AXConfirm on the profiled synthetic search field", async () => {
   const root = await fixture("search-results.json");
-  const submit = findSearchSubmitAction(root);
+  const submit = syntheticSearchConfirmAction(root);
 
   assert.equal(submit.action, "AXConfirm");
   assert.equal(submit.node.identifier, "search-input");
   assert.deepEqual(submit.node.path, [0, 0, 0]);
 });
 
-test("rejects a synthetic search field without AXConfirm", async () => {
-  const root = structuredClone(await fixture("search-results.json"));
-  const field = walkAxNodes(root).find((node) => node.identifier === "search-input");
-  assert.ok(field);
-  field.actions = [];
+test("rejects a live profile as a synthetic search action", async () => {
+  const live = await fixture("live-search-results.json");
+  assert.throws(() => syntheticSearchConfirmAction(live), UiContractChangedError);
+});
 
-  assert.throws(() => findSearchSubmitAction(root), UiContractChangedError);
+test("rejects a disabled synthetic search field", async () => {
+  const disabled = structuredClone(await fixture("search-results.json"));
+  const disabledField = walkAxNodes(disabled).find((node) => node.identifier === "search-input");
+  assert.ok(disabledField);
+  disabledField.enabled = false;
+
+  assert.throws(() => syntheticSearchConfirmAction(disabled), UiContractChangedError);
+});
+
+test("rejects a synthetic search field without AXConfirm", async () => {
+  const nonConfirmable = structuredClone(await fixture("search-results.json"));
+  const nonConfirmableField = walkAxNodes(nonConfirmable).find((node) => node.identifier === "search-input");
+  assert.ok(nonConfirmableField);
+  nonConfirmableField.actions = [];
+
+  assert.throws(() => syntheticSearchConfirmAction(nonConfirmable), UiContractChangedError);
 });
 
 test("reads ordered cards while preserving duplicate ranks and stable identities", async () => {

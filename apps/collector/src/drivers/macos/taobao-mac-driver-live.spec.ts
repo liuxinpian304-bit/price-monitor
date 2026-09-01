@@ -60,7 +60,9 @@ class LiveFakeClient implements TaobaoAxClient {
 
   async command<T = AxJsonValue>(command: AxHelperCommandName, fields: AxHelperCommandFields = {}): Promise<T> {
     this.commands.push({ command, fields: structuredClone(fields) });
-    if (["setValue", "perform", "captureCopiedText"].includes(command)) this.assertRawTarget(command, fields);
+    if (["setValue", "replaceText", "perform", "captureCopiedText"].includes(command)) {
+      this.assertRawTarget(command, fields);
+    }
     if (command === "captureCopiedText") {
       const copiedText = this.copiedTextQueue.shift() ?? this.copiedText;
       if (copiedText === null) throw new Error("Copied text was not explicitly configured for this test");
@@ -253,28 +255,22 @@ test("pages a live search with Page Down and preserves duplicate and sponsored r
     command,
     fields.action ?? fields.keyCode ?? fields.value
   ]), [
-    ["setValue", QUERY],
-    ["perform", "AXPress"],
+    ["activate", undefined],
+    ["replaceText", QUERY],
+    ["keyPress", 36],
     ["keyPress", 121]
   ]);
-  assert.deepEqual(client.commands[0], {
-    command: "setValue",
+  assert.deepEqual(client.commands[1], {
+    command: "replaceText",
     fields: {
       nodePath: [0, 0, 0, 0],
       value: QUERY,
       fingerprint: { role: "AXTextField" }
     }
   });
-  assert.deepEqual(client.commands[1], {
-    command: "perform",
-    fields: {
-      nodePath: [0, 0, 0, 1],
-      action: "AXPress",
-      fingerprint: { role: "AXButton", title: "搜索" }
-    }
-  });
+  assert.equal(client.commands.some(({ command }) => command === "setValue"), false);
   assert.equal(client.commands.some(({ command, fields }) =>
-    command === "keyPress" && fields.keyCode === 36), false);
+    command === "perform" && fields.action === "AXPress" && fields.nodePath?.join(",") === "0,0,0,1"), false);
 });
 
 test("does not submit when the freshly observed search value differs from the request", async () => {
@@ -287,7 +283,26 @@ test("does not submit when the freshly observed search value differs from the re
   );
 
   await assert.rejects(driver.search(QUERY, 1), UiContractChangedError);
-  assert.deepEqual(client.commands.map(({ command }) => command), ["setValue"]);
+  assert.deepEqual(client.commands.map(({ command }) => command), ["activate", "replaceText"]);
+  assert.equal(client.commands.some(({ command, fields }) =>
+    command === "keyPress" && fields.keyCode === 36), false);
+});
+
+test("does not submit when the search profile changes after replacing the query", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const liveSearch = await fixture("live-search-results.json");
+  const syntheticSearch = await fixture("search-results.json");
+  client.snapshotQueue.push(withSearchQuery(liveSearch, "Previous Query"), syntheticSearch);
+
+  await assert.rejects(
+    driver.search(QUERY, 1),
+    (error: unknown) => error instanceof UiContractChangedError
+      && error.message === "Taobao search profile changed after replacing the query."
+  );
+  assert.deepEqual(client.commands.map(({ command }) => command), ["activate", "replaceText"]);
+  assert.equal(client.commands.some(({ command, fields }) =>
+    command === "keyPress" && fields.keyCode === 36), false);
 });
 
 test("uses the exact raw live AXScrollDown action before the Page Down fallback", async () => {

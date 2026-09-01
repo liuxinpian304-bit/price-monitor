@@ -10,7 +10,6 @@ import {
 import { findAxNode, walkAxNodes, type AxNode } from "./ax-node.ts";
 import {
   assertNoStopState,
-  findSearchSubmitAction,
   findSkuOption,
   findSearchField,
   findSearchResultContainer,
@@ -332,47 +331,6 @@ test("reads the unique live search field and query", async () => {
   assert.equal(findSearchField(root).description, "请输入搜索文字");
   assert.equal(readSearchResultQuery(root), "Example Interface X1");
   assert.equal(findSearchResultContainer(root).role, "AXWebArea");
-});
-
-test("selects the unique enabled live search button with AXPress", async () => {
-  const root = await fixture("live-search-results.json");
-  const submit = findSearchSubmitAction(root);
-
-  assert.equal(submit.action, "AXPress");
-  assert.equal(submit.node.role, "AXButton");
-  assert.equal(submit.node.title, "搜索");
-  assert.deepEqual(submit.node.path, [0, 0, 0, 1]);
-});
-
-test("rejects missing duplicate disabled and non-actionable live search buttons", async () => {
-  const base = await fixture("live-search-results.json");
-  const cases: Array<[string, (root: AxNode) => void]> = [
-    ["missing", (root) => { searchArea(root).children[0]!.children.splice(1, 1); }],
-    ["duplicate", (root) => {
-      searchArea(root).children.push(axNode([0, 0, 2], {
-        role: "AXButton",
-        title: "搜索",
-        enabled: true,
-        actions: ["AXPress"]
-      }));
-    }],
-    ["disabled", (root) => {
-      const button = walkAxNodes(root).find((node) => node.role === "AXButton" && node.title === "搜索");
-      assert.ok(button);
-      button.enabled = false;
-    }],
-    ["non-actionable", (root) => {
-      const button = walkAxNodes(root).find((node) => node.role === "AXButton" && node.title === "搜索");
-      assert.ok(button);
-      button.actions = [];
-    }]
-  ];
-
-  for (const [name, mutate] of cases) {
-    const root = structuredClone(base);
-    mutate(root);
-    assert.throws(() => findSearchSubmitAction(root), UiContractChangedError, name);
-  }
 });
 
 test("preserves displayed duplicates and raw live action nodes", async () => {

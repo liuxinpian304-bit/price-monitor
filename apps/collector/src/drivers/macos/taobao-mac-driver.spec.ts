@@ -227,10 +227,11 @@ test("searches semantically and preserves duplicate result positions", async () 
     [1, "example-7506"], [2, "example-7506"], [3, null]
   ]);
   assert.deepEqual(client.commands.map((entry) => [entry.command, entry.fields.action ?? entry.fields.value]), [
+    ["activate", undefined],
     ["setValue", "索尼 7506"],
     ["perform", "AXConfirm"]
   ]);
-  assert.deepEqual(client.commands[1], {
+  assert.deepEqual(client.commands[2], {
     command: "perform",
     fields: {
       nodePath: [0, 0, 0],
