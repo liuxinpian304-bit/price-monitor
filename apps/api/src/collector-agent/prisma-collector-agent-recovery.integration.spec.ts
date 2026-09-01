@@ -64,7 +64,10 @@ test("only the owning agent reclaims a stale running checkpoint lease", async ()
   });
   ids.run = run.id;
   const repository = new PrismaCollectorAgentRepository(prisma);
-  const capabilities = { appVersion: "2.4.5", capabilities: [] };
+  const capabilities = {
+    appVersion: "2.4.5",
+    capabilities: ["accessibility", "all-sku", "png-evidence"]
+  };
 
   const originallyClaimed = await repository.claimNext(ids.owner!, capabilities);
   assert.equal(originallyClaimed?.runId, run.id);

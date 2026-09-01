@@ -1,4 +1,7 @@
-import type { CollectorJob } from "../../../../packages/contracts/src/index.ts";
+import type {
+  CollectorJob,
+  CollectorRunReleaseInput
+} from "../../../../packages/contracts/src/index.ts";
 
 import { createCollectorToken } from "./collector-token.ts";
 
@@ -26,7 +29,7 @@ export interface CollectorAgentRepository {
     code: "LOGIN_REQUIRED" | "PLATFORM_CHALLENGE",
     message: string
   ): Promise<boolean>;
-  release(agentId: string, runId: string): Promise<boolean>;
+  release(agentId: string, runId: string, input: CollectorRunReleaseInput): Promise<boolean>;
   ownsRun(agentId: string, runId: string): Promise<boolean>;
 }
 
@@ -96,9 +99,13 @@ export class CollectorAgentService {
     }
   }
 
-  async release(token: string, runId: string): Promise<void> {
+  async release(
+    token: string,
+    runId: string,
+    input: CollectorRunReleaseInput = { disposition: "REQUEUE" }
+  ): Promise<void> {
     const agent = await this.authenticate(token);
-    if (!await this.repository.release(agent.id, runId)) {
+    if (!await this.repository.release(agent.id, runId, input)) {
       throw new CollectorAgentRunOwnershipError();
     }
   }

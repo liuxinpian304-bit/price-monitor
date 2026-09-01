@@ -90,7 +90,7 @@ test("duplicate scheduled delivery is idempotent while later overlapping work is
   assert.equal(duplicate[0]?.run.id, "run-1");
   assert.equal(duplicate[0]?.coalesced, false);
   assert.deepEqual(overlap, {
-    runId: "run-2",
+    runId: "run-1",
     coalesced: true
   });
   assert.equal(repository.runs[1]?.coalescedIntoRunId, "run-1");

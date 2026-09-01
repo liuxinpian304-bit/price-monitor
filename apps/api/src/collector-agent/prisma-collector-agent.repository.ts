@@ -1,4 +1,8 @@
-import { collectorJobSchema, type CollectorJob } from "../../../../packages/contracts/src/index.ts";
+import {
+  collectorJobSchema,
+  type CollectorJob,
+  type CollectorRunReleaseInput
+} from "../../../../packages/contracts/src/index.ts";
 import { Prisma, type PrismaClient } from "../../../../generated/prisma/client.ts";
 
 import type { CollectorAgentRepository } from "./collector-agent.service.ts";
@@ -6,6 +10,19 @@ import { verifyCollectorToken } from "./collector-token.ts";
 
 const maximumClaimAttempts = 5;
 export const COLLECTOR_RUN_LEASE_MILLISECONDS = 90_000;
+
+const PROVIDER_PROFILES = [{
+  providerKey: "taobao-desktop",
+  platform: "MACOS",
+  capabilities: ["accessibility", "all-sku", "png-evidence"]
+}] as const;
+
+function compatibleProviderKeys(platform: "MACOS" | "WINDOWS", capabilities: string[]): string[] {
+  const advertised = new Set(capabilities);
+  return PROVIDER_PROFILES.filter((profile) => profile.platform === platform
+    && profile.capabilities.every((capability) => advertised.has(capability)))
+    .map((profile) => profile.providerKey);
+}
 
 function isSerializableConflict(error: unknown): boolean {
   return typeof error === "object" && error !== null && Reflect.get(error, "code") === "P2034";
@@ -106,12 +123,23 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
     return true;
   }
 
-  async release(agentId: string, runId: string): Promise<boolean> {
+  async release(
+    agentId: string,
+    runId: string,
+    input: CollectorRunReleaseInput
+  ): Promise<boolean> {
+    const now = new Date();
     const updated = await this.prisma.collectionRun.updateMany({
       where: { id: runId, collectorAgentId: agentId, status: "RUNNING" },
-      data: {
+      data: input.disposition === "QUARANTINE" ? {
+        status: "FAILED",
+        heartbeatAt: now,
+        finishedAt: now,
+        errorCode: input.errorCode,
+        errorMessage: "Collector checkpoint requires operator review"
+      } : {
         status: "QUEUED",
-        heartbeatAt: new Date(),
+        heartbeatAt: now,
         errorCode: null,
         errorMessage: null
       }
@@ -141,10 +169,18 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
         }
       });
       if (activeAgent.count === 0) return null;
+      const agentProfile = await transaction.collectorAgent.findUnique({
+        where: { id: agentId },
+        select: { platform: true }
+      });
+      if (!agentProfile) return null;
+      const providerKeys = compatibleProviderKeys(agentProfile.platform, input.capabilities);
+      if (providerKeys.length === 0) return null;
 
       const staleBefore = new Date(now.getTime() - COLLECTOR_RUN_LEASE_MILLISECONDS);
       const staleOwnedRun = await transaction.collectionRun.findFirst({
         where: {
+          providerKey: { in: providerKeys },
           status: "RUNNING",
           collectorAgentId: agentId,
           heartbeatAt: { lte: staleBefore },
@@ -156,6 +192,7 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
       });
       const nextRun = staleOwnedRun ?? await transaction.collectionRun.findFirst({
         where: {
+          providerKey: { in: providerKeys },
           status: "QUEUED",
           OR: [{ collectorAgentId: null }, { collectorAgentId: agentId }],
           monitoredModel: { ownListings: { some: { active: true } } }
@@ -169,6 +206,7 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
         ? await transaction.collectionRun.updateMany({
             where: {
               id: nextRun.id,
+              providerKey: { in: providerKeys },
               status: "RUNNING",
               collectorAgentId: agentId,
               heartbeatAt: { lte: staleBefore },
@@ -179,6 +217,7 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
         : await transaction.collectionRun.updateMany({
             where: {
               id: nextRun.id,
+              providerKey: { in: providerKeys },
               status: "QUEUED",
               OR: [{ collectorAgentId: null }, { collectorAgentId: agentId }],
               monitoredModel: { ownListings: { some: { active: true } } }

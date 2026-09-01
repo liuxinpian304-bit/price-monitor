@@ -26,6 +26,13 @@ interface AppliedPromotion {
   amountFen: number;
 }
 
+const KNOWN_PRIVATE_AUDIENCES = new Set([
+  "MEMBER",
+  "88VIP",
+  "ACCOUNT",
+  "PERSONAL_RED_PACKET"
+]);
+
 function addFen(total: number, value: number): number {
   const next = total + value;
   if (!Number.isSafeInteger(next)) {
@@ -42,7 +49,10 @@ export function derivePromotionDiscounts(
   const reviewReasons: string[] = [];
 
   for (const promotion of promotions) {
-    if (promotion.audience !== "PUBLIC") continue;
+    if (promotion.audience !== "PUBLIC") {
+      if (!KNOWN_PRIVATE_AUDIENCES.has(promotion.audience)) reviewReasons.push(promotion.label);
+      continue;
+    }
 
     if (promotion.activityPriceInclusion === "INCLUDED") continue;
     if (promotion.activityPriceInclusion !== "EXCLUDED") {

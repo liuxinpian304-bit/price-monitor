@@ -1,5 +1,6 @@
 import {
   collectorReportSchema,
+  resolveItemUrlIdentity,
   type CollectorReport
 } from "../../../../packages/contracts/src/index.ts";
 import { createHash } from "node:crypto";
@@ -47,6 +48,7 @@ export interface ClaimedDesktopRun {
   searchLimit: number;
   status: ClaimedCollectionStatus;
   ownListingIds: string[];
+  ownListings: Array<{ id: string; url: string; shopName: string }>;
 }
 
 export interface DesktopReportRepository {
@@ -202,13 +204,11 @@ function validateReportContract(input: CollectorReport): CollectorReport {
   }
   validateTerminalSemantics(parsed.data);
   for (const entry of [...parsed.data.positions, ...parsed.data.ownItems, ...parsed.data.competitorItems]) {
-    let itemId: string | null = null;
     try {
-      itemId = new URL(entry.url).searchParams.get("id");
+      resolveItemUrlIdentity(entry.url, entry.platformItemId);
     } catch {
       throw new DesktopReportValidationError();
     }
-    if (itemId !== entry.platformItemId) throw new DesktopReportValidationError();
   }
   return canonicalizeReportTimestamps(parsed.data);
 }
@@ -231,9 +231,25 @@ function validateClaimBinding(
   ) {
     throw new DesktopReportConflictError();
   }
-  const claimedOwnListings = new Set(run.ownListingIds);
+  const claimedOwnListings = new Set(run.ownListings.map((listing) => listing.id));
+  const claimedOwnListingIds = new Set(run.ownListingIds);
+  if (claimedOwnListings.size !== run.ownListings.length
+    || claimedOwnListingIds.size !== claimedOwnListings.size
+    || [...claimedOwnListings].some((id) => !claimedOwnListingIds.has(id))) {
+    throw new DesktopReportConflictError();
+  }
+  const claimedOwnListingById = new Map(run.ownListings.map((listing) => [listing.id, listing]));
   const reportedOwnListings = new Set(report.ownItems.map((item) => item.ownListingId));
-  if (report.ownItems.some((item) => !claimedOwnListings.has(item.ownListingId))
+  if (report.ownItems.some((item) => {
+    const claimed = claimedOwnListingById.get(item.ownListingId);
+    if (!claimed || item.shopName !== claimed.shopName) return true;
+    try {
+      const claimedIdentity = resolveItemUrlIdentity(claimed.url, null).platformItemId;
+      return claimedIdentity === null || claimedIdentity !== item.platformItemId;
+    } catch {
+      return true;
+    }
+  })
     || (report.status === "SUCCEEDED"
       && (claimedOwnListings.size === 0
         || reportedOwnListings.size === 0

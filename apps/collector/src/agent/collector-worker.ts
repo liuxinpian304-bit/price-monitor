@@ -1,6 +1,7 @@
 import {
   collectorJobSchema,
   collectorReportSchema,
+  type CollectorRunReleaseInput,
   type CollectorJob,
   type CollectorReport
 } from "@stau-price-monitor/contracts";
@@ -20,7 +21,7 @@ export interface CollectorWorkerApi {
     code: "LOGIN_REQUIRED" | "PLATFORM_CHALLENGE",
     message: string
   ): Promise<void>;
-  release(runId: string): Promise<void>;
+  release(runId: string, input?: CollectorRunReleaseInput): Promise<void>;
   uploadReport(runId: string, report: CollectorReport): Promise<IngestionSummary>;
 }
 
@@ -328,8 +329,18 @@ export class CollectorWorker {
     }
     if (runnerError !== undefined) {
       this.activeController = null;
+      if (runnerError instanceof CollectionInterruptedError) {
+        await this.release(job.runId);
+        return "stopped";
+      }
+      if (safeErrorCode(runnerError) === "INVALID_CHECKPOINT") {
+        await this.release(job.runId, {
+          disposition: "QUARANTINE",
+          errorCode: "INVALID_CHECKPOINT"
+        });
+        throw new CollectorWorkerError("CHECKPOINT_FAILED");
+      }
       await this.release(job.runId);
-      if (runnerError instanceof CollectionInterruptedError) return "stopped";
       throw new CollectorWorkerError("COLLECTION_FAILED");
     }
     if (inputReport === undefined) {
@@ -458,20 +469,21 @@ export class CollectorWorker {
       .reduce((total, item) => total + item.skus.length, 0);
   }
 
-  private async release(runId: string): Promise<void> {
+  private async release(runId: string, input?: CollectorRunReleaseInput): Promise<void> {
+    const quarantined = input?.disposition === "QUARANTINE";
     try {
-      await this.options.api.release(runId);
+      await this.options.api.release(runId, input);
       this.emit({
-        event: "job_requeued",
+        event: quarantined ? "job_quarantined" : "job_requeued",
         runId,
         phase: null,
         discoveredCount: 0,
         skuCount: 0,
-        errorCode: null
+        errorCode: quarantined ? "INVALID_CHECKPOINT" : null
       });
     } catch (error) {
       this.emit({
-        event: "job_requeue_failed",
+        event: quarantined ? "job_quarantine_failed" : "job_requeue_failed",
         runId,
         phase: null,
         discoveredCount: 0,

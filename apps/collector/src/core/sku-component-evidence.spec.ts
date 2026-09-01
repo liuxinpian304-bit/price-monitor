@@ -189,6 +189,19 @@ test("attributes package quantity to the identified paid accessory", () => {
   assert.equal(pair.find((item) => item.modelOrName === "AI-1")?.quantity, 2);
 });
 
+test("preserves every accessory and leaves a compound-token quantity unassigned", () => {
+  const result = deriveSkuComponents({
+    brand: "RODE",
+    standardModel: "NT1S",
+    selectedLabels: { "套餐类型": "NT1S麦克风 AI-1声卡 HP-1耳机2件" },
+    explicitComponents: undefined
+  });
+
+  assert.equal(result.find((item) => item.modelOrName === "AI-1")?.quantity, 1);
+  assert.equal(result.find((item) => item.modelOrName === "HP-1")?.quantity, 1);
+  assert.equal(result.some((item) => item.role === "UNKNOWN"), true);
+});
+
 test("marks a generic quantity dimension unknown when a bundle has multiple components", () => {
   const result = deriveSkuComponents({
     brand: "RODE",

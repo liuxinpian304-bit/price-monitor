@@ -11,3 +11,5 @@ export const ALERT_STATUSES = [
 export type AlertStatus = (typeof ALERT_STATUSES)[number];
 
 export * from "./desktop-collector.ts";
+export * from "./collector-run-release.ts";
+export * from "./item-url-identity.ts";

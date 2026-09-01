@@ -159,12 +159,16 @@ test("accepts the assembled runtime health contract without weakening its respon
   await assert.rejects(() => unknownField.checkReachability(), { code: "INVALID_RESPONSE" });
 });
 
-test("sends exact heartbeat, pause, and graceful release requests to encoded run routes", async () => {
+test("sends exact heartbeat, pause, graceful release, and quarantine requests to encoded run routes", async () => {
   const { client, requests } = clientWith(() => new Response(null, { status: 204 }));
 
   await client.heartbeat("run/encoded", { discoveredCount: 7, skuCount: 19 });
   await client.pause("run/encoded", "LOGIN_REQUIRED", "Operator login required");
   await client.release("run/encoded");
+  await client.release("run/encoded", {
+    disposition: "QUARANTINE",
+    errorCode: "INVALID_CHECKPOINT"
+  });
 
   assert.equal(
     requests[0]?.url,
@@ -187,6 +191,14 @@ test("sends exact heartbeat, pause, and graceful release requests to encoded run
     "https://collector.example.test/api/collector-agent/jobs/run%2Fencoded/release"
   );
   assert.equal(requests[2]?.init.body, undefined);
+  assert.equal(
+    requests[3]?.url,
+    "https://collector.example.test/api/collector-agent/jobs/run%2Fencoded/release"
+  );
+  assert.deepEqual(JSON.parse(String(requests[3]?.init.body)), {
+    disposition: "QUARANTINE",
+    errorCode: "INVALID_CHECKPOINT"
+  });
 });
 
 test("uploads PNG multipart data by hash and requires the same hash acknowledgement", async () => {

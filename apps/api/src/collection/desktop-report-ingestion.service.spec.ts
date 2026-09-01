@@ -122,6 +122,11 @@ function runFixture(overrides: Partial<ClaimedDesktopRun> = {}): ClaimedDesktopR
     searchLimit: 2,
     status: "RUNNING",
     ownListingIds: ["own-1"],
+    ownListings: [{
+      id: "own-1",
+      url: "https://item.taobao.com/item.htm?id=1001",
+      shopName: "Own Shop"
+    }],
     ...overrides
   };
 }
@@ -320,6 +325,16 @@ test("binds collector identity, claimed own listings, run state, and the claimed
   }> = [
     { name: "collector", mutateReport: (report) => { report.collectorId = "agent-other"; } },
     { name: "own listing", mutateReport: (report) => { report.ownItems[0]!.ownListingId = "own-other"; } },
+    {
+      name: "own URL identity",
+      mutateReport: (report) => {
+        report.ownItems[0]!.platformItemId = "1002";
+        report.ownItems[0]!.url = "https://item.taobao.com/item.htm?id=1002";
+        report.positions[0]!.platformItemId = "1002";
+        report.positions[0]!.url = "https://item.taobao.com/item.htm?id=1002";
+      }
+    },
+    { name: "own shop", mutateReport: (report) => { report.ownItems[0]!.shopName = "Different Shop"; } },
     { name: "rank limit", mutateRun: (run) => { run.searchLimit = 1; } },
     { name: "running state", mutateRun: (run) => { run.status = "PAUSED_LOGIN"; } }
   ];
@@ -337,6 +352,27 @@ test("binds collector identity, claimed own listings, run state, and the claimed
     );
     assert.equal(repository.persisted.length, 0);
   }
+});
+
+test("accepts a recovered item identity on a host-only detail URL", async () => {
+  const { service } = createService();
+  const report = reportFixture();
+  report.competitorItems[0]!.url = "https://detail.tmall.com/item.htm";
+
+  assert.equal((await service.ingest("pmc_token", report)).status, "SUCCEEDED");
+});
+
+test("rejects conflicting URL item ID aliases even when the first ID agrees", async () => {
+  const { service, repository } = createService();
+  const report = reportFixture();
+  report.competitorItems[0]!.url =
+    "https://detail.tmall.com/item.htm?id=2002&item_id=conflicting-item";
+
+  await assert.rejects(
+    () => service.ingest("pmc_token", report),
+    (error) => error instanceof DesktopReportValidationError
+  );
+  assert.equal(repository.persisted.length, 0);
 });
 
 test("requires successful reports to account for every claimed own listing exactly once", async () => {
@@ -384,7 +420,7 @@ test("requires successful reports to account for every claimed own listing exact
 test("rejects successful ingestion when either side of the own-listing binding is empty", async () => {
   {
     const { service, repository } = createService();
-    repository.run = runFixture({ ownListingIds: [] });
+    repository.run = runFixture({ ownListingIds: [], ownListings: [] });
 
     await assert.rejects(
       () => service.ingest("pmc_token", reportFixture()),
@@ -408,7 +444,7 @@ test("rejects successful ingestion when either side of the own-listing binding i
 
   {
     const { service, repository } = createService();
-    repository.run = runFixture({ ownListingIds: [] });
+    repository.run = runFixture({ ownListingIds: [], ownListings: [] });
     const report = reportFixture();
     report.ownItems = [];
 
@@ -424,7 +460,7 @@ test("rejects successful ingestion when either side of the own-listing binding i
 test("preserves explicit non-success reports when no own listing was collectable", async () => {
   {
     const { service, repository } = createService();
-    repository.run = runFixture({ ownListingIds: [] });
+    repository.run = runFixture({ ownListingIds: [], ownListings: [] });
     const report = reportFixture();
     report.status = "PARTIAL_FAILED";
     report.ownItems = [];
@@ -439,7 +475,7 @@ test("preserves explicit non-success reports when no own listing was collectable
 
   {
     const { service, repository } = createService();
-    repository.run = runFixture({ ownListingIds: [] });
+    repository.run = runFixture({ ownListingIds: [], ownListings: [] });
     const report = reportFixture();
     report.status = "FAILED";
     report.positions = [];

@@ -6,6 +6,7 @@ import { calculatePublicPrice } from "@stau-price-monitor/config/public-price";
 import {
   collectorJobSchema,
   collectorReportSchema,
+  resolveItemUrlIdentity,
   type CollectedItem,
   type CollectedSku,
   type CollectorIssue,
@@ -40,12 +41,28 @@ import { deriveSkuComponents } from "./sku-component-evidence.ts";
 const PAUSE_INCOMPLETE_MESSAGE = "Collection paused before SKU enumeration completed";
 const SEARCH_ID_CONFLICT_MESSAGE = "Search results exposed conflicting stable item IDs for one canonical URL";
 const DETAIL_ID_MISMATCH_MESSAGE = "Search item identity changed during detail traversal";
+const ITEM_IDENTITY_CONFLICT_MESSAGE = "Item URL identity is invalid or conflicting";
+const OWN_LISTING_BINDING_MESSAGE = "Own listing identity or shop changed during collection";
 
 export class CollectionInterruptedError extends Error {
   constructor() {
     super("Collection interrupted after checkpoint");
     this.name = "CollectionInterruptedError";
   }
+}
+
+export class DeterministicCheckpointError extends TypeError {
+  readonly code = "INVALID_CHECKPOINT" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "TypeError";
+  }
+}
+
+function deterministicCheckpointError(error: unknown): never {
+  if (error instanceof TypeError) throw new DeterministicCheckpointError(error.message);
+  throw error;
 }
 
 function throwIfInterrupted(signal: AbortSignal | undefined): void {
@@ -66,15 +83,17 @@ export function hashCollectorJob(job: CollectorJob): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(canonicalValue(job))).digest("hex")}`;
 }
 
-function canonicalUrl(url: string): string {
-  const parsed = new URL(url);
-  parsed.hash = "";
-  parsed.searchParams.sort();
-  return parsed.toString();
+function resolvedItemIdentity(platformItemId: string | null, url: string) {
+  try {
+    return resolveItemUrlIdentity(url, platformItemId);
+  } catch {
+    throw new UiContractChangedError(ITEM_IDENTITY_CONFLICT_MESSAGE);
+  }
 }
 
 function itemIdentity(platformItemId: string | null, url: string): string {
-  return platformItemId ?? canonicalUrl(url);
+  const identity = resolvedItemIdentity(platformItemId, url);
+  return identity.platformItemId ?? identity.url;
 }
 
 function sameSelection(left: SkuSelection, right: SkuSelection): boolean {
@@ -212,11 +231,22 @@ export class CollectionRunner {
     }
 
     const jobHash = hashCollectorJob(job);
-    const existing = await this.checkpointStore.load(job.runId);
-    if (existing && existing.jobHash !== jobHash) {
-      throw new TypeError("Checkpoint job hash mismatch; refusing resume");
+    let existing: CollectorCheckpoint | null;
+    try {
+      existing = await this.checkpointStore.load(job.runId);
+    } catch (error) {
+      deterministicCheckpointError(error);
     }
-    if (existing) assertCheckpointSemanticCoherence(existing, job);
+    if (existing && existing.jobHash !== jobHash) {
+      throw new DeterministicCheckpointError("Checkpoint job hash mismatch; refusing resume");
+    }
+    if (existing) {
+      try {
+        assertCheckpointSemanticCoherence(existing, job);
+      } catch (error) {
+        deterministicCheckpointError(error);
+      }
+    }
     if (existing?.phase === "COMPLETE") return collectorReportSchema.parse(existing.report);
 
     const checkpoint = existing ?? this.newCheckpoint(job, collectorId, jobHash);
@@ -346,13 +376,20 @@ export class CollectionRunner {
       throwIfInterrupted(signal);
 
       const page = await this.driver.openOwnListing(listing.url);
-      const identity = itemIdentity(page.platformItemId, page.url);
+      const claimedIdentity = resolvedItemIdentity(null, listing.url);
+      const pageIdentity = resolvedItemIdentity(page.platformItemId, page.url);
+      if (claimedIdentity.platformItemId === null || pageIdentity.platformItemId === null
+        || pageIdentity.platformItemId !== claimedIdentity.platformItemId
+        || page.shopName !== job.ownShopName) {
+        throw new UiContractChangedError(OWN_LISTING_BINDING_MESSAGE);
+      }
+      const identity = pageIdentity.platformItemId;
       let item = checkpoint.report.ownItems.find((candidate) => candidate.ownListingId === listing.id);
       if (!item) {
         item = {
           ownListingId: listing.id,
           platformItemId: identity,
-          url: page.url,
+          url: pageIdentity.url,
           shopName: page.shopName,
           title: page.title,
           searchRanks: [],
@@ -373,11 +410,15 @@ export class CollectionRunner {
   private async collectSearch(job: CollectorJob, checkpoint: CollectorCheckpoint): Promise<void> {
     const searchResult = await this.driver.search(job.searchQuery, job.searchLimit);
     const positions = searchResult.positions;
+    const resolvedPositions = positions.map((position) => ({
+      position,
+      identity: resolvedItemIdentity(position.platformItemId, position.url)
+    }));
     checkpoint.report.searchTerminationReason = searchResult.terminationReason;
-    checkpoint.report.positions = positions.map((position) => ({
+    checkpoint.report.positions = resolvedPositions.map(({ position, identity }) => ({
       rank: position.rank,
-      platformItemId: position.platformItemId ?? unresolvedSearchIdentity(position.rank, position.url),
-      url: position.url,
+      platformItemId: identity.platformItemId ?? unresolvedSearchIdentity(position.rank, identity.url),
+      url: identity.url,
       shopName: position.shopName,
       title: position.title,
       displayPriceMinFen: requiredMoney(position.displayPriceMinText, "Search minimum price"),
@@ -387,11 +428,10 @@ export class CollectionRunner {
     }));
 
     const stableIdsByCanonicalUrl = new Map<string, Set<string>>();
-    for (const position of positions) {
-      const url = canonicalUrl(position.url);
-      const stableIds = stableIdsByCanonicalUrl.get(url) ?? new Set<string>();
-      if (position.platformItemId !== null) stableIds.add(position.platformItemId);
-      stableIdsByCanonicalUrl.set(url, stableIds);
+    for (const { identity } of resolvedPositions) {
+      const stableIds = stableIdsByCanonicalUrl.get(identity.url) ?? new Set<string>();
+      if (identity.platformItemId !== null) stableIds.add(identity.platformItemId);
+      stableIdsByCanonicalUrl.set(identity.url, stableIds);
     }
     for (const stableIds of stableIdsByCanonicalUrl.values()) {
       if (stableIds.size > 1) throw new UiContractChangedError(SEARCH_ID_CONFLICT_MESSAGE);
@@ -442,15 +482,16 @@ export class CollectionRunner {
       throwIfInterrupted(signal);
 
       const page = await this.driver.openSearchPosition(position);
-      const pageIdentity = itemIdentity(page.platformItemId, page.url);
+      const resolvedPage = resolvedItemIdentity(page.platformItemId, page.url);
+      const pageIdentity = resolvedPage.platformItemId ?? resolvedPage.url;
       const openedFromFallback = isUnresolvedSearchIdentity(identity);
-      if (!openedFromFallback && page.platformItemId !== position.platformItemId) {
+      if (!openedFromFallback && resolvedPage.platformItemId !== position.platformItemId) {
         throw new UiContractChangedError(DETAIL_ID_MISMATCH_MESSAGE);
       }
-      if (openedFromFallback && page.platformItemId === null) {
+      if (openedFromFallback && resolvedPage.platformItemId === null) {
         throw new DriverIssueError("MISSING_ITEM_ID", "A stable Taobao item ID was not available.");
       }
-      if (openedFromFallback && page.platformItemId !== null && pageIdentity !== identity) {
+      if (openedFromFallback && resolvedPage.platformItemId !== null && pageIdentity !== identity) {
         persistIdentityAlias(checkpoint, identity, pageIdentity);
         for (const reportPosition of checkpoint.report.positions) {
           if (reportPosition.platformItemId === identity) {
@@ -465,7 +506,7 @@ export class CollectionRunner {
       if (!item) {
         item = {
           platformItemId: pageIdentity,
-          url: page.url,
+          url: resolvedPage.url,
           shopName: page.shopName,
           title: page.title,
           searchRanks: ranks,

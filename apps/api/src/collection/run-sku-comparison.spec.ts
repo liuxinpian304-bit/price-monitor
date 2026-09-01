@@ -189,6 +189,18 @@ test("downgrades an absent signature to catalog-incomplete review", () => {
   assert.equal(result.missingOwnGroups.length, 0);
 });
 
+test("does not alert from a matching own signature when the own catalog is incomplete", () => {
+  const result = evaluateRunSkuCombinations(runInput({
+    own: [own("own", 60_000)],
+    competitors: [competitor("lower", 50_000)],
+    ownCatalogComplete: false
+  }));
+
+  assert.equal(result.bySnapshotId.get("lower")?.state, "REVIEW");
+  assert.deepEqual(result.bySnapshotId.get("lower")?.reasons, ["OWN_CATALOG_INCOMPLETE"]);
+  assert.equal(result.alertCandidates.length, 0);
+});
+
 test("classifies an absent signed combination as missing without creating an alert", () => {
   const missing = evaluateRunSkuCombinations(runInput({
     own: [own("single-mic", 148_000)],

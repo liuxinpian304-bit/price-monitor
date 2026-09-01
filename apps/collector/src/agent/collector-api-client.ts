@@ -1,8 +1,10 @@
 import {
   collectorJobSchema,
   collectorReportSchema,
+  collectorRunReleaseInputSchema,
   type CollectorJob,
-  type CollectorReport
+  type CollectorReport,
+  type CollectorRunReleaseInput
 } from "@stau-price-monitor/contracts";
 import { z } from "zod";
 
@@ -193,10 +195,13 @@ export class CollectorApiClient {
     this.requireNoContent(response, "POST", route);
   }
 
-  async release(runId: string): Promise<void> {
+  async release(runId: string, input?: CollectorRunReleaseInput): Promise<void> {
     const route = "/api/collector-agent/jobs/:runId/release";
     const path = `/api/collector-agent/jobs/${encodeURIComponent(runId)}/release`;
-    const { response } = await this.request("POST", route, path, {});
+    const options = input === undefined
+      ? {}
+      : { json: validatedInput(collectorRunReleaseInputSchema, input, "POST", route) };
+    const { response } = await this.request("POST", route, path, options);
     this.requireNoContent(response, "POST", route);
   }
 

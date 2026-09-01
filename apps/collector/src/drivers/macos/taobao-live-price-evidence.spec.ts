@@ -118,11 +118,11 @@ test("rejects arbitrary one-number values behind an exact activity label", async
   assert.throws(() => readSelectedSkuEvidence(root), UiContractChangedError);
 });
 
-test("ignores shipping-insurance copy when explicit shipping evidence is absent", async () => {
+test("fails closed when explicit shipping evidence is absent", async () => {
   const root = structuredClone(await fixture("live-item-x1-default.json"));
   removePriceEvidence(root, "运费");
   appendPriceEvidence(root, "退货运费险最高赔付 10.00", "服务");
-  assert.equal(readSelectedSkuEvidence(root).mandatoryFeeText, "0.00");
+  assert.throws(() => readSelectedSkuEvidence(root), UiContractChangedError);
 });
 
 test("reads shipping evidence described as a delivery service", async () => {
@@ -145,6 +145,18 @@ test("ignores generic audience-benefit headings", async () => {
     appendPriceEvidence(root, heading, "优惠");
     assert.deepEqual(readSelectedSkuEvidence(root).promotionTexts, ["满500减20", "88VIP专享"], heading);
   }
+});
+
+test("retains an unrecognized eligibility promotion for manual review", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  appendPriceEvidence(root, "新客专享立减资格待确认", "优惠");
+  const evidence = readSelectedSkuEvidence(root);
+
+  assert.ok(evidence.promotionTexts.includes("新客专享立减资格待确认"));
+  assert.equal(
+    evidence.promotions.find((promotion) => promotion.label === "新客专享立减资格待确认")?.audience,
+    "UNKNOWN"
+  );
 });
 
 test("reads an exact strikethrough subrole as live list-price evidence", async () => {

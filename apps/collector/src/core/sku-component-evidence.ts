@@ -236,18 +236,25 @@ export function deriveSkuComponents(
         continue;
       }
 
-      const identifier = accessoryIdentifiers[0] ?? tokenIdentifiers[0];
-      const accessoryType = identifier === undefined
-        ? undefined
-        : accessoryTypeForIdentifier(token, identifier);
-      if (accessoryType !== undefined && identifier !== undefined) {
-        components.push({
-          role: "PAID_ACCESSORY",
-          accessoryType,
-          brand: null,
-          modelOrName: identifier,
-          quantity
-        });
+      const componentIdentifiers = accessoryIdentifiers.length > 0
+        ? accessoryIdentifiers
+        : tokenIdentifiers;
+      const identifiedComponents = componentIdentifiers.flatMap((identifier) => {
+        const accessoryType = accessoryTypeForIdentifier(token, identifier);
+        return accessoryType === undefined ? [] : [{ identifier, accessoryType }];
+      });
+      if (identifiedComponents.length > 0) {
+        const quantityIsAmbiguous = quantityIsExplicit && identifiedComponents.length > 1;
+        for (const identified of identifiedComponents) {
+          components.push({
+            role: "PAID_ACCESSORY",
+            accessoryType: identified.accessoryType,
+            brand: null,
+            modelOrName: identified.identifier,
+            quantity: quantityIsAmbiguous ? 1 : quantity
+          });
+        }
+        if (quantityIsAmbiguous) components.push(unknownQuantity(dimension, label));
         continue;
       }
 

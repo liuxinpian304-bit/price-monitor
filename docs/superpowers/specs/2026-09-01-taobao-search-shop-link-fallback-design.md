@@ -104,7 +104,7 @@ Automated coverage must include:
 After automated verification, run only the two previously approved,
 non-persistent `driver.search()` probes:
 
-1. `https://detail.tmall.com/item.htm?id=550902914950`
+1. `https://detail.tmall.com/item.htm?id=example-item-id`
 2. `RME Babyface Pro FS`
 
 Live reporting remains sanitized: counts, termination reasons, booleans, and

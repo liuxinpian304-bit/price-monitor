@@ -6,6 +6,7 @@ import type {
   CollectorIssue,
   CollectorReport
 } from "../../../../packages/contracts/src/index.ts";
+import { collectorJobSchema } from "../../../../packages/contracts/src/index.ts";
 import { Prisma, type PrismaClient } from "../../../../generated/prisma/client.ts";
 import { RUN_ALERT_EVALUATION_VERSION } from "../alerts/run-alert-evaluation-version.ts";
 
@@ -138,10 +139,14 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
         providerKey: true,
         searchLimit: true,
         status: true,
-        claimedOwnListingIds: true
+        claimedOwnListingIds: true,
+        claimedJob: true
       }
     });
     if (!run?.collectorAgentId) return null;
+    const claimedJob = collectorJobSchema.safeParse(run.claimedJob);
+    if (!claimedJob.success || claimedJob.data.runId !== run.id
+      || claimedJob.data.collectorId !== run.collectorAgentId) return null;
     return {
       runId: run.id,
       agentId: run.collectorAgentId,
@@ -149,7 +154,12 @@ export class PrismaDesktopReportRepository implements DesktopReportRepository {
       providerKey: run.providerKey,
       searchLimit: run.searchLimit,
       status: run.status,
-      ownListingIds: run.claimedOwnListingIds
+      ownListingIds: run.claimedOwnListingIds,
+      ownListings: claimedJob.data.ownListings.map((listing) => ({
+        id: listing.id,
+        url: listing.url,
+        shopName: claimedJob.data.ownShopName
+      }))
     };
   }
 

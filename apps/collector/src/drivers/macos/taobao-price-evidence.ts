@@ -35,8 +35,9 @@ export function yuanTextToFen(text: string): number {
 function audienceFor(label: string): string {
   if (/88\s*VIP/i.test(label)) return "88VIP";
   if (/红包/.test(label)) return "PERSONAL_RED_PACKET";
-  if (/账号|账户|专享/.test(label)) return "ACCOUNT";
+  if (/账号|账户/.test(label)) return "ACCOUNT";
   if (/会员/.test(label)) return "MEMBER";
+  if (/新客|首单|资格|指定|部分用户|受邀|专享/.test(label)) return "UNKNOWN";
   return "PUBLIC";
 }
 

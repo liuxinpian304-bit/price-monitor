@@ -23,6 +23,20 @@ function containsPhrase(haystack: string, phrase: string): boolean {
   return needle !== "" && compact(haystack).includes(needle);
 }
 
+function escapedPattern(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsBoundedModelPhrase(haystack: string, phrase: string): boolean {
+  const tokens = normalizeText(phrase).split(" ").filter(Boolean);
+  if (tokens.length === 0) return false;
+  const modelPattern = tokens.map(escapedPattern).join("\\s*");
+  return new RegExp(
+    `(?:^|[^\\p{L}\\p{N}])${modelPattern}(?:$|[^\\p{L}\\p{N}])`,
+    "u"
+  ).test(normalizeText(haystack));
+}
+
 function selectedSkuText(offer: RawOffer): string {
   const selected = offer.skuOptions.find((sku) => sku.skuId === offer.selectedSkuId);
   if (!selected) {
@@ -99,10 +113,10 @@ export class MatcherService {
       return rejected(`缺少明确版本“${rule.version}”`);
     }
 
-    const exactModel = containsPhrase(searchable, rule.standardModel);
+    const exactModel = containsBoundedModelPhrase(searchable, rule.standardModel);
     const matchedAlias = exactModel
       ? undefined
-      : rule.effectiveAliases.find((alias) => containsPhrase(searchable, alias));
+      : rule.effectiveAliases.find((alias) => containsBoundedModelPhrase(searchable, alias));
     if (!exactModel && !matchedAlias) {
       return rejected(`未识别到完整标准型号“${rule.standardModel}”，可能是旧款或其他型号`);
     }

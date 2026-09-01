@@ -89,7 +89,9 @@ export class CollectionRunQueueService {
       searchLimit,
       actorId
     });
-    return { runId: created.run.id, coalesced: created.coalesced };
+    const runId = created.coalesced ? created.run.coalescedIntoRunId : created.run.id;
+    if (runId === null) throw new TypeError("Coalesced collection run is missing its active run");
+    return { runId, coalesced: created.coalesced };
   }
 
   async requeuePausedRun(runId: string): Promise<{ runId: string }> {

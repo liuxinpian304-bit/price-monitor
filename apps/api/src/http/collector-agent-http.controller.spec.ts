@@ -126,6 +126,7 @@ class FakeCollectorAgentService {
   heartbeatCalls = 0;
   pauseCalls = 0;
   releaseCalls = 0;
+  releaseInput: unknown;
 
   async register(input: { name: string; platform: "MACOS" | "WINDOWS" }, _actorId: string) {
     this.registrationCalls += 1;
@@ -164,8 +165,9 @@ class FakeCollectorAgentService {
     if (this.wrongOwner) throw new CollectorAgentRunOwnershipError();
   }
 
-  async release(_token: string, _runId: string): Promise<void> {
+  async release(_token: string, _runId: string, input?: unknown): Promise<void> {
     this.releaseCalls += 1;
+    this.releaseInput = input;
     if (this.invalidToken || this.disabledToken) throw new CollectorAgentAuthenticationError();
     if (this.wrongOwner) throw new CollectorAgentRunOwnershipError();
   }
@@ -604,6 +606,15 @@ test("graceful release returns 204 and delegates ownership fencing", async () =>
 
   assert.equal(await controller.release("run-1", authenticated), undefined);
   assert.equal(service.releaseCalls, 1);
+});
+
+test("validated checkpoint quarantine is delegated as a terminal release", async () => {
+  const { controller, service } = createController();
+  const authenticated = request({ authorization: "Bearer pmc_test" });
+  const quarantine = { disposition: "QUARANTINE", errorCode: "INVALID_CHECKPOINT" } as const;
+
+  assert.equal(await controller.release("run-1", authenticated, quarantine), undefined);
+  assert.deepEqual(service.releaseInput, quarantine);
 });
 
 test("missing or mislabeled evidence is rejected without invoking storage", async () => {

@@ -84,13 +84,19 @@ function removeExplicitShopEvidence(scope: AxNode): void {
   }
 }
 
-function appendShopLink(scope: AxNode, childIndex: number, title: string, url: string): void {
+function appendShopLink(
+  scope: AxNode,
+  childIndex: number,
+  title: string,
+  url: string,
+  options: { enabled?: boolean; actions?: readonly string[] } = {}
+): void {
   scope.children.push(axNode([...scope.path, childIndex], {
     role: "AXLink",
     title,
     url,
-    enabled: true,
-    actions: ["AXPress"]
+    enabled: options.enabled ?? true,
+    actions: options.actions ? [...options.actions] : ["AXPress"]
   }));
 }
 
@@ -546,6 +552,37 @@ test("uses one strict shop link when explicit shop evidence is absent", async ()
     "Fallback Audio A",
     "https://shop.taobao.com/shop/view_shop.htm?user_number_id=fictional-a"
   );
+
+  assert.equal(readSearchCards(root)[0]?.shopName, "Fallback Audio A");
+});
+
+test("ignores disabled, non-pressable, and empty shop-link fallbacks", async () => {
+  for (const [name, title, options] of [
+    ["disabled", "Fallback Audio A", { enabled: false }],
+    ["missing AXPress", "Fallback Audio A", { actions: [] }],
+    ["empty text", "", {}]
+  ] as const) {
+    const root = structuredClone(await fixture("live-search-results.json"));
+    const scope = firstCardScope(root);
+    removeExplicitShopEvidence(scope);
+    appendShopLink(
+      scope,
+      4,
+      title,
+      "https://shop.taobao.com/shop/view_shop.htm?user_number_id=fictional-a",
+      options
+    );
+
+    assert.throws(() => readSearchCards(root), UiContractChangedError, name);
+  }
+});
+
+test("deduplicates repeated strict shop links with the same name", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  removeExplicitShopEvidence(scope);
+  appendShopLink(scope, 4, "Fallback Audio A", "https://shop.taobao.com/a");
+  appendShopLink(scope, 5, "Fallback Audio A", "https://store.tmall.com/b");
 
   assert.equal(readSearchCards(root)[0]?.shopName, "Fallback Audio A");
 });

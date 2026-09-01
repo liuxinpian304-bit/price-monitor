@@ -29,7 +29,10 @@ import type { Request, Response } from "express";
 import { memoryStorage } from "multer";
 import { z } from "zod";
 
-import { collectorReportSchema } from "../../../../packages/contracts/src/index.ts";
+import {
+  collectorReportSchema,
+  collectorRunReleaseInputSchema
+} from "../../../../packages/contracts/src/index.ts";
 import { Roles } from "../auth/roles.guard.ts";
 import {
   EvidenceStorePayloadTooLargeError,
@@ -221,11 +224,14 @@ export class CollectorAgentHttpController {
     }
   }
 
-  async release(runId: string, request: Request) {
+  async release(runId: string, request: Request, body?: unknown) {
     const token = bearerToken(request);
     await this.assertAuthenticated(token);
+    const input = body === undefined
+      ? { disposition: "REQUEUE" as const }
+      : validated(collectorRunReleaseInputSchema, body);
     try {
-      await this.service.release(token, runId);
+      await this.service.release(token, runId, input);
       return undefined;
     } catch (error) {
       mapServiceError(error);
@@ -350,6 +356,7 @@ HttpCode(204)(
 
 Param("runId")(controllerPrototype, "release", 0);
 Req()(controllerPrototype, "release", 1);
+Body()(controllerPrototype, "release", 2);
 Post("collector-agent/jobs/:runId/release")(
   controllerPrototype,
   "release",

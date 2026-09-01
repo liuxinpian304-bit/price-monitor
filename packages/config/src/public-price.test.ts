@@ -191,6 +191,21 @@ test("ignores member-only and 88VIP promotions without lowering confidence", () 
   assert.deepEqual(result.reviewReasons, []);
 });
 
+test("requires review for a promotion with unknown eligibility", () => {
+  const result = calculatePublicPrice({
+    listPriceFen: 70_000,
+    activityPriceFen: 60_000,
+    promotions: [
+      { kind: "UNKNOWN_ELIGIBILITY", label: "新客专享立减资格待确认", amountFen: null, thresholdFen: null, audience: "UNKNOWN", stackGroup: null, includedInActivityPrice: false, activityPriceInclusion: "UNKNOWN" }
+    ],
+    mandatoryFeeFen: 0
+  });
+
+  assert.equal(result.payableFen, null);
+  assert.equal(result.confidence, "MANUAL_REVIEW");
+  assert.deepEqual(result.reviewReasons, ["新客专享立减资格待确认"]);
+});
+
 test("returns manual review when a relevant public promotion is incomplete", () => {
   const result = calculatePublicPrice({
     listPriceFen: 70_000,

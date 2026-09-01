@@ -97,6 +97,7 @@ class FakeApi implements CollectorWorkerApi {
   lastHeartbeat: { runId: string; input: { discoveredCount: number; skuCount: number } } | null = null;
   pauseCalls: Array<{ runId: string; code: string; message: string }> = [];
   releaseCalls: string[] = [];
+  releaseInputs: Array<{ disposition: "QUARANTINE"; errorCode: "INVALID_CHECKPOINT" } | undefined> = [];
   reportCalls = 0;
   reportStatuses: CollectorReport["status"][] = [];
   reportFailure: Error | null = null;
@@ -115,8 +116,12 @@ class FakeApi implements CollectorWorkerApi {
     this.pauseCalls.push({ runId, code, message });
   }
 
-  async release(runId: string) {
+  async release(
+    runId: string,
+    input?: { disposition: "QUARANTINE"; errorCode: "INVALID_CHECKPOINT" }
+  ) {
     this.releaseCalls.push(runId);
+    this.releaseInputs.push(input);
   }
 
   async uploadReport(_runId: string, inputReport: CollectorReport) {
@@ -751,4 +756,28 @@ test("collection failure requeues the owned run without deleting its durable che
   await assert.rejects(() => worker.once(), { code: "COLLECTION_FAILED" });
   assert.deepEqual(api.releaseCalls, ["run-1"]);
   assert.equal(store.removeCalls, 0);
+});
+
+test("quarantines deterministic checkpoint failure without acknowledging its evidence", async () => {
+  const api = new FakeApi();
+  const store = new FakeStore();
+  const uploader = new FakeUploader();
+  const checkpointError = Object.assign(new TypeError("checkpoint is invalid"), {
+    code: "INVALID_CHECKPOINT" as const
+  });
+  const { worker } = createWorker({
+    api,
+    store,
+    uploader,
+    runner: { run: async () => { throw checkpointError; } }
+  });
+
+  await assert.rejects(() => worker.once(), { code: "CHECKPOINT_FAILED" });
+  assert.deepEqual(api.releaseCalls, ["run-1"]);
+  assert.deepEqual(api.releaseInputs, [{
+    disposition: "QUARANTINE",
+    errorCode: "INVALID_CHECKPOINT"
+  }]);
+  assert.equal(store.removeCalls, 0);
+  assert.equal(uploader.clearCalls, 0);
 });

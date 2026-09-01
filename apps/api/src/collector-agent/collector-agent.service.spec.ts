@@ -21,7 +21,7 @@ interface AgentRecord {
 
 interface RunRecord {
   id: string;
-  status: "QUEUED" | "RUNNING" | "PAUSED_LOGIN" | "PAUSED_CHALLENGE";
+  status: "QUEUED" | "RUNNING" | "PAUSED_LOGIN" | "PAUSED_CHALLENGE" | "FAILED";
   collectorAgentId: string | null;
   scheduledFor: number;
   discoveredCount: number;
@@ -153,11 +153,21 @@ class InMemoryCollectorAgentRepository implements CollectorAgentRepository {
     return true;
   }
 
-  async release(agentId: string, runId: string): Promise<boolean> {
+  async release(
+    agentId: string,
+    runId: string,
+    input: { disposition: "REQUEUE" } | { disposition: "QUARANTINE"; errorCode: "INVALID_CHECKPOINT" }
+  ): Promise<boolean> {
     const run = this.runs.find((entry) => entry.id === runId
       && entry.status === "RUNNING" && entry.collectorAgentId === agentId);
     if (!run) return false;
-    run.status = "QUEUED";
+    if (input.disposition === "QUARANTINE") {
+      run.status = "FAILED";
+      run.errorCode = input.errorCode;
+      run.errorMessage = "Collector checkpoint requires operator review";
+    } else {
+      run.status = "QUEUED";
+    }
     return true;
   }
 
@@ -326,4 +336,19 @@ test("graceful release requeues only the owning agent's running job", async () =
     (await service.claimNext(owner.token, { appVersion: "2.4.5", capabilities: [] }))?.runId,
     run.id
   );
+});
+
+test("checkpoint quarantine reaches the repository as a terminal release", async () => {
+  const repository = new InMemoryCollectorAgentRepository();
+  const service = new CollectorAgentService(repository);
+  const owner = await registerAgent(service, "owner-quarantine");
+  const run = repository.addRun({ id: "run-quarantine" });
+  await service.claimNext(owner.token, { appVersion: "2.4.5", capabilities: [] });
+
+  await service.release(owner.token, run.id, {
+    disposition: "QUARANTINE",
+    errorCode: "INVALID_CHECKPOINT"
+  });
+  assert.equal(run.status, "FAILED");
+  assert.equal(run.errorCode, "INVALID_CHECKPOINT");
 });

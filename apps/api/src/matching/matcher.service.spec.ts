@@ -70,6 +70,28 @@ test("accepts an exact Babyface Pro FS bare SKU with explainable reasons", () =>
   assert.ok(decision.reasons.some((reason) => reason.includes("标准型号")));
 });
 
+test("accepts configured model tokens across supported punctuation", () => {
+  const decision = new MatcherService().match(
+    rule,
+    offer("RME Babyface-Pro/FS 专业声卡 官方标配", "Babyface-Pro/FS 单机")
+  );
+
+  assert.equal(decision.category, "BARE");
+  assert.equal(decision.comparable, true);
+});
+
+test("rejects a configured model embedded inside a longer alphanumeric token", () => {
+  for (const embeddedModel of ["XBabyface Pro FS", "Babyface Pro FSX"]) {
+    const decision = new MatcherService().match(
+      rule,
+      offer(`RME ${embeddedModel} FS新版 官方标配`, `${embeddedModel} 单机`)
+    );
+
+    assert.equal(decision.category, "REJECTED", embeddedModel);
+    assert.equal(decision.comparable, false, embeddedModel);
+  }
+});
+
 test("rejects the older Babyface Pro model when FS is absent", () => {
   const decision = new MatcherService().match(
     rule,

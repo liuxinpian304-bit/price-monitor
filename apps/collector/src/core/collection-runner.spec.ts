@@ -81,6 +81,8 @@ interface MutableFixtureResult {
 
 interface MutableFixtureItem {
   platformItemId: string | null;
+  url?: string;
+  shopName?: string;
   pageSkuCount?: number;
   skuDimensions: Array<{
     name: string;
@@ -219,6 +221,60 @@ test("collects every enabled Sony SKU while preserving duplicate search ranks", 
   }
 });
 
+test("fails closed when a first-run own page disagrees with the claimed URL identity or shop", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-own-binding-"));
+  try {
+    const reports = [];
+    for (const [index, mutate] of [
+      (fixture: MutableFixture) => {
+        fixture.ownListings[0]!.item.platformItemId = "different-own-item";
+        fixture.ownListings[0]!.item.url = "https://detail.example.test/item.htm?id=different-own-item";
+      },
+      (fixture: MutableFixture) => {
+        fixture.ownListings[0]!.item.shopName = "Different Shop";
+      }
+    ].entries()) {
+      const path = await writeFixtureCopy(root, mutate);
+      const bindingJob = { ...job, runId: `sony-own-binding-${index}` };
+      reports.push(await new CollectionRunner(
+        await FixtureDriver.fromFile(path),
+        new AtomicCheckpointStore(join(root, `checkpoints-${index}`))
+      ).run(bindingJob, bindingJob.collectorId));
+    }
+
+    assert.deepEqual(reports.map((report) => ({
+      status: report.status,
+      ownCount: report.ownItems.length,
+      hasContractIssue: report.issues.some((issue) => issue.code === "UI_CONTRACT_CHANGED")
+    })), [
+      { status: "FAILED", ownCount: 0, hasContractIssue: true },
+      { status: "FAILED", ownCount: 0, hasContractIssue: true }
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fails closed when a search URL exposes conflicting item ID aliases", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-url-alias-conflict-"));
+  const conflictJob = { ...job, runId: "sony-url-alias-conflict-run" };
+  try {
+    const path = await writeFixtureCopy(root, (fixture) => {
+      fixture.search.positions[0]!.url =
+        "https://item.example.test/item.htm?id=competitor-a&item_id=competitor-other";
+    });
+    const report = await new CollectionRunner(
+      await FixtureDriver.fromFile(path),
+      new AtomicCheckpointStore(join(root, "checkpoints"))
+    ).run(conflictJob, conflictJob.collectorId);
+
+    assert.equal(report.status, "PARTIAL_FAILED");
+    assert.equal(report.issues.some((issue) => issue.code === "UI_CONTRACT_CHANGED"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("preserves structured bundle components from the desktop driver", async () => {
   const root = await mkdtemp(join(tmpdir(), "collector-bundle-components-"));
   const componentJob = { ...job, runId: "sony-bundle-components-run" };
@@ -345,7 +401,9 @@ test("refuses to resume a checkpoint with a different canonical job hash", async
     const healthyDriver = await FixtureDriver.fromFile(fixturePath);
     await assert.rejects(
       new CollectionRunner(healthyDriver, store).run({ ...hashJob, searchLimit: 2 }, hashJob.collectorId),
-      /job hash mismatch/i
+      (error) => error instanceof TypeError
+        && Reflect.get(error, "code") === "INVALID_CHECKPOINT"
+        && /job hash mismatch/i.test(error.message)
     );
     assert.equal(healthyDriver.events.length, 0);
   } finally {
@@ -441,14 +499,19 @@ test("reports MISSING_ITEM_ID instead of completing a detail page without a stab
   const root = await mkdtemp(join(tmpdir(), "collector-null-item-id-"));
   const fallbackJob = { ...job, runId: "sony-null-item-id-run" };
   try {
-    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const originalItemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const itemUrl = "https://item.example.test/item.htm";
     const path = await writeFixtureCopy(root, (fixture) => {
       for (const position of fixture.search.positions) {
-        if (position.url === itemUrl) position.platformItemId = null;
+        if (position.url === originalItemUrl) {
+          position.platformItemId = null;
+          position.url = itemUrl;
+        }
       }
       const item = fixture.search.items.find((candidate) => candidate.platformItemId === "competitor-a");
       assert.ok(item);
       item.platformItemId = null;
+      item.url = itemUrl;
     });
     const fixtureDriver = await FixtureDriver.fromFile(path);
     const driver: TaobaoDesktopDriver = {
@@ -1050,11 +1113,11 @@ test("normalizes a stable-first search URL group before detail traversal", async
     assert.deepEqual(report.competitorItems.find((item) =>
       item.platformItemId === "competitor-a")?.searchRanks, [1, 3]);
     assert.equal(driver.events.filter((event) =>
-      event.type === "OPEN_SEARCH_POSITION" && event.platformItemId === "competitor-a").length, 2);
+      event.type === "OPEN_SEARCH_POSITION" && event.platformItemId === "competitor-a").length, 1);
 
     const fallbackIdentity = unresolvedSearchIdentity(3, itemUrl);
     const checkpoint = await store.load(stableFirstJob.runId);
-    assert.equal(checkpoint?.identityAliases[fallbackIdentity], "competitor-a");
+    assert.equal(checkpoint?.identityAliases[fallbackIdentity], undefined);
     assert.equal(checkpoint?.completedPlatformItemIds.includes(fallbackIdentity), false);
     assert.equal(checkpoint?.completedPlatformItemIds.includes("competitor-a"), true);
     assert.doesNotThrow(() => collectorReportSchema.parse(report));
@@ -1067,12 +1130,15 @@ test("rejects conflicting stable search IDs for one canonical URL", async () => 
   const root = await mkdtemp(join(tmpdir(), "collector-search-id-conflict-"));
   const conflictJob = { ...job, runId: "sony-search-id-conflict-run" };
   try {
-    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const originalItemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const itemUrl = "https://item.example.test/item.htm";
     const path = await writeFixtureCopy(root, (fixture) => {
-      const matchingPositions = fixture.search.positions.filter((position) => position.url === itemUrl);
+      const matchingPositions = fixture.search.positions.filter((position) => position.url === originalItemUrl);
       assert.equal(matchingPositions.length, 2);
       matchingPositions[0]!.platformItemId = "search-stable-a";
       matchingPositions[1]!.platformItemId = "search-stable-b";
+      matchingPositions[0]!.url = itemUrl;
+      matchingPositions[1]!.url = itemUrl;
     });
     const driver = await FixtureDriver.fromFile(path);
     const report = await new CollectionRunner(
@@ -1095,13 +1161,20 @@ test("persists a fallback detail alias across pause and resume without duplicate
   const root = await mkdtemp(join(tmpdir(), "collector-alias-resume-"));
   const aliasJob = { ...job, runId: "sony-alias-resume-run" };
   try {
-    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const originalItemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const itemUrl = "https://item.example.test/item.htm";
     const firstFallbackIdentity = unresolvedSearchIdentity(1, itemUrl);
     const secondFallbackIdentity = unresolvedSearchIdentity(3, itemUrl);
     const path = await writeFixtureCopy(root, (fixture) => {
       for (const position of fixture.search.positions) {
-        if (position.url === itemUrl) position.platformItemId = null;
+        if (position.url === originalItemUrl) {
+          position.platformItemId = null;
+          position.url = itemUrl;
+        }
       }
+      const item = fixture.search.items.find((candidate) => candidate.platformItemId === "competitor-a");
+      assert.ok(item);
+      item.url = itemUrl;
     });
     const store = new AtomicCheckpointStore(join(root, "checkpoints"));
     const pausedDriver = await FixtureDriver.fromFile(path, {
@@ -1217,11 +1290,18 @@ test("rejects stable search ID A when detail returns stable ID B", async () => {
   const root = await mkdtemp(join(tmpdir(), "collector-detail-id-mismatch-"));
   const mismatchJob = { ...job, runId: "sony-detail-id-mismatch-run" };
   try {
-    const itemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const originalItemUrl = "https://item.example.test/item.htm?id=competitor-a";
+    const itemUrl = "https://item.example.test/item.htm";
     const path = await writeFixtureCopy(root, (fixture) => {
       for (const position of fixture.search.positions) {
-        if (position.url === itemUrl) position.platformItemId = "search-stable-a";
+        if (position.url === originalItemUrl) {
+          position.platformItemId = "search-stable-a";
+          position.url = itemUrl;
+        }
       }
+      const item = fixture.search.items.find((candidate) => candidate.platformItemId === "competitor-a");
+      assert.ok(item);
+      item.url = itemUrl;
     });
     const report = await new CollectionRunner(
       await FixtureDriver.fromFile(path),

@@ -22,6 +22,7 @@ const OUT_OF_STOCK_TEXTS = new Set(["无货", "售罄", "缺货"]);
 const SERVICE_COPY = /(?:运费险|保险|赔付)/;
 const CONCRETE_PROMOTION = /^(?:(?:店铺券|平台满减|优惠券)\s*)?满\s*\d+(?:\.\d{1,2})?\s*减\s*\d+(?:\.\d{1,2})?(?:\s*元)?$|^(?:(?:店铺|平台)?优惠券?\s*)?\d+(?:\.\d{1,2})?\s*元券$|^(?:(?:店铺|平台)?优惠\s*)?立减\s*\d+(?:\.\d{1,2})?\s*元$/;
 const CONCRETE_AUDIENCE_BENEFIT = /^(?:88\s*VIP\s*(?:专享|\d+(?:\.\d+)?折)|(?:该)?(?:账号|账户)\s*专享(?:\s*\d+(?:\.\d{1,2})?\s*元券)?|会员\s*专享|个人红包(?:\s*\d+(?:\.\d{1,2})?\s*元)?)$/i;
+const UNKNOWN_ELIGIBILITY_PROMOTION = /^(?=.*(?:优惠|券|立减|折扣|抵扣|补贴|专享))(?=.*(?:新客|首单|资格|指定|部分用户|受邀)).+$/u;
 
 function normalizeText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
@@ -105,7 +106,9 @@ function isPromotionText(evidence: LiveTextEvidence): boolean {
     || isSemanticAmountEvidence(evidence, LIST_PRICE_LABELS)
     || isSemanticAmountEvidence(evidence, ESTIMATED_PAYABLE_LABELS)
     || isSemanticAmountEvidence(evidence, SHIPPING_LABELS)) return false;
-  return CONCRETE_PROMOTION.test(evidence.text) || CONCRETE_AUDIENCE_BENEFIT.test(evidence.text);
+  return CONCRETE_PROMOTION.test(evidence.text)
+    || CONCRETE_AUDIENCE_BENEFIT.test(evidence.text)
+    || UNKNOWN_ELIGIBILITY_PROMOTION.test(evidence.text);
 }
 
 function promotionEvidence(texts: LiveTextEvidence[]): Pick<SelectedSkuEvidence, "promotions" | "promotionTexts"> {
@@ -129,8 +132,8 @@ function mandatoryFeeFen(texts: LiveTextEvidence[]): number {
       amounts.add(yuanTextToFen(evidence.text));
     }
   }
-  if (amounts.size > 1) return contractError("mandatory fee");
-  return amounts.values().next().value ?? 0;
+  if (amounts.size !== 1) return contractError("mandatory fee");
+  return amounts.values().next().value ?? contractError("mandatory fee");
 }
 
 export function readLiveSelectedSkuEvidence(root: AxNode): SelectedSkuEvidence {

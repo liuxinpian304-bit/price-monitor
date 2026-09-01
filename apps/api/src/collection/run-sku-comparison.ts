@@ -307,6 +307,15 @@ export function evaluateRunSkuCombinations(input: RunSkuComparisonInput): RunSku
       continue;
     }
 
+    if (!input.ownCatalogComplete) {
+      bySnapshotId.set(candidate.snapshotId, decision(
+        candidate,
+        "REVIEW",
+        uniqueReasons(candidate.combination.reasons, ["OWN_CATALOG_INCOMPLETE"])
+      ));
+      continue;
+    }
+
     const signature = candidate.combination.signature;
     const selectedBaseline = selectedOwnBySignature.get(signature);
     if (selectedBaseline) {
@@ -361,15 +370,6 @@ export function evaluateRunSkuCombinations(input: RunSkuComparisonInput): RunSku
       ));
       continue;
     }
-    if (!input.ownCatalogComplete) {
-      bySnapshotId.set(candidate.snapshotId, decision(
-        candidate,
-        "REVIEW",
-        uniqueReasons(candidate.combination.reasons, ["OWN_CATALOG_INCOMPLETE"])
-      ));
-      continue;
-    }
-
     bySnapshotId.set(candidate.snapshotId, decision(
       candidate,
       "MISSING_OWN",

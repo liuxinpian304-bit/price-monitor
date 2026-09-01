@@ -355,7 +355,7 @@ Use the same `AxHelperClient` and `TaobaoMacDriver` program from the approved
 shop-link plan. It runs these values once, in order, with limit 1:
 
 ```typescript
-"https://detail.tmall.com/item.htm?id=550902914950"
+"https://detail.tmall.com/item.htm?id=example-item-id"
 "RME Babyface Pro FS"
 ```
 
