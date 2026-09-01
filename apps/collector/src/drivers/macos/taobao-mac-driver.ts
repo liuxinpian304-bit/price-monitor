@@ -16,6 +16,7 @@ import {
 } from "../../core/desktop-driver.ts";
 import {
   AxHelperClient,
+  AxHelperResponseError,
   type AxHelperCommandFields,
   type AxHelperCommandName,
   type AxHelperDiagnosticPayload
@@ -589,9 +590,9 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
     let consecutive = 0;
     let sawTransition = false;
     while (true) {
-      const root = await this.client.snapshot();
-      assertNoStopState(root);
       try {
+        const root = await this.client.snapshot();
+        assertNoStopState(root);
         const field = findSearchField(root);
         const context = readSearchContext(root);
         const signatureChanged = preActionSignature === null || context.signature !== preActionSignature;
@@ -606,7 +607,11 @@ export class TaobaoMacDriver implements TaobaoDesktopDriver {
         previous = context.signature;
         if (consecutive === STABLE_OBSERVATION_COUNT) return root;
       } catch (error) {
-        if (!(error instanceof UiContractChangedError)) throw error;
+        const transientMissingNode = error instanceof AxHelperResponseError
+          && error.code === "NODE_NOT_FOUND";
+        if (!transientMissingNode && !(error instanceof UiContractChangedError)) {
+          throw error;
+        }
         if (allowLatchedTransition) sawTransition = true;
         previous = "";
         consecutive = 0;

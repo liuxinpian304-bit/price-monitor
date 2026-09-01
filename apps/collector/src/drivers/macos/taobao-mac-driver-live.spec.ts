@@ -4,7 +4,12 @@ import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
 import { UiContractChangedError, type DriverSearchPosition } from "../../core/desktop-driver.ts";
-import type { AxHelperCommandFields, AxHelperCommandName, AxHelperDiagnosticPayload } from "./ax-helper-client.ts";
+import {
+  AxHelperResponseError,
+  type AxHelperCommandFields,
+  type AxHelperCommandName,
+  type AxHelperDiagnosticPayload
+} from "./ax-helper-client.ts";
 import { fingerprintFor, walkAxNodes, type AxJsonValue, type AxNode } from "./ax-node.ts";
 import { TaobaoMacDriver, type TaobaoAxClient } from "./taobao-mac-driver.ts";
 
@@ -32,7 +37,7 @@ function resolvePath(root: AxNode, path: number[]): AxNode {
 
 class LiveFakeClient implements TaobaoAxClient {
   readonly commands: CommandRecord[] = [];
-  readonly snapshotQueue: AxNode[] = [];
+  readonly snapshotQueue: Array<AxNode | Error> = [];
   readonly copiedTextQueue: string[] = [];
   copiedText: string | null = null;
   private activeRoot: AxNode | null = null;
@@ -54,6 +59,7 @@ class LiveFakeClient implements TaobaoAxClient {
   async snapshot(): Promise<AxNode> {
     const next = this.snapshotQueue.shift();
     if (!next) throw new Error("Fake snapshot queue is empty");
+    if (next instanceof Error) throw next;
     this.activeRoot = structuredClone(next);
     return structuredClone(this.activeRoot);
   }
@@ -88,6 +94,13 @@ class LiveFakeClient implements TaobaoAxClient {
 
 function stable(root: AxNode): AxNode[] {
   return [root, root, root];
+}
+
+function missingNodeError(): AxHelperResponseError {
+  return new AxHelperResponseError(
+    "NODE_NOT_FOUND",
+    "Accessibility node was not found."
+  );
 }
 
 function postWriteThenStable(root: AxNode): AxNode[] {
@@ -303,6 +316,65 @@ test("does not submit when the search profile changes after replacing the query"
   assert.deepEqual(client.commands.map(({ command }) => command), ["activate", "replaceText"]);
   assert.equal(client.commands.some(({ command, fields }) =>
     command === "keyPress" && fields.keyCode === 36), false);
+});
+
+test("retries a transient missing result node without resubmitting the live query", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const search = await fixture("live-search-results.json");
+  client.snapshotQueue.push(
+    withSearchQuery(search, "Previous Query"),
+    search,
+    missingNodeError(),
+    ...stable(search)
+  );
+
+  const result = await driver.search(QUERY, 1);
+
+  assert.equal(result.positions.length, 1);
+  assert.deepEqual(
+    client.commands.map(({ command }) => command),
+    ["activate", "replaceText", "keyPress"]
+  );
+});
+
+test("times out persistent missing result nodes without resubmitting the live query", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const search = await fixture("live-search-results.json");
+  client.snapshotQueue.push(
+    withSearchQuery(search, "Previous Query"),
+    search,
+    ...Array.from({ length: 61 }, missingNodeError)
+  );
+
+  await assert.rejects(
+    driver.search(QUERY, 1),
+    (error: unknown) => error instanceof UiContractChangedError
+      && error.message === "Taobao search results did not transition and stabilize within 15 seconds."
+  );
+  assert.deepEqual(
+    client.commands.map(({ command }) => command),
+    ["activate", "replaceText", "keyPress"]
+  );
+});
+
+test("does not retry a different helper response error while observing live results", async () => {
+  const client = new LiveFakeClient();
+  const driver = liveDriver(client);
+  const search = await fixture("live-search-results.json");
+  const fatal = new AxHelperResponseError("APP_NOT_RUNNING", "Application is not running.");
+  client.snapshotQueue.push(
+    withSearchQuery(search, "Previous Query"),
+    search,
+    fatal
+  );
+
+  await assert.rejects(driver.search(QUERY, 1), (error: unknown) => error === fatal);
+  assert.deepEqual(
+    client.commands.map(({ command }) => command),
+    ["activate", "replaceText", "keyPress"]
+  );
 });
 
 test("uses the exact raw live AXScrollDown action before the Page Down fallback", async () => {
