@@ -135,10 +135,17 @@ function isSupportedLiveItemAction(node: AxNode): boolean {
 }
 
 function cardEvidenceNodes(scope: AxNode, actionNode: AxNode): AxNode[] {
-  return [scope, ...scope.children.flatMap((child) => {
-    const nodes = walkAxNodes(child);
-    return nodes.includes(actionNode) || !nodes.some(isSupportedLiveItemAction) ? nodes : [];
-  })];
+  const nodes: AxNode[] = [];
+  const visit = (node: AxNode): void => {
+    nodes.push(node);
+    for (const child of node.children) {
+      const childNodes = walkAxNodes(child);
+      if (!childNodes.includes(actionNode) && childNodes.some(isSupportedLiveItemAction)) continue;
+      visit(child);
+    }
+  };
+  visit(scope);
+  return nodes;
 }
 
 function cardEvidence(scope: AxNode, actionNode: AxNode): CardEvidence | null {

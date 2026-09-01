@@ -389,6 +389,36 @@ test("uses enclosing card evidence when supported item links are nested", async 
   assert.equal(readSearchCards(root)[0]?.shopName, "Example Audio A");
 });
 
+test("rejects a target item that can only borrow evidence from a nested sibling item", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  const [targetItemLink, siblingItemLink, shopEvidence, priceEvidence] = scope.children;
+  assert.ok(targetItemLink);
+  assert.ok(siblingItemLink);
+  assert.ok(shopEvidence);
+  assert.ok(priceEvidence);
+  scope.children = [
+    axNode([...scope.path, 0], {
+      children: [
+        { ...targetItemLink, path: [...scope.path, 0, 0] },
+        axNode([...scope.path, 0, 1], {
+          children: [
+            {
+              ...siblingItemLink,
+              path: [...scope.path, 0, 1, 0],
+              url: "https://detail.tmall.com/item.htm?id=example-x1-b"
+            },
+            { ...shopEvidence, path: [...scope.path, 0, 1, 1] },
+            { ...priceEvidence, path: [...scope.path, 0, 1, 2] }
+          ]
+        })
+      ]
+    })
+  ];
+
+  assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
 test("keeps an explicit shop name authoritative over a shop-link fallback", async () => {
   const root = structuredClone(await fixture("live-search-results.json"));
   const scope = firstCardScope(root);
