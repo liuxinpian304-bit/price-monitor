@@ -161,6 +161,49 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(MacOSCommandHandler.shouldPrompt(for: " prompt "))
     }
 
+    func testActivateRejectsEveryMutationFieldWithoutConstructingApplication() {
+        let cases = [
+            ("nodePath", #"{"nodePath":[0]}"#),
+            ("value", #"{"value":"声卡 直播"}"#),
+            ("fingerprint", #"{"fingerprint":{"role":"AXTextField"}}"#),
+            ("action", #"{"action":"AXPress"}"#),
+            ("keyCode", #"{"keyCode":36}"#),
+            ("destination", #"{"destination":"evidence.png"}"#),
+        ]
+
+        for (field, mutation) in cases {
+            var factoryCalls = 0
+            var activationCalls = 0
+            let protocolHandler = JSONLineProtocol(handler: MacOSCommandHandler(applicationFactory: { _ in
+                factoryCalls += 1
+                return ProtocolApplicationSpy(onActivate: { activationCalls += 1 })
+            }))
+            let response = protocolHandler.response(for: """
+            {"id":"activate-\(field)","command":"activate","bundleId":"com.taobao.pcdesktop",\(mutation.dropFirst().dropLast())}
+            """)
+
+            XCTAssertFalse(response.ok, field)
+            XCTAssertEqual(response.error?.code, "INVALID_REQUEST", field)
+            XCTAssertEqual(factoryCalls, 0, field)
+            XCTAssertEqual(activationCalls, 0, field)
+        }
+    }
+
+    func testActivateWithoutMutationFieldsStillCallsApplication() {
+        var factoryCalls = 0
+        var activationCalls = 0
+        let protocolHandler = JSONLineProtocol(handler: MacOSCommandHandler(applicationFactory: { _ in
+            factoryCalls += 1
+            return ProtocolApplicationSpy(onActivate: { activationCalls += 1 })
+        }))
+
+        let response = protocolHandler.response(for: #"{"id":"activate-ordinary","command":"activate","bundleId":"com.taobao.pcdesktop"}"#)
+
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(factoryCalls, 1)
+        XCTAssertEqual(activationCalls, 1)
+    }
+
     func testReplaceTextRejectsMissingRequiredFields() {
         let inputs = [
             #"{"id":"missing-path","command":"replaceText","bundleId":"com.taobao.pcdesktop","value":"声卡 直播","fingerprint":{"role":"AXTextField"}}"#,
@@ -196,11 +239,20 @@ final class ProtocolTests: XCTestCase {
 }
 
 private final class ProtocolApplicationSpy: AccessibilityApplicationHandling {
+    private let onActivate: () -> Void
+
+    init(onActivate: @escaping () -> Void = {}) {
+        self.onActivate = onActivate
+    }
+
     func diagnose(prompt: Bool) throws -> JSONValue { try unexpected() }
     func snapshot() throws -> JSONValue { try unexpected() }
     func perform(path: [Int], action: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue { try unexpected() }
     func setValue(path: [Int], value: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue { try unexpected() }
-    func activate() throws -> JSONValue { try unexpected() }
+    func activate() throws -> JSONValue {
+        onActivate()
+        return .object(["activated": .boolean(true)])
+    }
     func replaceText(path: [Int], value: String, fingerprint: AXNodeFingerprint) throws -> JSONValue {
         .object(["typed": .boolean(true)])
     }

@@ -371,6 +371,16 @@ struct MacOSCommandHandler: CommandHandling {
     }
 
     func handle(_ command: HelperCommand) throws -> JSONValue? {
+        if command.command == .activate {
+            guard command.nodePath == nil,
+                  command.value == nil,
+                  command.fingerprint == nil,
+                  command.action == nil,
+                  command.keyCode == nil,
+                  command.destination == nil else {
+                throw invalidRequest()
+            }
+        }
         let application = try applicationFactory(command.bundleId)
 
         switch command.command {
