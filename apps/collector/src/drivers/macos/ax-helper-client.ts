@@ -12,8 +12,10 @@ export const TAOBAO_BUNDLE_ID = "com.taobao.pcdesktop";
 export type AxHelperCommandName =
   | "diagnose"
   | "snapshot"
+  | "activate"
   | "perform"
   | "setValue"
+  | "replaceText"
   | "keyPress"
   | "captureCopiedText"
   | "screenshot";
@@ -264,7 +266,10 @@ export class AxHelperClient {
       clearTimeout(pending.timer);
       if (decoded.ok) {
         pending.resolve(decoded.payload);
-      } else if (decoded.error?.code === "APP_NOT_FRONTMOST") {
+      } else if (
+        decoded.error?.code === "APP_ACTIVATION_FAILED"
+        || decoded.error?.code === "APP_NOT_FRONTMOST"
+      ) {
         pending.reject(new DriverIssueError("TAOBAO_NOT_FRONTMOST", "Taobao Desktop is not frontmost."));
       } else {
         pending.reject(new AxHelperResponseError(

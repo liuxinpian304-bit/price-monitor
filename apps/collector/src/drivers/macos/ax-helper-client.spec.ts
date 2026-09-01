@@ -63,6 +63,42 @@ test("uses the exact required command timeout", () => {
   ), true);
 });
 
+test("sends activation and Unicode replacement commands through the helper protocol", async () => {
+  const process = new FakeProcess();
+  const client = new AxHelperClient({ spawn: () => process });
+  const commands: Array<Record<string, unknown>> = [];
+  process.stdin.on("data", (chunk) => {
+    const command = JSON.parse(String(chunk)) as { id: string; command: string } & Record<string, unknown>;
+    commands.push(command);
+    response(process, {
+      id: command.id,
+      ok: true,
+      payload: command.command === "activate" ? { activated: true } : { typed: true }
+    });
+  });
+
+  const activation = client.command("activate");
+  const replacement = client.command("replaceText", {
+    nodePath: [0, 1],
+    value: "声卡 直播",
+    fingerprint: { role: "AXTextField" }
+  });
+
+  assert.deepEqual(await activation, { activated: true });
+  assert.deepEqual(await replacement, { typed: true });
+  assert.deepEqual(commands.map(({ id, ...command }) => command), [
+    { command: "activate", bundleId: "com.taobao.pcdesktop" },
+    {
+      command: "replaceText",
+      bundleId: "com.taobao.pcdesktop",
+      nodePath: [0, 1],
+      value: "声卡 直播",
+      fingerprint: { role: "AXTextField" }
+    }
+  ]);
+  client.close();
+});
+
 test("correlates concurrent one-line responses by UUID", async () => {
   const process = new FakeProcess();
   const client = new AxHelperClient({ spawn: () => process });
@@ -200,6 +236,41 @@ test("translates a non-frontmost keypress response into a terminal driver issue"
     assert.equal((error as Error).message, "Taobao Desktop is not frontmost.");
     return true;
   });
+  client.close();
+});
+
+test("translates activation and replacement frontmost failures into terminal driver issues", async () => {
+  const process = new FakeProcess();
+  const client = new AxHelperClient({ spawn: () => process });
+  process.stdin.on("data", (chunk) => {
+    const command = JSON.parse(String(chunk)) as { id: string; command: string };
+    response(process, {
+      id: command.id,
+      ok: false,
+      error: {
+        code: command.command === "activate" ? "APP_ACTIVATION_FAILED" : "APP_NOT_FRONTMOST",
+        message: `token=private ${privateLocalPath}`
+      }
+    });
+  });
+
+  const requests = [
+    () => client.command("activate"),
+    () => client.command("replaceText", {
+      nodePath: [0, 1],
+      value: "声卡 直播",
+      fingerprint: { role: "AXTextField" }
+    })
+  ];
+  for (const request of requests) {
+    await assert.rejects(request(), (error: unknown) => {
+      assert.equal(error instanceof DriverIssueError, true);
+      assert.equal((error as DriverIssueError).code, "TAOBAO_NOT_FRONTMOST");
+      assert.equal((error as Error).message, "Taobao Desktop is not frontmost.");
+      assert.equal((error as Error).message.includes("private"), false);
+      return true;
+    });
+  }
   client.close();
 });
 

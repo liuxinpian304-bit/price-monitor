@@ -3,8 +3,10 @@ import Foundation
 enum CommandName: String, Codable, Equatable {
     case diagnose
     case snapshot
+    case activate
     case perform
     case setValue
+    case replaceText
     case keyPress
     case captureCopiedText
     case screenshot

@@ -2,7 +2,19 @@
 @preconcurrency import ApplicationServices
 import Foundation
 
-final class AccessibilityApplication {
+protocol AccessibilityApplicationHandling {
+    func diagnose(prompt: Bool) throws -> JSONValue
+    func snapshot() throws -> JSONValue
+    func perform(path: [Int], action: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue
+    func setValue(path: [Int], value: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue
+    func activate() throws -> JSONValue
+    func replaceText(path: [Int], value: String, fingerprint: AXNodeFingerprint) throws -> JSONValue
+    func keyPress(keyCode: Int) throws -> JSONValue
+    func captureCopiedText(path: [Int], action: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue
+    func runningProcessIdentifier() throws -> pid_t
+}
+
+final class AccessibilityApplication: AccessibilityApplicationHandling {
     static let supportedBundleIdentifier = "com.taobao.pcdesktop"
 
     private let treeSerializer: AXTreeSerializer
@@ -344,18 +356,30 @@ final class AccessibilityApplication {
 }
 
 struct MacOSCommandHandler: CommandHandling {
+    private let applicationFactory: (String) throws -> any AccessibilityApplicationHandling
+
+    init(
+        applicationFactory: @escaping (String) throws -> any AccessibilityApplicationHandling = { bundleIdentifier in
+            try AccessibilityApplication(bundleIdentifier: bundleIdentifier)
+        }
+    ) {
+        self.applicationFactory = applicationFactory
+    }
+
     static func shouldPrompt(for value: String?) -> Bool {
         value == "prompt"
     }
 
     func handle(_ command: HelperCommand) throws -> JSONValue? {
-        let application = try AccessibilityApplication(bundleIdentifier: command.bundleId)
+        let application = try applicationFactory(command.bundleId)
 
         switch command.command {
         case .diagnose:
             return try application.diagnose(prompt: Self.shouldPrompt(for: command.value))
         case .snapshot:
             return try application.snapshot()
+        case .activate:
+            return try application.activate()
         case .perform:
             guard let path = command.nodePath, let action = command.action else {
                 throw invalidRequest()
@@ -373,6 +397,18 @@ struct MacOSCommandHandler: CommandHandling {
                 path: path,
                 value: value,
                 fingerprint: command.fingerprint
+            )
+        case .replaceText:
+            guard let path = command.nodePath,
+                  let value = command.value,
+                  let fingerprint = command.fingerprint,
+                  fingerprint.role != nil || fingerprint.title != nil || fingerprint.identifier != nil else {
+                throw invalidRequest()
+            }
+            return try application.replaceText(
+                path: path,
+                value: value,
+                fingerprint: fingerprint
             )
         case .keyPress:
             guard let keyCode = command.keyCode else { throw invalidRequest() }

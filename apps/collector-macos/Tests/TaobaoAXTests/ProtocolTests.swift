@@ -29,6 +29,25 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(HelperCommand.self, from: encoder.encode(command)), command)
     }
 
+    func testActivateCommandDecodesWithoutMutationFields() throws {
+        let command = try decoder.decode(HelperCommand.self, from: Data(
+            #"{"id":"activate-1","command":"activate","bundleId":"com.taobao.pcdesktop"}"#.utf8
+        ))
+
+        XCTAssertEqual(command.command, .activate)
+        XCTAssertNil(command.nodePath)
+        XCTAssertNil(command.value)
+    }
+
+    func testReplaceTextCommandPreservesUnicodeInput() throws {
+        let command = try decoder.decode(HelperCommand.self, from: Data(
+            #"{"id":"replace-1","command":"replaceText","bundleId":"com.taobao.pcdesktop","nodePath":[0,1],"value":"声卡 直播","fingerprint":{"role":"AXTextField"}}"#.utf8
+        ))
+
+        XCTAssertEqual(command.command, .replaceText)
+        XCTAssertEqual(command.value, "声卡 直播")
+    }
+
     func testResponseRoundTripsEveryJSONValueShape() throws {
         let response = HelperResponse(
             id: "response-1",
@@ -142,8 +161,57 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(MacOSCommandHandler.shouldPrompt(for: " prompt "))
     }
 
+    func testReplaceTextRejectsMissingRequiredFields() {
+        let inputs = [
+            #"{"id":"missing-path","command":"replaceText","bundleId":"com.taobao.pcdesktop","value":"声卡 直播","fingerprint":{"role":"AXTextField"}}"#,
+            #"{"id":"missing-value","command":"replaceText","bundleId":"com.taobao.pcdesktop","nodePath":[0,1],"fingerprint":{"role":"AXTextField"}}"#,
+            #"{"id":"missing-fingerprint","command":"replaceText","bundleId":"com.taobao.pcdesktop","nodePath":[0,1],"value":"声卡 直播"}"#,
+            #"{"id":"empty-fingerprint","command":"replaceText","bundleId":"com.taobao.pcdesktop","nodePath":[0,1],"value":"声卡 直播","fingerprint":{}}"#,
+        ]
+        let protocolHandler = JSONLineProtocol(handler: MacOSCommandHandler(applicationFactory: { _ in
+            ProtocolApplicationSpy()
+        }))
+
+        for input in inputs {
+            let response = protocolHandler.response(for: input)
+            XCTAssertFalse(response.ok)
+            XCTAssertEqual(response.error?.code, "INVALID_REQUEST")
+        }
+    }
+
+    func testReplaceTextReturnsOnlyTypedAcknowledgement() {
+        let query = "声卡 直播"
+        let response = JSONLineProtocol(handler: MacOSCommandHandler(applicationFactory: { _ in
+            ProtocolApplicationSpy()
+        })).response(for: #"{"id":"replace-success","command":"replaceText","bundleId":"com.taobao.pcdesktop","nodePath":[0,1],"value":"声卡 直播","fingerprint":{"role":"AXTextField"}}"#)
+
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(response.payload, .object(["typed": .boolean(true)]))
+        XCTAssertNotEqual(response.payload, .object(["typed": .string(query)]))
+    }
+
     private func makeProtocol() -> JSONLineProtocol {
         JSONLineProtocol(handler: NotImplementedHandler())
+    }
+}
+
+private final class ProtocolApplicationSpy: AccessibilityApplicationHandling {
+    func diagnose(prompt: Bool) throws -> JSONValue { try unexpected() }
+    func snapshot() throws -> JSONValue { try unexpected() }
+    func perform(path: [Int], action: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue { try unexpected() }
+    func setValue(path: [Int], value: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue { try unexpected() }
+    func activate() throws -> JSONValue { try unexpected() }
+    func replaceText(path: [Int], value: String, fingerprint: AXNodeFingerprint) throws -> JSONValue {
+        .object(["typed": .boolean(true)])
+    }
+    func keyPress(keyCode: Int) throws -> JSONValue { try unexpected() }
+    func captureCopiedText(path: [Int], action: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue {
+        try unexpected()
+    }
+    func runningProcessIdentifier() throws -> pid_t { try unexpected() }
+
+    private func unexpected<T>() throws -> T {
+        throw HelperError(code: "UNEXPECTED_COMMAND", message: "Unexpected command.")
     }
 }
 
