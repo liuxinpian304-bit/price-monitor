@@ -1,7 +1,54 @@
+import Foundation
 import XCTest
 @testable import TaobaoAX
 
 final class AccessibilityApplicationTests: XCTestCase {
+    func testMissingRunningBundleRejectsInstalledMetadataBeforeActivationAndReplacement() throws {
+        let installedShortVersion = "2.4.5"
+        let installedBuild = "15"
+        let runningApplication = RunningApplicationInfo.fromRunningBundle(
+            processIdentifier: 321,
+            bundleURL: nil,
+            shortVersion: installedShortVersion,
+            build: installedBuild
+        )
+        var activationRequests: [pid_t] = []
+        var resolutionRequests = 0
+        let poster = ApplicationTestUnicodePoster()
+        let application = try AccessibilityApplication(
+            bundleIdentifier: AccessibilityApplication.supportedBundleIdentifier,
+            applicationActivator: ApplicationActivator(
+                requestActivation: { pid in activationRequests.append(pid); return true },
+                frontmostProcessIdentifier: { 321 },
+                now: { 0 },
+                sleep: { _ in }
+            ),
+            nativeSearchTextInput: NativeSearchTextInput(poster: poster),
+            runningApplicationInfo: { runningApplication },
+            searchTextFieldResolver: { _, _ in
+                resolutionRequests += 1
+                return ApplicationTestTextField()
+            },
+            isProcessFrontmost: { _ in true }
+        )
+
+        XCTAssertThrowsError(try application.activate()) { error in
+            XCTAssertEqual((error as? HelperError)?.code, "UNSUPPORTED_TAOBA_BUILD")
+        }
+        XCTAssertThrowsError(
+            try application.replaceText(
+                path: [2, 1],
+                value: "RME Babyface Pro FS",
+                fingerprint: AXNodeFingerprint(role: "AXTextField", title: nil, identifier: "search")
+            )
+        ) { error in
+            XCTAssertEqual((error as? HelperError)?.code, "UNSUPPORTED_TAOBA_BUILD")
+        }
+        XCTAssertTrue(activationRequests.isEmpty)
+        XCTAssertEqual(resolutionRequests, 0)
+        XCTAssertTrue(poster.posts.isEmpty)
+    }
+
     func testActivateRejectsIncorrectShortVersionBeforeRequestingActivation() throws {
         var activationRequests: [pid_t] = []
         let application = try AccessibilityApplication(

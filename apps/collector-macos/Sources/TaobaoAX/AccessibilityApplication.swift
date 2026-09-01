@@ -36,14 +36,12 @@ final class AccessibilityApplication {
             guard let application = Self.runningApplication(bundleIdentifier: expectedBundleIdentifier) else {
                 return nil
             }
-            let metadata = Self.bundleMetadata(
-                runningApplication: application,
-                bundleIdentifier: expectedBundleIdentifier
-            )
-            return RunningApplicationInfo(
+            let metadata = application.bundleURL.flatMap(Self.runningBundleMetadata)
+            return RunningApplicationInfo.fromRunningBundle(
                 processIdentifier: application.processIdentifier,
-                shortVersion: metadata.shortVersion,
-                build: metadata.build
+                bundleURL: application.bundleURL,
+                shortVersion: metadata?.shortVersion,
+                build: metadata?.build
             )
         }
         self.searchTextFieldResolver = searchTextFieldResolver
@@ -292,6 +290,15 @@ final class AccessibilityApplication {
         )
     }
 
+    private static func runningBundleMetadata(bundleURL: URL) -> BundleMetadata? {
+        guard let bundle = Bundle(url: bundleURL) else { return nil }
+        return BundleMetadata(
+            bundleIdentifier: bundle.bundleIdentifier,
+            shortVersion: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+            build: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        )
+    }
+
     private func mappedActionError(_ error: AXError) -> HelperError {
         if error == .actionUnsupported || error == .attributeUnsupported {
             return HelperError(code: "ACTION_NOT_SUPPORTED", message: "Accessibility action is not supported.")
@@ -381,6 +388,26 @@ struct RunningApplicationInfo {
     let processIdentifier: pid_t
     let shortVersion: String?
     let build: String?
+
+    static func fromRunningBundle(
+        processIdentifier: pid_t,
+        bundleURL: URL?,
+        shortVersion: String?,
+        build: String?
+    ) -> RunningApplicationInfo {
+        guard bundleURL != nil else {
+            return RunningApplicationInfo(
+                processIdentifier: processIdentifier,
+                shortVersion: nil,
+                build: nil
+            )
+        }
+        return RunningApplicationInfo(
+            processIdentifier: processIdentifier,
+            shortVersion: shortVersion,
+            build: build
+        )
+    }
 }
 
 final class LiveAXElement: AXElementReading, SearchTextFieldEditing {
