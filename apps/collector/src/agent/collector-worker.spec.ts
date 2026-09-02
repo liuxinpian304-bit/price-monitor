@@ -781,3 +781,48 @@ test("quarantines deterministic checkpoint failure without acknowledging its evi
   assert.equal(store.removeCalls, 0);
   assert.equal(uploader.clearCalls, 0);
 });
+
+test("quarantines an invalid post-run checkpoint without deleting evidence", async () => {
+  const api = new FakeApi();
+  const store = new FakeStore();
+  const uploader = new FakeUploader();
+  const originalLoad = store.load.bind(store);
+  store.load = async () => {
+    if (store.loadCalls === 1) {
+      store.loadCalls += 1;
+      throw Object.assign(new TypeError("invalid checkpoint"), {
+        code: "INVALID_CHECKPOINT" as const
+      });
+    }
+    return originalLoad();
+  };
+  const { worker } = createWorker({ api, store, uploader });
+
+  await assert.rejects(() => worker.once(), { code: "CHECKPOINT_FAILED" });
+  assert.deepEqual(api.releaseInputs, [{
+    disposition: "QUARANTINE",
+    errorCode: "INVALID_CHECKPOINT"
+  }]);
+  assert.equal(store.removeCalls, 0);
+  assert.equal(uploader.clearCalls, 0);
+});
+
+test("requeues an unknown post-run checkpoint load failure without deleting evidence", async () => {
+  const api = new FakeApi();
+  const store = new FakeStore();
+  const uploader = new FakeUploader();
+  const originalLoad = store.load.bind(store);
+  store.load = async () => {
+    if (store.loadCalls === 1) {
+      store.loadCalls += 1;
+      throw new Error("temporary checkpoint read failure");
+    }
+    return originalLoad();
+  };
+  const { worker } = createWorker({ api, store, uploader });
+
+  await assert.rejects(() => worker.once(), { code: "CHECKPOINT_FAILED" });
+  assert.deepEqual(api.releaseInputs, [undefined]);
+  assert.equal(store.removeCalls, 0);
+  assert.equal(uploader.clearCalls, 0);
+});

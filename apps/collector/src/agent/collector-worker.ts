@@ -379,9 +379,16 @@ export class CollectorWorker {
     let checkpoint: CollectorWorkerCheckpoint | null;
     try {
       checkpoint = await this.options.checkpointStore.load(job.runId);
-    } catch {
+    } catch (error) {
       this.activeController = null;
-      await this.release(job.runId);
+      if (safeErrorCode(error) === "INVALID_CHECKPOINT") {
+        await this.release(job.runId, {
+          disposition: "QUARANTINE",
+          errorCode: "INVALID_CHECKPOINT"
+        });
+      } else {
+        await this.release(job.runId);
+      }
       throw new CollectorWorkerError("CHECKPOINT_FAILED");
     }
     try {
