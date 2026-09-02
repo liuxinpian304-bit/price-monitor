@@ -826,3 +826,28 @@ test("requeues an unknown post-run checkpoint load failure without deleting evid
   assert.equal(store.removeCalls, 0);
   assert.equal(uploader.clearCalls, 0);
 });
+
+test("requeues a hostile post-run checkpoint error without deleting evidence", async () => {
+  const api = new FakeApi();
+  const store = new FakeStore();
+  const uploader = new FakeUploader();
+  const originalLoad = store.load.bind(store);
+  store.load = async () => {
+    if (store.loadCalls === 1) {
+      store.loadCalls += 1;
+      const hostileError = Object.defineProperty(new Error("checkpoint read failed"), "code", {
+        get() {
+          throw new Error("unsafe code getter");
+        }
+      });
+      throw hostileError;
+    }
+    return originalLoad();
+  };
+  const { worker } = createWorker({ api, store, uploader });
+
+  await assert.rejects(() => worker.once(), { code: "CHECKPOINT_FAILED" });
+  assert.deepEqual(api.releaseInputs, [undefined]);
+  assert.equal(store.removeCalls, 0);
+  assert.equal(uploader.clearCalls, 0);
+});

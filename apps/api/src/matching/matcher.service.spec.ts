@@ -214,18 +214,23 @@ for (const continuation of ["XMDR-7506", "MDR-7506A", "MDR-75060"]) {
 }
 
 test("keeps a pure-Han model bounded inside longer Chinese text", () => {
-  const candidate = sonyOffer("小羚羊 单机");
-  candidate.title = "专业音频接口";
   const hanOnlyRule = {
     ...strictSonyRule,
     brand: "Antelope",
     standardModel: "羚羊"
   };
+  const exact = sonyOffer("羚羊 单机");
+  exact.title = "专业音频接口";
+  const embedded = sonyOffer("小羚羊 单机");
+  embedded.title = exact.title;
 
-  const decision = new MatcherService().match(hanOnlyRule, candidate);
+  const exactDecision = new MatcherService().match(hanOnlyRule, exact);
+  const embeddedDecision = new MatcherService().match(hanOnlyRule, embedded);
 
-  assert.equal(decision.category, "REJECTED");
-  assert.equal(decision.comparable, false);
+  assert.equal(exactDecision.category, "BARE");
+  assert.equal(exactDecision.comparable, true);
+  assert.equal(embeddedDecision.category, "REJECTED");
+  assert.equal(embeddedDecision.comparable, false);
 });
 
 test("compares an exact selected 7506 SKU on a title that lists 7506, M1, and MV1 variants", () => {

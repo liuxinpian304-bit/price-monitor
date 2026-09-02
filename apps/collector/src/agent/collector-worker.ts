@@ -119,7 +119,12 @@ function defaultSleep(milliseconds: number, signal: AbortSignal): Promise<void> 
 
 function safeErrorCode(error: unknown): string {
   if (typeof error !== "object" || error === null) return "UNEXPECTED_ERROR";
-  const code = Reflect.get(error, "code");
+  let code: unknown;
+  try {
+    code = Reflect.get(error, "code");
+  } catch {
+    return "UNEXPECTED_ERROR";
+  }
   return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)
     ? code
     : "UNEXPECTED_ERROR";
