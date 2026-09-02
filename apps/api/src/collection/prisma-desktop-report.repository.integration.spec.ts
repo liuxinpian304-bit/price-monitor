@@ -264,7 +264,7 @@ test("transactionally ingests one concurrent report history and returns its orig
         ownListingId: ownListing.id,
         platformItemId: ownItemId,
         url: `https://item.taobao.com/item.htm?id=${ownItemId}`,
-        shopName: "A user-editable shop value",
+        shopName: "Own Shop",
         title: "Sony MDR-7506 own",
         searchRanks: [1],
         skus: [
