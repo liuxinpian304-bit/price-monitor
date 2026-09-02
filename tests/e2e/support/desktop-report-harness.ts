@@ -357,7 +357,12 @@ class InMemoryWorkflowStore implements DesktopReportRepository, RunAlertReposito
       providerKey: "taobao-desktop",
       searchLimit: options.report.searchLimit,
       status: "RUNNING",
-      ownListingIds: [...options.claimedOwnListingIds]
+      ownListingIds: [...options.claimedOwnListingIds],
+      ownListings: options.report.ownItems.map((item) => ({
+        id: item.ownListingId,
+        url: item.url,
+        shopName: item.shopName
+      }))
     };
   }
 
@@ -367,7 +372,11 @@ class InMemoryWorkflowStore implements DesktopReportRepository, RunAlertReposito
 
   async inspectRun(agentId: string, runId: string): Promise<ClaimedDesktopRun | null> {
     return agentId === AGENT_ID && runId === this.claimedRun.runId
-      ? { ...this.claimedRun, ownListingIds: [...this.claimedRun.ownListingIds] }
+      ? {
+          ...this.claimedRun,
+          ownListingIds: [...this.claimedRun.ownListingIds],
+          ownListings: this.claimedRun.ownListings.map((listing) => ({ ...listing }))
+        }
       : null;
   }
 
