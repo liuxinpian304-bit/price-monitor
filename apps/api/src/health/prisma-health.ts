@@ -46,3 +46,19 @@ export class PrismaCollectionHealthRepository implements CollectionHealthReposit
     });
   }
 }
+
+export class PrismaCollectorAgentHealthProbe implements HealthProbe {
+  private readonly prisma: PrismaClient;
+
+  constructor(prisma: PrismaClient) {
+    this.prisma = prisma;
+  }
+
+  async ping(): Promise<boolean> {
+    const agent = await this.prisma.collectorAgent.findFirst({
+      where: { enabled: true },
+      select: { id: true }
+    });
+    return Boolean(agent);
+  }
+}

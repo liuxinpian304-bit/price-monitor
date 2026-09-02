@@ -32,7 +32,6 @@ export function CatalogModelDialog({ open, model, onClose, onSaved }: CatalogMod
       await apiRequest(model ? `/api/catalog/models/${model.id}` : "/api/catalog/models", {
         method: model ? "PATCH" : "POST",
         role: "ADMIN",
-        actorId: "本地管理员",
         body: JSON.stringify(toCatalogPayload(values))
       });
       await onSaved(!model);

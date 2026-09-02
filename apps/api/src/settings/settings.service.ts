@@ -1,5 +1,9 @@
 import { CHECK_TIMES, TIME_ZONE } from "../../../../packages/config/src/schedule.ts";
-import { AuditService, type JsonValue } from "../audit/audit.service.ts";
+import {
+  AuditService,
+  type AuditEntryInput,
+  type JsonValue
+} from "../audit/audit.service.ts";
 import { SecretStore } from "./secret-store.ts";
 
 export type UserRole = "ADMIN" | "OPERATOR";
@@ -13,9 +17,17 @@ export interface SettingRecord {
   updatedBy: string;
 }
 
+export interface AtomicWecomLiveSendApprovalInput {
+  setting: SettingRecord;
+  audit: Omit<AuditEntryInput, "before" | "after">;
+}
+
 export interface SettingsRepository {
   get(key: string): Promise<SettingRecord | null>;
   set(record: SettingRecord): Promise<void>;
+  compareAndSetWecomLiveSendApproval(
+    input: AtomicWecomLiveSendApprovalInput
+  ): Promise<"APPROVED" | "ALREADY_APPROVED">;
 }
 
 export interface ScheduleInput {
@@ -25,7 +37,7 @@ export interface ScheduleInput {
 
 export interface PublicSettings {
   shopName: string;
-  provider: "manual" | "external";
+  provider: "manual" | "external" | "desktop";
   schedulerEnabled: boolean;
   checkTimes: string[];
   timeZone: typeof TIME_ZONE;
@@ -37,6 +49,8 @@ export class RoleForbiddenError extends Error {}
 export class SettingsValidationError extends Error {}
 
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const WECOM_LIVE_SEND_APPROVAL = "WECOM_LIVE_SEND_APPROVAL";
+const PREVIEW_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 function requireAdmin(role: UserRole): void {
   if (role !== "ADMIN") {
@@ -57,15 +71,59 @@ function scheduleFrom(record: SettingRecord | null): ScheduleInput {
   };
 }
 
+interface WecomLiveSendApproval {
+  approved: true;
+  actorId: string;
+  approvedAt: string;
+  previewRunId: string;
+  previewDigest: string;
+}
+
+export function wecomApprovalFrom(record: SettingRecord | null): WecomLiveSendApproval | null {
+  if (!record || record.secret || record.encryptedValue !== null) return null;
+  if (typeof record.valueJson !== "object" || record.valueJson === null || Array.isArray(record.valueJson)) {
+    return null;
+  }
+  const value = record.valueJson as Record<string, unknown>;
+  if (
+    value.approved !== true
+    || typeof value.actorId !== "string"
+    || value.actorId.trim() === ""
+    || typeof value.approvedAt !== "string"
+    || !Number.isFinite(Date.parse(value.approvedAt))
+    || typeof value.previewRunId !== "string"
+    || value.previewRunId.trim() === ""
+    || typeof value.previewDigest !== "string"
+    || !PREVIEW_DIGEST_PATTERN.test(value.previewDigest)
+  ) return null;
+  return {
+    approved: true,
+    actorId: value.actorId,
+    approvedAt: value.approvedAt,
+    previewRunId: value.previewRunId,
+    previewDigest: value.previewDigest
+  };
+}
+
 export class SettingsService {
   private readonly repository: SettingsRepository;
   private readonly secretStore: SecretStore;
   private readonly audit: AuditService;
+  private readonly onScheduleSettingsChanged: () => Promise<void>;
+  private readonly now: () => Date;
 
-  constructor(repository: SettingsRepository, secretStore: SecretStore, audit: AuditService) {
+  constructor(
+    repository: SettingsRepository,
+    secretStore: SecretStore,
+    audit: AuditService,
+    onScheduleSettingsChanged: () => Promise<void> = async () => undefined,
+    now: () => Date = () => new Date()
+  ) {
     this.repository = repository;
     this.secretStore = secretStore;
     this.audit = audit;
+    this.onScheduleSettingsChanged = onScheduleSettingsChanged;
+    this.now = now;
   }
 
   async getPublicSettings(_role: UserRole): Promise<PublicSettings> {
@@ -76,7 +134,9 @@ export class SettingsService {
       this.repository.get("COMMERCE_PROVIDER")
     ]);
     const schedule = scheduleFrom(scheduleRecord);
-    const provider = providerRecord?.valueJson === "external" ? "external" : "manual";
+    const provider = providerRecord?.valueJson === "external" || providerRecord?.valueJson === "desktop"
+      ? providerRecord.valueJson
+      : "manual";
 
     return {
       shopName: "星空乐器专营店",
@@ -113,9 +173,10 @@ export class SettingsService {
       before: before?.valueJson ?? null,
       after: valueJson
     });
+    await this.onScheduleSettingsChanged();
   }
 
-  async updateProvider(provider: "manual" | "external", actorId: string, role: UserRole): Promise<void> {
+  async updateProvider(provider: "manual" | "external" | "desktop", actorId: string, role: UserRole): Promise<void> {
     requireAdmin(role);
     const before = await this.repository.get("COMMERCE_PROVIDER");
     await this.repository.set({
@@ -133,6 +194,7 @@ export class SettingsService {
       before: before?.valueJson ?? null,
       after: provider
     });
+    await this.onScheduleSettingsChanged();
   }
 
   async updateSecret(key: SecretSettingKey, plaintext: string, actorId: string, role: UserRole): Promise<void> {
@@ -159,5 +221,44 @@ export class SettingsService {
   async readSecretForInternalUse(key: SecretSettingKey): Promise<string | null> {
     const record = await this.repository.get(key);
     return record?.encryptedValue ? this.secretStore.decrypt(record.encryptedValue) : null;
+  }
+
+  async isWecomLiveSendingApproved(): Promise<boolean> {
+    return wecomApprovalFrom(await this.repository.get(WECOM_LIVE_SEND_APPROVAL)) !== null;
+  }
+
+  async approveWecomLiveSending(
+    input: { previewRunId: string; previewDigest: string },
+    actorId: string,
+    role: UserRole
+  ): Promise<void> {
+    requireAdmin(role);
+    if (actorId.trim() === "") throw new TypeError("actorId is required");
+    if (input.previewRunId.trim() === "" || !PREVIEW_DIGEST_PATTERN.test(input.previewDigest)) {
+      throw new SettingsValidationError("企业微信预览确认信息无效");
+    }
+
+    const valueJson: JsonValue = {
+      approved: true,
+      actorId,
+      approvedAt: this.now().toISOString(),
+      previewRunId: input.previewRunId,
+      previewDigest: input.previewDigest
+    };
+    await this.repository.compareAndSetWecomLiveSendApproval({
+      setting: {
+        key: WECOM_LIVE_SEND_APPROVAL,
+        valueJson,
+        encryptedValue: null,
+        secret: false,
+        updatedBy: actorId
+      },
+      audit: {
+        actorId,
+        action: "wecom.live-send.approved",
+        entityType: "SystemSetting",
+        entityId: WECOM_LIVE_SEND_APPROVAL
+      }
+    });
   }
 }

@@ -1,0 +1,18 @@
+{
+  "name": "@stau-price-monitor/collector",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=../../.env.collector --import=tsx src/main.ts",
+    "test": "node ../../scripts/run-collector-tests.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@stau-price-monitor/config": "workspace:*",
+    "@stau-price-monitor/contracts": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.12"
+  }
+}

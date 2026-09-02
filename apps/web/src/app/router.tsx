@@ -6,6 +6,8 @@ import { AlertsPage } from "../pages/AlertsPage.tsx";
 import { BareComparisonPage } from "../pages/BareComparisonPage.tsx";
 import { BundleComparisonPage } from "../pages/BundleComparisonPage.tsx";
 import { CatalogPage } from "../pages/CatalogPage.tsx";
+import { CollectionRunDetailPage } from "../pages/CollectionRunDetailPage.tsx";
+import { CollectionRunsPage } from "../pages/CollectionRunsPage.tsx";
 import { DashboardPage } from "../pages/DashboardPage.tsx";
 import { HistoryPage } from "../pages/HistoryPage.tsx";
 import { ManualClassificationPage } from "../pages/ManualClassificationPage.tsx";
@@ -23,6 +25,8 @@ export const router = createBrowserRouter([{
     { path: "alerts", element: <AlertsPage /> },
     { path: "alerts/:alertId", element: <AlertDetailPage /> },
     { path: "history", element: <HistoryPage /> },
+    { path: "runs", element: <CollectionRunsPage /> },
+    { path: "runs/:runId", element: <CollectionRunDetailPage /> },
     { path: "settings", element: <SettingsPage /> }
   ]
 }]);

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { checkNodeVersion, commandSpawnOptions, createLocalEnv } from "./local-env.mjs";
+import {
+  checkNodeVersion,
+  collectorDoctorPlan,
+  commandSpawnOptions,
+  createLocalEnv
+} from "./local-env.mjs";
 
 test("creates a local env with a generated key and preserves all public settings", () => {
   const result = createLocalEnv(
@@ -21,4 +26,14 @@ test("uses a shell for Windows command shims but not on other platforms", () => 
   assert.equal(commandSpawnOptions("win32").shell, true);
   assert.equal(commandSpawnOptions("darwin").shell, false);
   assert.equal(commandSpawnOptions("linux").shell, false);
+});
+
+test("adds live collector diagnostics to doctor only on macOS", () => {
+  assert.deepEqual(collectorDoctorPlan("darwin"), [{
+    command: "pnpm",
+    args: ["collector:diagnose"],
+    label: "macOS collector diagnostics"
+  }]);
+  assert.deepEqual(collectorDoctorPlan("win32"), []);
+  assert.deepEqual(collectorDoctorPlan("linux"), []);
 });
