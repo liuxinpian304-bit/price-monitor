@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import ExcelJS from "exceljs";
 
 import {
@@ -5,9 +7,10 @@ import {
   type AlertEvaluationDecision,
   type AlertOffer,
   type AlertRepository,
-  type PriceAlertNotifier,
   type PriceAlertRecord
 } from "../../../apps/api/src/alerts/alert.service.ts";
+import { RunAlertNotifier } from "../../../apps/api/src/alerts/run-alert-notifier.ts";
+import type { WecomMarkdownSender } from "../../../apps/api/src/alerts/wecom/wecom.client.ts";
 import {
   CatalogImportService,
   type CatalogImportResult,
@@ -23,10 +26,19 @@ import {
   type CollectionRepository,
   type CollectionSummary
 } from "../../../apps/api/src/collection/collection.service.ts";
+import type {
+  RunAlertEntry,
+  RunAlertSummary
+} from "../../../apps/api/src/collection/run-alert.service.ts";
 import { ManualImportProvider } from "../../../apps/api/src/collection/providers/manual/manual-import.provider.ts";
 import { MatcherService } from "../../../apps/api/src/matching/matcher.service.ts";
 import { bundleSignature, type BundleComparableItem } from "../../../apps/api/src/pricing/bundle-signature.ts";
 import { PriceEngineService } from "../../../apps/api/src/pricing/price-engine.service.ts";
+import {
+  createDesktopReportHarness,
+  InMemoryRunAlertNotificationRepository,
+  type DesktopReportHarnessOptions
+} from "./desktop-report-harness.ts";
 
 const MODEL_HEADERS = [
   "监控编号", "是否启用", "品牌", "标准型号", "类目", "搜索关键词", "型号版本", "必须包含词",
@@ -56,13 +68,10 @@ class RecordingCatalogWriter implements CatalogImportWriter {
 
 class InMemoryAlertRepository implements AlertRepository {
   readonly alerts: PriceAlertRecord[] = [];
-  readonly notificationFailures: Array<{ alertId: string; message: string }> = [];
+  readonly notificationFailures: Array<{ alertIds: string[]; message: string }> = [];
 
-  async findByDedupKey(key: string) {
-    return this.alerts.find((alert) => alert.dedupKey === key) ?? null;
-  }
-
-  async create(input: Omit<PriceAlertRecord, "id" | "notifiedAt">) {
+  async createIfAbsent(input: Omit<PriceAlertRecord, "id" | "notifiedAt">) {
+    if (this.alerts.some((alert) => alert.dedupKey === input.dedupKey)) return null;
     const alert: PriceAlertRecord = {
       ...input,
       id: `acceptance-alert-${this.alerts.length + 1}`,
@@ -72,23 +81,22 @@ class InMemoryAlertRepository implements AlertRepository {
     return alert;
   }
 
-  async markNotified(id: string, notifiedAt: Date) {
-    const alert = this.alerts.find((item) => item.id === id);
-    if (alert) {
+  async markBatchNotified(ids: string[], notifiedAt: Date) {
+    for (const alert of this.alerts.filter((item) => ids.includes(item.id))) {
       alert.notifiedAt = notifiedAt;
     }
   }
 
-  async recordNotificationFailure(alertId: string, message: string) {
-    this.notificationFailures.push({ alertId, message });
+  async recordBatchNotificationFailure(alertIds: string[], message: string) {
+    this.notificationFailures.push({ alertIds: [...alertIds], message });
   }
 }
 
-class RecordingNotifier implements PriceAlertNotifier {
-  readonly sent: PriceAlertRecord[] = [];
+class RecordingSender implements WecomMarkdownSender {
+  readonly messages: string[] = [];
 
-  async sendPriceAlert(alert: PriceAlertRecord) {
-    this.sent.push(alert);
+  async sendMarkdown(message: string) {
+    this.messages.push(message);
   }
 }
 
@@ -102,6 +110,16 @@ class AvailableLock implements CollectionLock {
 
 function selectedSkuText(input: CollectedOfferInput): string {
   return input.offer.skuOptions.find((sku) => sku.skuId === input.offer.selectedSkuId)?.label ?? input.offer.title;
+}
+
+function legacyCombinationSignature(model: ValidatedModelImport): string {
+  return `sku-combination-v1:${createHash("sha256")
+    .update(`legacy:${model.monitorCode}`)
+    .digest("hex")}`;
+}
+
+function legacyOwnSnapshotId(model: ValidatedModelImport, ownPriceFen: number): string {
+  return `legacy-own:${model.monitorCode}:${ownPriceFen}`;
 }
 
 function importedBundleItems(catalog: ValidatedCatalogImport, code: string): BundleComparableItem[] {
@@ -162,6 +180,10 @@ class PipelineCollectionRepository implements CollectionRepository {
   private readonly ownPriceFen: number;
   private readonly competitorBundleModel: "MK4" | "MK8" | undefined;
   private readonly alertService: AlertService;
+  private readonly notificationRepository: InMemoryRunAlertNotificationRepository;
+  private readonly runAlertNotifier: RunAlertNotifier;
+  private readonly runAlerts: RunAlertEntry[] = [];
+  private capturedAt = new Date("2026-08-19T01:30:00.000Z");
 
   constructor(input: {
     collectionModel: CollectionModel;
@@ -170,6 +192,8 @@ class PipelineCollectionRepository implements CollectionRepository {
     ownPriceFen: number;
     competitorBundleModel: "MK4" | "MK8" | undefined;
     alertService: AlertService;
+    notificationRepository: InMemoryRunAlertNotificationRepository;
+    runAlertNotifier: RunAlertNotifier;
   }) {
     this.collectionModel = input.collectionModel;
     this.importedModel = input.importedModel;
@@ -177,6 +201,8 @@ class PipelineCollectionRepository implements CollectionRepository {
     this.ownPriceFen = input.ownPriceFen;
     this.competitorBundleModel = input.competitorBundleModel;
     this.alertService = input.alertService;
+    this.notificationRepository = input.notificationRepository;
+    this.runAlertNotifier = input.runAlertNotifier;
   }
 
   async getModel(id: string) {
@@ -190,9 +216,13 @@ class PipelineCollectionRepository implements CollectionRepository {
   async startRun() {}
 
   async saveOffer(input: CollectedOfferInput) {
+    this.capturedAt = input.offer.capturedAt;
+    const combinationSignature = legacyCombinationSignature(this.importedModel);
+    const ownSnapshotId = legacyOwnSnapshotId(this.importedModel, this.ownPriceFen);
     const ownOffer: AlertOffer = {
       monitoredModelId: this.collectionModel.id,
-      snapshotId: `${input.runId}-own`,
+      snapshotId: ownSnapshotId,
+      combinationSignature,
       platformItemId: `own-${this.importedModel.monitorCode}`,
       skuId: `own-sku-${this.importedModel.monitorCode}`,
       brand: this.importedModel.brand,
@@ -201,6 +231,8 @@ class PipelineCollectionRepository implements CollectionRepository {
       shopName: "星空乐器专营店",
       skuText: this.importedModel.ownSkuText,
       payableFen: this.ownPriceFen,
+      priceConfidence: "CONFIRMED",
+      stockState: "IN_STOCK",
       url: this.importedModel.ownUrl,
       capturedAt: input.offer.capturedAt,
       owner: this.importedModel.owner
@@ -208,6 +240,7 @@ class PipelineCollectionRepository implements CollectionRepository {
     const competitorOffer: AlertOffer = {
       monitoredModelId: this.collectionModel.id,
       snapshotId: `${input.runId}-competitor`,
+      combinationSignature,
       platformItemId: input.offer.platformItemId,
       skuId: input.offer.selectedSkuId,
       brand: this.importedModel.brand,
@@ -216,23 +249,81 @@ class PipelineCollectionRepository implements CollectionRepository {
       shopName: input.offer.shopName,
       skuText: selectedSkuText(input),
       payableFen: input.price.payableFen,
+      priceConfidence: "CONFIRMED",
+      stockState: input.offer.stockState,
       url: input.offer.url,
       capturedAt: input.offer.capturedAt,
       owner: this.importedModel.owner
     };
 
-    await this.alertService.evaluate(
+    const alert = await this.alertService.evaluate(
       ownOffer,
       competitorOffer,
       bundleDecision(input, this.catalog, this.importedModel, this.competitorBundleModel)
     );
+    if (!alert || input.price.payableFen === null) return;
+    this.runAlerts.push({
+      alertId: alert.id,
+      severity: alert.severity,
+      snapshotId: competitorOffer.snapshotId,
+      ownSnapshotId: ownOffer.snapshotId,
+      ownSkuText: ownOffer.skuText,
+      ownPayableFen: ownOffer.payableFen!,
+      combinationSignature,
+      combinationLabel: `legacy ${this.importedModel.monitorCode}`,
+      rank: 1,
+      shopName: competitorOffer.shopName,
+      title: input.offer.title,
+      skuText: competitorOffer.skuText,
+      activityPriceFen: input.offer.listPriceFen,
+      publicDiscountFen: input.offer.publicDiscountFen,
+      payableFen: input.price.payableFen,
+      differenceFen: alert.differenceFen,
+      url: competitorOffer.url,
+      reasons: alert.reasons
+    });
   }
 
   async recordItemFailure() {}
 
   async recordSystemError() {}
 
-  async finishRun(_runId: string, _status: "SUCCEEDED" | "PARTIAL_FAILED" | "FAILED", _summary: CollectionSummary) {}
+  async finishRun(
+    runId: string,
+    _status: "SUCCEEDED" | "PARTIAL_FAILED" | "FAILED",
+    summary: CollectionSummary
+  ) {
+    const alertSummary: RunAlertSummary = {
+      runId,
+      monitoredModelId: this.collectionModel.id,
+      brand: this.importedModel.brand,
+      standardModel: this.importedModel.standardModel,
+      comparisonType: this.importedModel.comparisonType,
+      owner: this.importedModel.owner,
+      completedAt: this.capturedAt,
+      checkedItemCount: summary.searched,
+      positionCount: summary.searched,
+      shopCount: summary.fetched > 0 ? 1 : 0,
+      searchLimit: 50,
+      skuCount: summary.fetched,
+      issueCount: summary.failed,
+      reviewCount: 0,
+      reportUrl: `https://monitor.example.test/collection-runs/${runId}`,
+      baseline: {
+        snapshotId: legacyOwnSnapshotId(this.importedModel, this.ownPriceFen),
+        skuId: `own-sku-${this.importedModel.monitorCode}`,
+        skuText: this.importedModel.ownSkuText,
+        activityPriceFen: this.ownPriceFen,
+        publicDiscountFen: 0,
+        payableFen: this.ownPriceFen
+      },
+      systemIssue: null,
+      alerts: [...this.runAlerts],
+      missingOwnGroups: []
+    };
+    this.notificationRepository.ensureBatch(alertSummary);
+    await this.runAlertNotifier.send(alertSummary);
+  }
 }
 
 function yuan(fen: number): string {
@@ -252,7 +343,7 @@ function providerFixture(model: ValidatedModelImport, options: CollectOptions, r
     : `Babyface Pro FS+${bundleModel}套装`;
   const attributes = model.comparisonType === "BARE"
     ? { 版本: "FS新版" }
-    : { 声卡: "Babyface Pro FS", 麦克风: bundleModel };
+    : { 声卡: "Babyface Pro FS", 麦克风: bundleModel, 版本: "FS新版" };
   const capturedAt = new Date(Date.UTC(2026, 7, 19, 1, 30, runNumber)).toISOString();
 
   return new ManualImportProvider({
@@ -341,7 +432,8 @@ async function catalogWorkbook(): Promise<Buffer> {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-export async function createMonitorHarness() {
+export async function createMonitorHarness(options: DesktopReportHarnessOptions = {}) {
+  const desktopHarness = createDesktopReportHarness(options);
   const catalogWriter = new RecordingCatalogWriter();
   const importResult = await new CatalogImportService(catalogWriter).importWorkbook(
     await catalogWorkbook(),
@@ -353,14 +445,26 @@ export async function createMonitorHarness() {
 
   const catalog = catalogWriter.catalog;
   const alertRepository = new InMemoryAlertRepository();
-  const notifier = new RecordingNotifier();
-  const alertService = new AlertService(alertRepository, notifier);
+  const notificationRepository = new InMemoryRunAlertNotificationRepository({
+    alertRepository,
+    fixturePrefix: "acceptance",
+    skipEmptyBatches: true
+  });
+  const sender = new RecordingSender();
+  const runAlertNotifier = new RunAlertNotifier(
+    notificationRepository,
+    async () => sender,
+    async () => true,
+    () => new Date("2026-08-19T01:31:00.000Z")
+  );
+  const alertService = new AlertService(alertRepository);
   let runNumber = 0;
 
   return {
     importResult: importResult as CatalogImportResult,
     alerts: alertRepository.alerts,
-    notifications: notifier.sent,
+    notifications: sender.messages,
+    collectDesktopCombinationRun: desktopHarness.collectDesktopCombinationRun,
     async collect(options: CollectOptions) {
       runNumber += 1;
       const importedModel = catalog.models.find((model) => model.monitorCode === options.monitorCode);
@@ -374,7 +478,9 @@ export async function createMonitorHarness() {
         catalog,
         ownPriceFen: options.ownPriceFen,
         competitorBundleModel: options.competitorBundleModel,
-        alertService
+        alertService,
+        notificationRepository,
+        runAlertNotifier
       });
       const service = new CollectionService(
         repository,

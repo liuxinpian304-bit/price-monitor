@@ -16,7 +16,6 @@ export function ManualClassificationPage() {
     try {
       await apiRequest(`/api/operations/manual-candidates/${candidate.id}`, {
         method: "PATCH",
-        actorId: "本地运营",
         body: JSON.stringify({ decision })
       });
       await refresh();

@@ -4,20 +4,20 @@
 
 ## 当前实现状态
 
-当前仓库可以启动 API 和管理后台，完成演示数据、型号与套装管理、模板导入、匹配与价格规则测试、预警处理留痕、审计及系统配置保存。
+当前仓库可以启动 API 和管理后台，完成演示数据、型号与套装管理、模板导入、匹配与价格规则测试、预警处理留痕、审计及系统配置保存。API 运行时已装配桌面采集的调度、队列、采集器注册、报告入库和通知批次；`/api/health` 返回 `runtime: "ASSEMBLED"` 仅表示这些本地运行时组件已成功初始化。
 
-当前公开版不会自动执行定时采集，也不会自动发送企业微信消息。生产组合尚未实例化 `CollectionScheduler`、BullMQ `Worker`、`CollectionService`、真实 `CommerceProvider` 或 `WecomClient`；在设置页保存检查时间、数据源和密钥只会持久化配置。部署方完成这些组件的装配、供应商验收和端到端测试之前，不应把本仓库当作无人值守的生产监控服务。
+**真实验收仍未完成。** 本仓库尚未在真实淘宝桌面版上执行 3 条或 50 条监督采集，也没有发送真实企业微信消息。真实运行仍需要一台已登记、已授权、已登录且保持解锁的 Mac 采集器；首次真实企业微信 Webhook 发送必须在执行时重新取得运营确认。Windows 采集器和三机生产分片均尚未验收。系统始终只监控、提醒和记录，绝不自动改价。
 
 ## 功能与架构
 
 - 管理重点型号，区分裸机与套装，并保存目标检查计划。
 - 提供具体 SKU 的匹配、到手价和低价预警规则模块及自动化测试；低于我方到手价 `0.01 元` 即符合预警条件。
-- 提供企业微信消息构造与客户端、人工处理结果和审计模块，但通知客户端尚未装配到生产运行时。
-- `apps/api` 提供管理 API 和领域模块；`apps/web` 提供运营后台；PostgreSQL 保存业务数据，Redis 用于健康检查及已测试的队列组件。
+- 提供企业微信消息构造、通知批次、人工处理结果和审计模块；真实 Webhook 的可达性与运营群验收仍待现场完成。
+- `apps/api` 提供管理 API、桌面采集调度和报告处理；`apps/web` 提供运营后台与采集报告；PostgreSQL 保存业务数据，Redis 用于健康检查和队列。
 
 ## 运行环境
 
-需要 Node.js 22、pnpm 11.19.0 和 Docker Desktop。macOS 请参阅 [Terminal 设置指南](docs/operations/macos-setup.md)，Windows 请参阅 [PowerShell 设置指南](docs/operations/windows-setup.md)。Linux 可按以下同一套命令运行。
+需要 Node.js 22、pnpm 11.19.0 和 Docker Desktop。macOS 请参阅 [Terminal 设置指南](docs/operations/macos-setup.md) 和 [淘宝桌面采集器操作手册](docs/operations/macos-collector.md)，Windows 请参阅 [PowerShell 设置指南](docs/operations/windows-setup.md)。Linux 可按以下同一套命令运行。
 
 安装依赖并创建本地环境后，使用 `pnpm run doctor` 检查 Node.js、pnpm、Docker、Docker Compose 和 `.env`。必须使用 `pnpm run doctor`：pnpm 11 的裸 `pnpm doctor` 是内置命令冲突，不会运行仓库的环境诊断脚本。
 
@@ -44,7 +44,7 @@ pnpm dev:api
 pnpm dev:web
 ```
 
-API 默认监听 `http://127.0.0.1:4100`；管理后台开发服务器会在启动后显示本地访问地址。这两个命令启动的是管理与演示界面，不会启动自动采集 Worker。首次启动前，在 `pnpm setup` 之后运行 `pnpm run doctor`，并在 Docker 服务就绪后再执行数据库命令。
+API 默认监听 `http://127.0.0.1:4100`；管理后台开发服务器会在启动后显示本地访问地址。API 会装配桌面采集调度与报告处理，但不会替你启动 Mac 采集器进程，也不表示已经通过真实淘宝或企业微信验收。首次启动前，在 `pnpm setup` 之后运行 `pnpm run doctor`，并在 Docker 服务就绪后再执行数据库命令。
 
 演示种子仅用于本地开发，不得用于生产环境。完成运行时装配后的目标部署、反向代理和密钥管理检查清单参阅[目标态部署手册](docs/operations/deployment-guide.md)。
 
@@ -62,9 +62,16 @@ pnpm verify:portable
 pnpm verify
 ```
 
+采集报告页面另有完全脱敏的可移植浏览器回归夹具。首次在一台开发机安装依赖后下载锁定版本的 Chromium，再执行桌面和 `390px` 两种布局测试；该夹具只拦截本地 `/api` 请求，不连接淘宝或企业微信：
+
+```bash
+pnpm exec playwright install chromium
+pnpm test:browser
+```
+
 ## 真实数据源边界
 
-真实天猫搜索必须由部署方另行选择并验收合规的 `CommerceProvider`，包括数据来源、鉴权、限额、字段映射和价格准确率。此仓库不包含可直接用于真实天猫搜索的供应商，也不提供依赖普通淘宝账号登录的高频网页采集。
+真实商品搜索可以选择另行验收的合规 `CommerceProvider`，也可以选择已装配但仍处于 LIVE PENDING 的淘宝桌面版采集器。外部路径需验收数据来源、鉴权、限额、字段映射和价格准确率；桌面路径需使用已登记、已授权、已登录且保持解锁的受控 Mac，在运营人员监督下完成 3 条和 50 条现场验收。两条路径都不得变成依赖普通账号的高频网页抓取，首次真实企业微信发送都必须在动作发生时再次取得确认。
 
 仓库仅随附固定 fixtures 和手工导入 fallback，供开发、测试和演示使用。接入真实数据前，请遵守平台规则、供应商合同和适用法律，并完成供应商契约测试和人工抽检。
 

@@ -42,8 +42,7 @@ export function ImportDialog({
       const result = await apiRequest<{ imported: number; updated: number; errors: ImportError[] }>("/api/catalog/import", {
         method: "POST",
         body: formData,
-        role: "ADMIN",
-        actorId: "本地管理员"
+        role: "ADMIN"
       });
       setImportErrors(result.errors);
       if (result.errors.length === 0) {

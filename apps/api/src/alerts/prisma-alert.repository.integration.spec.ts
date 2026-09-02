@@ -8,9 +8,7 @@ import { AuditService } from "../audit/audit.service.ts";
 import { PrismaAuditRepository } from "../audit/prisma-audit.repository.ts";
 import {
   AlertService,
-  type AlertOffer,
-  type PriceAlertNotifier,
-  type PriceAlertRecord
+  type AlertOffer
 } from "./alert.service.ts";
 import { AlertActionService } from "./alert-action.service.ts";
 import { PrismaAlertRepository } from "./prisma-alert.repository.ts";
@@ -28,16 +26,6 @@ async function clearData(): Promise<void> {
   await prisma.modelAlias.deleteMany();
   await prisma.monitoredModel.deleteMany();
   await prisma.auditLog.deleteMany();
-}
-
-class RecordingNotifier implements PriceAlertNotifier {
-  sent: PriceAlertRecord[] = [];
-  fail = false;
-
-  async sendPriceAlert(alert: PriceAlertRecord) {
-    if (this.fail) throw new Error("wecom timeout");
-    this.sent.push(alert);
-  }
 }
 
 async function seedOffers(): Promise<{ own: AlertOffer; competitor: AlertOffer }> {
@@ -112,6 +100,7 @@ async function seedOffers(): Promise<{ own: AlertOffer; competitor: AlertOffer }
     own: {
       monitoredModelId: model.id,
       snapshotId: ownSnapshot.id,
+      combinationSignature: "sku-combination-v1:fixture",
       platformItemId: "own-1001",
       skuId: "own-sku",
       brand: "RME",
@@ -120,6 +109,8 @@ async function seedOffers(): Promise<{ own: AlertOffer; competitor: AlertOffer }
       shopName: "星空乐器专营店",
       skuText: "Babyface Pro FS单机",
       payableFen: 630_000,
+      priceConfidence: "CONFIRMED",
+      stockState: "IN_STOCK",
       url: ownListing.url,
       capturedAt: ownSnapshot.capturedAt,
       owner: "张三"
@@ -127,6 +118,7 @@ async function seedOffers(): Promise<{ own: AlertOffer; competitor: AlertOffer }
     competitor: {
       monitoredModelId: model.id,
       snapshotId: competitorSnapshot.id,
+      combinationSignature: "sku-combination-v1:fixture",
       platformItemId: "competitor-1001",
       skuId: "competitor-sku",
       brand: "RME",
@@ -135,6 +127,8 @@ async function seedOffers(): Promise<{ own: AlertOffer; competitor: AlertOffer }
       shopName: "同行专业音频店",
       skuText: "Babyface Pro FS单机",
       payableFen: 629_999,
+      priceConfidence: "CONFIRMED",
+      stockState: "IN_STOCK",
       url: candidate.url,
       capturedAt: competitorSnapshot.capturedAt,
       owner: "张三"
@@ -167,7 +161,7 @@ test("creates and hydrates an alert without overlapping pg client queries", asyn
 
   try {
     const offers = await seedOffers();
-    const service = new AlertService(new PrismaAlertRepository(prisma), new RecordingNotifier());
+    const service = new AlertService(new PrismaAlertRepository(prisma));
     const alert = await service.evaluate(offers.own, offers.competitor, {
       category: "BARE",
       comparable: true,
@@ -187,10 +181,9 @@ test("creates and hydrates an alert without overlapping pg client queries", asyn
   }
 });
 
-test("persists, notifies and deduplicates a one-fen PostgreSQL alert", async () => {
+test("persists and deduplicates a one-fen PostgreSQL alert before notification", async () => {
   const offers = await seedOffers();
-  const notifier = new RecordingNotifier();
-  const service = new AlertService(new PrismaAlertRepository(prisma), notifier);
+  const service = new AlertService(new PrismaAlertRepository(prisma));
   const decision = {
     category: "BARE" as const,
     comparable: true,
@@ -203,36 +196,44 @@ test("persists, notifies and deduplicates a one-fen PostgreSQL alert", async () 
 
   assert.ok(first);
   assert.equal(duplicate, null);
-  assert.equal(notifier.sent.length, 1);
   const stored = await prisma.priceAlert.findFirstOrThrow();
   assert.equal(stored.differenceFen, 1);
-  assert.notEqual(stored.notifiedAt, null);
-  assert.equal(stored.notificationAttempts, 1);
+  assert.equal(stored.notifiedAt, null);
+  assert.equal(stored.notificationAttempts, 0);
   assert.deepEqual(stored.reasons, decision.reasons);
 });
 
-test("persists the last notification error for retry", async () => {
+test("records and clears one sanitized batch notification failure", async () => {
   const offers = await seedOffers();
-  const notifier = new RecordingNotifier();
-  notifier.fail = true;
-  const service = new AlertService(new PrismaAlertRepository(prisma), notifier);
+  const repository = new PrismaAlertRepository(prisma);
+  const service = new AlertService(repository);
 
-  await service.evaluate(offers.own, offers.competitor, {
+  const alert = await service.evaluate(offers.own, offers.competitor, {
     category: "BARE",
     comparable: true,
     bundleConfiguration: "NOT_APPLICABLE",
     reasons: ["同品牌、同型号、同版本裸机"]
   });
+  assert.ok(alert);
 
-  const stored = await prisma.priceAlert.findFirstOrThrow();
-  assert.equal(stored.notificationAttempts, 1);
-  assert.equal(stored.lastNotificationError, "wecom timeout");
-  assert.equal(stored.notifiedAt, null);
+  await repository.recordBatchNotificationFailure([alert.id], "WECOM_DELIVERY_FAILED");
+
+  const failed = await prisma.priceAlert.findFirstOrThrow();
+  assert.equal(failed.notificationAttempts, 1);
+  assert.equal(failed.lastNotificationError, "WECOM_DELIVERY_FAILED");
+  assert.equal(failed.notifiedAt, null);
+
+  const notifiedAt = new Date("2026-08-25T02:00:00.000Z");
+  await repository.markBatchNotified([alert.id], notifiedAt);
+  const notified = await prisma.priceAlert.findFirstOrThrow();
+  assert.equal(notified.notificationAttempts, 2);
+  assert.equal(notified.lastNotificationError, null);
+  assert.deepEqual(notified.notifiedAt, notifiedAt);
 });
 
 test("updates alert status and appends action and audit history atomically", async () => {
   const offers = await seedOffers();
-  const alertService = new AlertService(new PrismaAlertRepository(prisma), new RecordingNotifier());
+  const alertService = new AlertService(new PrismaAlertRepository(prisma));
   const alert = await alertService.evaluate(offers.own, offers.competitor, {
     category: "BARE",
     comparable: true,

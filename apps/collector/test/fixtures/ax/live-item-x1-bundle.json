@@ -1,0 +1,69 @@
+{
+  "fixtureMetadata": {
+    "kind": "live-sanitized",
+    "profile": "taobao-desktop-2.4.5-build-15"
+  },
+  "path": [], "role": "AXApplication", "subrole": null, "identifier": null, "title": "淘宝", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+  "children": [
+    {
+      "path": [0], "role": "AXWindow", "subrole": "AXStandardWindow", "identifier": null, "title": "淘宝", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+      "children": [
+        {
+          "path": [0, 0], "role": "AXWebArea", "subrole": null, "identifier": null, "title": "商品详情", "description": null, "value": null, "url": "https://detail.tmall.com/item.htm?id=example-x1-a", "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+          "children": [
+            {
+              "path": [0, 0, 0], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": "购买信息", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+              "children": [
+                { "path": [0, 0, 0, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "商品标题", "value": "Example Interface X1", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                { "path": [0, 0, 0, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "店铺", "value": "Example Audio A", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                { "path": [0, 0, 0, 2], "role": "AXButton", "subrole": null, "identifier": null, "title": "分享", "description": "分享商品", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+                {
+                  "path": [0, 0, 0, 3], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": "SKU 维度", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+                  "children": [
+                    { "path": [0, 0, 0, 3, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "规格名称", "value": "套餐", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    {
+                      "path": [0, 0, 0, 3, 1], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": "SKU 选项", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+                      "children": [
+                        { "path": [0, 0, 0, 3, 1, 0], "role": "AXRadioButton", "subrole": null, "identifier": null, "title": "单机", "description": "SKU 选项", "value": null, "url": null, "enabled": true, "selected": false, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+                        { "path": [0, 0, 0, 3, 1, 1], "role": "AXRadioButton", "subrole": null, "identifier": null, "title": "麦克风套装", "description": "SKU 选项", "value": null, "url": null, "enabled": true, "selected": true, "position": null, "size": null, "actions": ["AXPress"], "children": [] }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "path": [0, 0, 0, 4], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": "SKU 维度", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+                  "children": [
+                    { "path": [0, 0, 0, 4, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "规格名称", "value": "颜色", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    {
+                      "path": [0, 0, 0, 4, 1], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": "SKU 选项", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+                      "children": [
+                        { "path": [0, 0, 0, 4, 1, 0], "role": "AXButton", "subrole": null, "identifier": null, "title": "银色", "description": "SKU 选项", "value": false, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+                        { "path": [0, 0, 0, 4, 1, 1], "role": "AXButton", "subrole": null, "identifier": null, "title": "黑色", "description": "SKU 选项", "value": true, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "path": [0, 0, 0, 5], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": "已选规格价格", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+                  "children": [
+                    { "path": [0, 0, 0, 5, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "活动价", "value": "活动价 899.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 0, 5, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "库存状态", "value": "无货", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 0, 5, 2], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "优惠", "value": "50元券", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                    { "path": [0, 0, 0, 5, 3], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "运费", "value": "包邮", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+                  ]
+                }
+              ]
+            },
+            {
+              "path": [0, 0, 1], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": "相关推荐", "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+              "children": [
+                { "path": [0, 0, 1, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "推荐价格", "value": "活动价 599.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                { "path": [0, 0, 1, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": "推荐价格", "value": "原价 999.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

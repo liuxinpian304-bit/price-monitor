@@ -23,7 +23,6 @@ export function AlertDetailPage() {
     try {
       await apiRequest(`/api/alerts/${alert.id}/actions`, {
         method: "POST",
-        actorId: "本地运营",
         body: JSON.stringify(values)
       });
       await refresh();

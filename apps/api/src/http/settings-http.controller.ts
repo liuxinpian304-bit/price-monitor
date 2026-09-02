@@ -40,9 +40,9 @@ export class SettingsHttpController {
 
   @Patch("provider")
   @Roles("ADMIN")
-  updateProvider(@Body() body: { provider: "manual" | "external" }, @Req() request: Request) {
+  updateProvider(@Body() body: { provider: "manual" | "external" | "desktop" }, @Req() request: Request) {
     const identity = requestIdentity(request);
-    if (body.provider !== "manual" && body.provider !== "external") {
+    if (body.provider !== "manual" && body.provider !== "external" && body.provider !== "desktop") {
       throw new BadRequestException("数据源类型无效");
     }
     return asSettingsMutation(() => settingsService.updateProvider(body.provider, identity.actorId, identity.role));

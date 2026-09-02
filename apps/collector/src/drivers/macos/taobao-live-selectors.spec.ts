@@ -1,0 +1,812 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+import {
+  LoginRequiredError,
+  PlatformChallengeError,
+  UiContractChangedError
+} from "../../core/desktop-driver.ts";
+import { findAxNode, walkAxNodes, type AxNode } from "./ax-node.ts";
+import {
+  assertNoStopState,
+  findSkuOption,
+  findSearchField,
+  findSearchResultContainer,
+  hasSearchEndMarker,
+  readDetailPage,
+  readSearchCards,
+  readSearchResultQuery,
+  readSelectedLabels,
+  readSkuDimensions
+} from "./taobao-selectors.ts";
+import { parseLiveItemUrl } from "./taobao-url.ts";
+
+async function fixture(name: string): Promise<AxNode> {
+  const url = new URL(`../../../test/fixtures/ax/${name}`, import.meta.url);
+  return JSON.parse(await readFile(url, "utf8")) as AxNode;
+}
+
+function searchArea(root: AxNode): AxNode {
+  return findAxNode(root, (node) => node.role === "AXWebArea") ?? assert.fail("search web area is missing");
+}
+
+function firstCardScope(root: AxNode): AxNode {
+  return findAxNode(root, (node) => node.path.join(",") === "0,0,1,0,0") ?? assert.fail("first card scope is missing");
+}
+
+const SEARCH_SHOP_DESCRIPTIONS = new Set(["店铺", "店铺名称"]);
+
+function staticText(path: number[], value: string, description: string): AxNode {
+  return {
+    path,
+    role: "AXStaticText",
+    subrole: null,
+    identifier: null,
+    title: null,
+    description,
+    value,
+    url: null,
+    enabled: null,
+    selected: null,
+    position: null,
+    size: null,
+    actions: [],
+    children: []
+  };
+}
+
+function axNode(path: number[], values: Partial<Omit<AxNode, "path" | "children">> & { children?: AxNode[] } = {}): AxNode {
+  return {
+    path,
+    role: "AXGroup",
+    subrole: null,
+    identifier: null,
+    title: null,
+    description: null,
+    value: null,
+    url: null,
+    enabled: null,
+    selected: null,
+    position: null,
+    size: null,
+    actions: [],
+    children: [],
+    ...values
+  };
+}
+
+function removeExplicitShopEvidence(scope: AxNode): void {
+  for (const node of walkAxNodes(scope)) {
+    if (node.description && SEARCH_SHOP_DESCRIPTIONS.has(node.description)) {
+      node.description = null;
+    }
+  }
+}
+
+function appendShopLink(
+  scope: AxNode,
+  childIndex: number,
+  title: string,
+  url: string,
+  options: { enabled?: boolean; actions?: readonly string[] } = {}
+): void {
+  scope.children.push(axNode([...scope.path, childIndex], {
+    role: "AXLink",
+    title,
+    url,
+    enabled: options.enabled ?? true,
+    actions: options.actions ? [...options.actions] : ["AXPress"]
+  }));
+}
+
+interface SplitPriceOptions {
+  major?: string;
+  fraction?: string;
+  currencyCount?: number;
+  majorRole?: string;
+  fractionRole?: string;
+  majorPosition?: { x: number; y: number } | null;
+  majorSize?: { width: number; height: number } | null;
+  fractionPosition?: { x: number; y: number } | null;
+  fractionSize?: { width: number; height: number } | null;
+  duplicateMajor?: boolean;
+  thirdNumeric?: string | null;
+}
+
+function replaceFirstCardPriceWithSplit(
+  root: AxNode,
+  options: SplitPriceOptions = {}
+): void {
+  const scope = firstCardScope(root);
+  const priceIndex = scope.children.findIndex((node) => node.description === "价格");
+  assert.notEqual(priceIndex, -1);
+  const major = options.major ?? "4999";
+  const fraction = options.fraction ?? "9";
+  const currencyCount = options.currencyCount ?? 1;
+  const majorNode = axNode([...scope.path, priceIndex], {
+    role: options.majorRole ?? "AXStaticText",
+    value: major,
+    enabled: true,
+    position: options.majorPosition === undefined ? { x: 120, y: 100 } : options.majorPosition,
+    size: options.majorSize === undefined ? { width: 100, height: 20 } : options.majorSize
+  });
+  const fractionNode = axNode([...scope.path, priceIndex + 1], {
+    role: options.fractionRole ?? "AXStaticText",
+    value: fraction,
+    enabled: true,
+    position: options.fractionPosition === undefined ? { x: 195, y: 100 } : options.fractionPosition,
+    size: options.fractionSize === undefined ? { width: 10, height: 20 } : options.fractionSize
+  });
+  const replacements: AxNode[] = [
+    ...Array.from({ length: currencyCount }, (_, index) => axNode([...scope.path, priceIndex + index + 2], {
+      role: "AXStaticText",
+      value: index === 0 ? "¥" : "￥",
+      enabled: true,
+      position: { x: 100 - index * 10, y: 100 },
+      size: { width: 10, height: 20 }
+    })),
+    majorNode,
+    fractionNode
+  ];
+  if (options.duplicateMajor) replacements.push(structuredClone(majorNode));
+  if (options.thirdNumeric) replacements.push(axNode([...scope.path, priceIndex + replacements.length], {
+    role: "AXStaticText",
+    value: options.thirdNumeric,
+    enabled: true,
+    position: { x: 250, y: 100 },
+    size: { width: 20, height: 20 }
+  }));
+  scope.children.splice(priceIndex, 1, ...replacements);
+}
+
+function stopStateRoot(stateScope: AxNode): AxNode {
+  return axNode([], {
+    role: "AXApplication",
+    children: [
+      axNode([0], {
+        role: "AXWebArea",
+        title: "Example Results",
+        url: "https://catalog.example.test/browse"
+      }),
+      stateScope
+    ]
+  });
+}
+
+type StopStateExpectation = "NONE" | "LOGIN" | "CHALLENGE";
+type StopStateScope = "WEB_AREA" | "DIALOG";
+
+function stopStateScope(
+  scope: StopStateScope,
+  title: string | null,
+  url: string | null
+): AxNode {
+  return axNode([1], {
+    role: scope === "DIALOG" ? "AXWindow" : "AXWebArea",
+    subrole: scope === "DIALOG" ? "AXDialog" : null,
+    title,
+    url
+  });
+}
+
+function assertStopState(root: AxNode, expected: StopStateExpectation): void {
+  if (expected === "LOGIN") {
+    assert.throws(() => assertNoStopState(root), LoginRequiredError);
+    return;
+  }
+  if (expected === "CHALLENGE") {
+    assert.throws(() => assertNoStopState(root), PlatformChallengeError);
+    return;
+  }
+  assert.doesNotThrow(() => assertNoStopState(root));
+}
+
+test("ignores a fictional internal account-management loginPop frame", () => {
+  const root = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    title: "Account Settings",
+    url: "file:///fictional/client/account-panel/loginPop/index.html",
+    children: [
+      axNode([1, 0], { role: "AXStaticText", value: "Account profile" }),
+      axNode([1, 1], { role: "AXButton", title: "Sign out" }),
+      axNode([1, 2], { role: "AXButton", title: "Switch account" })
+    ]
+  }));
+
+  assert.doesNotThrow(() => assertNoStopState(root));
+});
+
+test("does not exempt a loginPop frame without confirmed account-management controls", () => {
+  const root = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    title: "Account Settings",
+    url: "file:///fictional/client/account-panel/loginPop/index.html",
+    children: [axNode([1, 0], { role: "AXStaticText", value: "Account profile" })]
+  }));
+
+  assert.throws(() => assertNoStopState(root), LoginRequiredError);
+});
+
+test("ignores the Taobao pages/loginPop account-management frame when logged-in controls are present", () => {
+  const root = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    title: "账号管理",
+    url: "file:///Applications/Taobao.app/Contents/Resources/app/pages/loginPop/index.html",
+    children: [
+      axNode([1, 0], { role: "AXButton", title: "退出登录" }),
+      axNode([1, 1], { role: "AXButton", title: "切换账号" })
+    ]
+  }));
+
+  assert.doesNotThrow(() => assertNoStopState(root));
+});
+
+test("does not exempt the Taobao pages/loginPop frame when either logged-in control is missing", () => {
+  for (const onlyControl of ["退出登录", "切换账号"] as const) {
+    const root = stopStateRoot(axNode([1], {
+      role: "AXWebArea",
+      title: "账号管理",
+      url: "file:///Applications/Taobao.app/Contents/Resources/app/pages/loginPop/index.html",
+      children: [axNode([1, 0], { role: "AXButton", title: onlyControl })]
+    }));
+
+    assert.throws(() => assertNoStopState(root), LoginRequiredError, onlyControl);
+  }
+});
+
+test("ignores the Taobao pages/loginPop 登陆 title when logged-in controls are present", () => {
+  const root = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    title: "登陆",
+    url: "file:///Applications/Taobao.app/Contents/Resources/app/pages/loginPop/index.html",
+    children: [
+      axNode([1, 0], { role: "AXButton", title: "退出登录" }),
+      axNode([1, 1], { role: "AXButton", title: "切换账号" })
+    ]
+  }));
+
+  assert.doesNotThrow(() => assertNoStopState(root));
+});
+
+test("does not exempt the Taobao pages/loginPop 登陆 title when either logged-in control is missing", () => {
+  for (const onlyControl of ["退出登录", "切换账号"] as const) {
+    const root = stopStateRoot(axNode([1], {
+      role: "AXWebArea",
+      title: "登陆",
+      url: "file:///Applications/Taobao.app/Contents/Resources/app/pages/loginPop/index.html",
+      children: [axNode([1, 0], { role: "AXButton", title: onlyControl })]
+    }));
+
+    assert.throws(() => assertNoStopState(root), LoginRequiredError, onlyControl);
+  }
+});
+
+const stopStateCases: Array<{
+  name: string;
+  scope: StopStateScope;
+  title: string | null;
+  url: string | null;
+  expected: StopStateExpectation;
+}> = [
+  {
+    name: "stops for an HTTP external login URL",
+    scope: "WEB_AREA",
+    title: null,
+    url: "http://portal.example.test/login",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for an HTTPS external login URL",
+    scope: "WEB_AREA",
+    title: null,
+    url: "https://portal.example.test/login",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for a login token in an external hostname only",
+    scope: "WEB_AREA",
+    title: null,
+    url: "https://login.example.test/continue",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for a login token in an external pathname only",
+    scope: "WEB_AREA",
+    title: null,
+    url: "https://portal.example.test/login",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for an external security token only",
+    scope: "WEB_AREA",
+    title: null,
+    url: "https://portal.example.test/security",
+    expected: "CHALLENGE"
+  },
+  {
+    name: "stops for an external punish token only",
+    scope: "WEB_AREA",
+    title: null,
+    url: "https://portal.example.test/punish",
+    expected: "CHALLENGE"
+  },
+  {
+    name: "stops for a title-less app-bundled file login URL",
+    scope: "WEB_AREA",
+    title: null,
+    url: "file:///Applications/FictionalTaobao.app/Contents/Resources/login/index.html",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for a title-less app-bundled file challenge URL",
+    scope: "WEB_AREA",
+    title: null,
+    url: "file:///Applications/FictionalTaobao.app/Contents/Resources/security/challenge.html",
+    expected: "CHALLENGE"
+  },
+  {
+    name: "ignores an attacker-shaped javascript URL by itself",
+    scope: "WEB_AREA",
+    title: null,
+    url: "javascript:login()",
+    expected: "NONE"
+  },
+  {
+    name: "ignores an attacker-shaped custom security URL by itself",
+    scope: "WEB_AREA",
+    title: null,
+    url: "fictional-security://portal.example.test/punish",
+    expected: "NONE"
+  },
+  {
+    name: "keeps a dialog login title terminal regardless of its file URL",
+    scope: "DIALOG",
+    title: "请登录",
+    url: "file:///fictional/client/account-panel/index.html",
+    expected: "LOGIN"
+  },
+  {
+    name: "keeps a dialog challenge title terminal regardless of its custom URL",
+    scope: "DIALOG",
+    title: "安全验证",
+    url: "fictional-security://portal.example.test/notice",
+    expected: "CHALLENGE"
+  },
+  {
+    name: "stops for a dialog external login URL without a semantic title",
+    scope: "DIALOG",
+    title: null,
+    url: "https://portal.example.test/login",
+    expected: "LOGIN"
+  },
+  {
+    name: "stops for a dialog external challenge URL without a semantic title",
+    scope: "DIALOG",
+    title: null,
+    url: "https://portal.example.test/security",
+    expected: "CHALLENGE"
+  }
+];
+
+for (const stopStateCase of stopStateCases) {
+  test(stopStateCase.name, () => {
+    assertStopState(
+      stopStateRoot(stopStateScope(stopStateCase.scope, stopStateCase.title, stopStateCase.url)),
+      stopStateCase.expected
+    );
+  });
+}
+
+function detailArea(root: AxNode): AxNode {
+  return findAxNode(root, (node) => node.role === "AXWebArea" && node.title === "商品详情")
+    ?? assert.fail("detail web area is missing");
+}
+
+function purchaseRegion(root: AxNode): AxNode {
+  return detailArea(root).children[0] ?? assert.fail("purchase region is missing");
+}
+
+function skuOption(root: AxNode, dimensionIndex: number, optionIndex: number): AxNode {
+  return purchaseRegion(root).children[dimensionIndex + 3]?.children[1]?.children[optionIndex]
+    ?? assert.fail("SKU option is missing");
+}
+
+test("reads the unique live search field and query", async () => {
+  const root = await fixture("live-search-results.json");
+  assert.equal(findSearchField(root).description, "请输入搜索文字");
+  assert.equal(readSearchResultQuery(root), "Example Interface X1");
+  assert.equal(findSearchResultContainer(root).role, "AXWebArea");
+});
+
+test("preserves displayed duplicates and raw live action nodes", async () => {
+  const cards = readSearchCards(await fixture("live-search-results.json"));
+  assert.deepEqual(cards.map((card) => [
+    card.rank,
+    card.platformItemId,
+    card.shopName,
+    card.displayPriceMinText,
+    card.displayPriceMaxText,
+    card.sponsored
+  ]), [
+    [1, "example-x1-a", "Example Audio A", "699.00", "799.00", false],
+    [2, "example-x1-a", "Example Audio A", "699.00", "799.00", false]
+  ]);
+  assert.equal(cards[0]?.actionNode.identifier, null);
+  assert.notDeepEqual(cards[0]?.actionNode.path, cards[1]?.actionNode.path);
+});
+
+test("uses enclosing card evidence when supported item links are nested", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  const [firstItemLink, secondItemLink, ...evidence] = scope.children;
+  assert.ok(firstItemLink);
+  assert.ok(secondItemLink);
+  scope.children = [
+    axNode([...scope.path, 0], {
+      children: [
+        { ...firstItemLink, path: [...scope.path, 0, 0] },
+        { ...secondItemLink, path: [...scope.path, 0, 1] }
+      ]
+    }),
+    ...evidence.map((node, index) => ({ ...node, path: [...scope.path, index + 1] }))
+  ];
+
+  assert.equal(readSearchCards(root)[0]?.shopName, "Example Audio A");
+});
+
+test("combines a strict one-digit split-price tail", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  replaceFirstCardPriceWithSplit(root);
+
+  const card = readSearchCards(root)[0];
+  assert.equal(card?.displayPriceMinText, "4999.90");
+  assert.equal(card?.displayPriceMaxText, "4999.90");
+});
+
+test("preserves a strict two-digit split-price tail", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  replaceFirstCardPriceWithSplit(root, { fraction: "95" });
+
+  const card = readSearchCards(root)[0];
+  assert.equal(card?.displayPriceMinText, "4999.95");
+  assert.equal(card?.displayPriceMaxText, "4999.95");
+});
+
+test("rejects unsupported split-price accessibility shapes", async () => {
+  const cases: Array<[string, SplitPriceOptions]> = [
+    ["missing currency", { currencyCount: 0 }],
+    ["multiple currencies", { currencyCount: 2 }],
+    ["missing major position", { majorPosition: null }],
+    ["missing fraction size", { fractionSize: null }],
+    ["wrong major role", { majorRole: "AXGroup" }],
+    ["wrong fraction role", { fractionRole: "AXLink" }],
+    ["reversed layout", { fractionPosition: { x: 110, y: 100 } }],
+    ["vertically separated", { fractionPosition: { x: 195, y: 130 } }],
+    ["not contained", { fractionPosition: { x: 225, y: 100 } }],
+    ["not rightmost", { fractionPosition: { x: 140, y: 100 } }],
+    ["major too short", { major: "9", fraction: "5" }],
+    ["major too long", { major: "123456789", fraction: "5" }],
+    ["fraction too long", { fraction: "123" }],
+    ["duplicate major node", { duplicateMajor: true }],
+    ["third numeric text", { thirdNumeric: "7" }]
+  ];
+
+  for (const [name, options] of cases) {
+    const root = structuredClone(await fixture("live-search-results.json"));
+    replaceFirstCardPriceWithSplit(root, options);
+    assert.throws(() => readSearchCards(root), UiContractChangedError, name);
+  }
+});
+
+test("rejects a target item that can only borrow evidence from a nested sibling item", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  const [targetItemLink, siblingItemLink, shopEvidence, priceEvidence] = scope.children;
+  assert.ok(targetItemLink);
+  assert.ok(siblingItemLink);
+  assert.ok(shopEvidence);
+  assert.ok(priceEvidence);
+  scope.children = [
+    axNode([...scope.path, 0], {
+      children: [
+        { ...targetItemLink, path: [...scope.path, 0, 0] },
+        axNode([...scope.path, 0, 1], {
+          children: [
+            {
+              ...siblingItemLink,
+              path: [...scope.path, 0, 1, 0],
+              url: "https://detail.tmall.com/item.htm?id=example-x1-b"
+            },
+            { ...shopEvidence, path: [...scope.path, 0, 1, 1] },
+            { ...priceEvidence, path: [...scope.path, 0, 1, 2] }
+          ]
+        })
+      ]
+    })
+  ];
+
+  assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
+test("keeps an explicit shop name authoritative over a shop-link fallback", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  appendShopLink(
+    scope,
+    4,
+    "Fallback Audio A",
+    "https://shop.taobao.com/shop/view_shop.htm?user_number_id=fictional-a"
+  );
+
+  assert.equal(readSearchCards(root)[0]?.shopName, "Example Audio A");
+});
+
+test("uses one strict shop link when explicit shop evidence is absent", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  removeExplicitShopEvidence(scope);
+  appendShopLink(
+    scope,
+    4,
+    "Fallback Audio A",
+    "https://shop.taobao.com/shop/view_shop.htm?user_number_id=fictional-a"
+  );
+
+  assert.equal(readSearchCards(root)[0]?.shopName, "Fallback Audio A");
+});
+
+test("ignores disabled, non-pressable, and empty shop-link fallbacks", async () => {
+  for (const [name, title, options] of [
+    ["disabled", "Fallback Audio A", { enabled: false }],
+    ["missing AXPress", "Fallback Audio A", { actions: [] }],
+    ["empty text", "", {}]
+  ] as const) {
+    const root = structuredClone(await fixture("live-search-results.json"));
+    const scope = firstCardScope(root);
+    removeExplicitShopEvidence(scope);
+    appendShopLink(
+      scope,
+      4,
+      title,
+      "https://shop.taobao.com/shop/view_shop.htm?user_number_id=fictional-a",
+      options
+    );
+
+    assert.throws(() => readSearchCards(root), UiContractChangedError, name);
+  }
+});
+
+test("deduplicates repeated strict shop links with the same name", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  removeExplicitShopEvidence(scope);
+  appendShopLink(scope, 4, "Fallback Audio A", "https://shop.taobao.com/a");
+  appendShopLink(scope, 5, "Fallback Audio A", "https://store.tmall.com/b");
+
+  assert.equal(readSearchCards(root)[0]?.shopName, "Fallback Audio A");
+});
+
+test("accepts the explicit shop-name accessibility description", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const shop = walkAxNodes(firstCardScope(root)).find((node) => node.description === "店铺");
+  assert.ok(shop);
+  shop.description = "店铺名称";
+
+  assert.equal(readSearchCards(root)[0]?.shopName, "Example Audio A");
+});
+
+test("rejects a live card with neither explicit shop evidence nor a shop link", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  removeExplicitShopEvidence(firstCardScope(root));
+
+  assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
+test("rejects multiple distinct shop-link fallback names", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  const scope = firstCardScope(root);
+  removeExplicitShopEvidence(scope);
+  appendShopLink(scope, 4, "Fallback Audio A", "https://shop.taobao.com/a");
+  appendShopLink(scope, 5, "Fallback Audio B", "https://store.tmall.com/b");
+
+  assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
+test("rejects invalid shop-link fallback URLs", async () => {
+  for (const url of [
+    "ftp://shop.taobao.com/a",
+    "https://shop.example.com/a",
+    "https://shopping.taobao.com/a",
+    "https://detail.tmall.com/item.htm?id=example-x1-a"
+  ]) {
+    const root = structuredClone(await fixture("live-search-results.json"));
+    const scope = firstCardScope(root);
+    removeExplicitShopEvidence(scope);
+    appendShopLink(scope, 4, "Not A Shop", url);
+
+    assert.throws(() => readSearchCards(root), UiContractChangedError, url);
+  }
+});
+
+test("ignores a pressable page navigation link outside live product cards", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  searchArea(root).children.push(axNode([0, 0, 2], {
+    role: "AXLink",
+    title: "Next results page",
+    url: "https://s.taobao.com/search?page=2",
+    enabled: true,
+    actions: ["AXPress"]
+  }));
+
+  const cards = readSearchCards(root);
+
+  assert.deepEqual(cards.map((card) => card.platformItemId), ["example-x1-a", "example-x1-a"]);
+});
+
+test("keeps sponsored positions and recognizes a verified live end", async () => {
+  const root = await fixture("live-search-results-next.json");
+  const cards = readSearchCards(root);
+  assert.equal(cards[1]?.platformItemId, "example-x1-b");
+  assert.equal(cards[1]?.sponsored, true);
+  assert.equal(hasSearchEndMarker(root), true);
+});
+
+test("rejects a second enabled live search field", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  searchArea(root).children.push({
+    ...staticText([0, 0, 2], "Example Interface X1", "请输入搜索文字"),
+    role: "AXTextField",
+    enabled: true,
+    actions: ["AXConfirm"]
+  });
+  assert.throws(() => findSearchField(root), UiContractChangedError);
+});
+
+test("rejects two distinct prices in one live card", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  firstCardScope(root).children.push(staticText([0, 0, 1, 0, 0, 4], "700.00", "价格"));
+  assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
+test("rejects two distinct shop labels in one live card", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  firstCardScope(root).children.push(staticText([0, 0, 1, 0, 0, 4], "Example Audio Other", "店铺"));
+  assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
+test("rejects conflicting product URLs within one live card scope", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  firstCardScope(root).children[1]!.url = "https://detail.tmall.com/item.htm?id=example-x1-c";
+  assert.throws(() => readSearchCards(root), UiContractChangedError);
+});
+
+test("rejects non-web and non-item live product URLs", () => {
+  for (const url of [
+    "ftp://detail.tmall.com/item.htm?id=example-x1-a",
+    "custom://item.taobao.com/account?id=example-x1-a",
+    "https://detail.tmall.com/account?id=example-x1-a",
+    "https://click.simba.taobao.com/account?id=example-x1-a"
+  ]) {
+    assert.throws(() => parseLiveItemUrl(url), UiContractChangedError, url);
+  }
+});
+
+test("requires an HTTP(S) Taobao search URL at the exact search path", async () => {
+  for (const url of [
+    "custom://s.taobao.com/search?q=Example%20Interface%20X1",
+    "https://s.taobao.com/account?q=Example%20Interface%20X1"
+  ]) {
+    const root = structuredClone(await fixture("live-search-results.json"));
+    searchArea(root).url = url;
+    assert.throws(() => findSearchResultContainer(root), UiContractChangedError, url);
+  }
+});
+
+test("rejects a live search query that disagrees with its URL", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  searchArea(root).url = "https://s.taobao.com/search?q=Different%20Query";
+  assert.throws(() => readSearchResultQuery(root), UiContractChangedError);
+});
+
+test("rejects conflicting repeated q parameters in a live search URL", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  searchArea(root).url = "https://s.taobao.com/search?q=Example%20Interface%20X1&q=Different%20Query";
+  assert.throws(() => readSearchResultQuery(root), UiContractChangedError);
+});
+
+test("reads a unique live detail and all SKU dimensions", async () => {
+  const root = await fixture("live-item-x1-default.json");
+  const detail = readDetailPage(root);
+  assert.deepEqual({
+    id: detail.platformItemId,
+    title: detail.title,
+    shop: detail.shopName
+  }, {
+    id: "example-x1-a",
+    title: "Example Interface X1",
+    shop: "Example Audio A"
+  });
+  assert.strictEqual(detail.shareNode, purchaseRegion(root).children[2]);
+
+  const dimensions = readSkuDimensions(root);
+  assert.deepEqual(dimensions.map((dimension) => [
+    dimension.name,
+    dimension.options.map((option) => option.label)
+  ]), [
+    ["套餐", ["单机", "麦克风套装"]],
+    ["颜色", ["银色", "黑色"]]
+  ]);
+  for (const option of dimensions.flatMap((dimension) => dimension.options)) {
+    assert.match(option.id, /^live-sku-[a-f0-9]{24}$/);
+  }
+  assert.equal(dimensions[0]?.options[0]?.id, "live-sku-001cfeaba2e5d72e5673b495");
+});
+
+test("returns raw action nodes while SKU IDs remain data only", async () => {
+  const root = await fixture("live-item-x1-default.json");
+  const option = findSkuOption(root, "套餐", "麦克风套装");
+  assert.equal(option.identifier, null);
+  assert.equal(option.actions.includes("AXPress"), true);
+  assert.strictEqual(option, skuOption(root, 0, 1));
+  assert.deepEqual(readSelectedLabels(root), { "套餐": "单机", "颜色": "银色" });
+});
+
+test("reads the selected labels from the bundle detail fixture", async () => {
+  assert.deepEqual(readSelectedLabels(await fixture("live-item-x1-bundle.json")), {
+    "套餐": "麦克风套装",
+    "颜色": "黑色"
+  });
+});
+
+test("rejects two live detail web areas", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  root.children[0]?.children.push(structuredClone(detailArea(root)));
+  assert.throws(() => readDetailPage(root), UiContractChangedError);
+});
+
+test("rejects two live purchase regions", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  detailArea(root).children.push(structuredClone(purchaseRegion(root)));
+  assert.throws(() => readDetailPage(root), UiContractChangedError);
+});
+
+test("rejects duplicate live SKU dimension labels", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  const colorLabel = purchaseRegion(root).children[4]?.children[0] ?? assert.fail("color label is missing");
+  colorLabel.value = "套餐";
+  assert.throws(() => readSkuDimensions(root), UiContractChangedError);
+});
+
+test("rejects duplicate live SKU option labels", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  skuOption(root, 0, 1).title = "单机";
+  assert.throws(() => readSkuDimensions(root), UiContractChangedError);
+});
+
+test("rejects a live SKU dimension with a second descendant option group", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  const dimension = purchaseRegion(root).children[3] ?? assert.fail("package dimension is missing");
+  const optionGroup = dimension.children[1] ?? assert.fail("package option group is missing");
+  dimension.children.push({ ...structuredClone(optionGroup), children: [structuredClone(optionGroup)] });
+  assert.throws(() => readSkuDimensions(root), UiContractChangedError);
+});
+
+test("rejects a live SKU dimension with a third non-option child", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  const dimension = purchaseRegion(root).children[3] ?? assert.fail("package dimension is missing");
+  dimension.children.push(staticText([0, 0, 0, 3, 2], "仅作提示", "规格提示"));
+  assert.throws(() => readSkuDimensions(root), UiContractChangedError);
+});
+
+test("rejects a live SKU dimension with no selected option", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  skuOption(root, 0, 0).selected = false;
+  assert.throws(() => readSelectedLabels(root), UiContractChangedError);
+});
+
+test("rejects a live SKU dimension with two selected options", async () => {
+  const root = structuredClone(await fixture("live-item-x1-default.json"));
+  skuOption(root, 0, 1).selected = true;
+  assert.throws(() => readSelectedLabels(root), UiContractChangedError);
+});

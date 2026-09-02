@@ -3,11 +3,12 @@ import type { MatchCategory, MatchDecision, MonitoredProductRule } from "./match
 
 const BUNDLE_SIGNALS = ["套装", "组合装", "搭配", "套餐", "录音套装"];
 const BARE_SIGNALS = ["单机", "裸机", "官方标配", "标准版", "单品"];
+const BUNDLE_ACCESSORY_SIGNALS = ["转换线", "转接线", "连接线", "线材", "耳机架", "耳机包", "耳罩"];
 
 export function normalizeText(value: string): string {
   return value
     .normalize("NFKC")
-    .toLocaleLowerCase()
+    .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
@@ -20,6 +21,24 @@ function compact(value: string): string {
 function containsPhrase(haystack: string, phrase: string): boolean {
   const needle = compact(phrase);
   return needle !== "" && compact(haystack).includes(needle);
+}
+
+function escapedPattern(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsBoundedModelPhrase(haystack: string, phrase: string): boolean {
+  const tokens = normalizeText(phrase).split(" ").filter(Boolean);
+  if (tokens.length === 0) return false;
+  const modelPattern = tokens.map(escapedPattern).join("\\s*");
+  const hasModelCodeToken = tokens.some((token) => /[\p{Script=Latin}\p{N}]/u.test(token));
+  const edge = hasModelCodeToken
+    ? "(?:[^\\p{L}\\p{N}]|\\p{Script=Han})"
+    : "[^\\p{L}\\p{N}]";
+  return new RegExp(
+    `(?:^|${edge})${modelPattern}(?=$|${edge})`,
+    "u"
+  ).test(normalizeText(haystack));
 }
 
 function selectedSkuText(offer: RawOffer): string {
@@ -35,6 +54,11 @@ function classifyOffer(offer: RawOffer): { category: MatchCategory; reason: stri
   const skuBundleSignal = BUNDLE_SIGNALS.find((signal) => containsPhrase(skuText, signal));
   if (skuBundleSignal) {
     return { category: "BUNDLE", reason: `具体SKU包含套装信号“${skuBundleSignal}”` };
+  }
+
+  const skuAccessorySignal = BUNDLE_ACCESSORY_SIGNALS.find((signal) => containsPhrase(skuText, signal));
+  if (skuAccessorySignal) {
+    return { category: "BUNDLE", reason: `具体SKU包含配件“${skuAccessorySignal}”，不能按裸机比较` };
   }
 
   const skuBareSignal = BARE_SIGNALS.find((signal) => containsPhrase(skuText, signal));
@@ -70,12 +94,16 @@ export class MatcherService {
     const skuText = selectedSkuText(offer);
     const searchable = `${offer.title} ${skuText}`;
 
-    const excludedTerm = rule.excludedTerms.find((term) => containsPhrase(searchable, term));
+    const excludedAliasKeys = new Set(rule.excludedAliases.map(compact));
+    const excludedTerm = rule.excludedTerms.find((term) =>
+      containsPhrase(skuText, term)
+      || (!excludedAliasKeys.has(compact(term)) && containsPhrase(offer.title, term))
+    );
     if (excludedTerm) {
       return rejected(`命中排除词“${excludedTerm}”`);
     }
 
-    const excludedAlias = rule.excludedAliases.find((alias) => containsPhrase(searchable, alias));
+    const excludedAlias = rule.excludedAliases.find((alias) => containsPhrase(skuText, alias));
     if (excludedAlias) {
       return rejected(`命中排除别名“${excludedAlias}”`);
     }
@@ -85,10 +113,14 @@ export class MatcherService {
       return rejected(`缺少必须包含词：${missingRequired.join("、")}`);
     }
 
-    const exactModel = containsPhrase(searchable, rule.standardModel);
+    if (rule.version && !containsPhrase(searchable, rule.version)) {
+      return rejected(`缺少明确版本“${rule.version}”`);
+    }
+
+    const exactModel = containsBoundedModelPhrase(searchable, rule.standardModel);
     const matchedAlias = exactModel
       ? undefined
-      : rule.effectiveAliases.find((alias) => containsPhrase(searchable, alias));
+      : rule.effectiveAliases.find((alias) => containsBoundedModelPhrase(searchable, alias));
     if (!exactModel && !matchedAlias) {
       return rejected(`未识别到完整标准型号“${rule.standardModel}”，可能是旧款或其他型号`);
     }
