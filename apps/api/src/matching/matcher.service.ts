@@ -31,8 +31,12 @@ function containsBoundedModelPhrase(haystack: string, phrase: string): boolean {
   const tokens = normalizeText(phrase).split(" ").filter(Boolean);
   if (tokens.length === 0) return false;
   const modelPattern = tokens.map(escapedPattern).join("\\s*");
+  const hasModelCodeToken = tokens.some((token) => /[\p{Script=Latin}\p{N}]/u.test(token));
+  const edge = hasModelCodeToken
+    ? "(?:[^\\p{L}\\p{N}]|\\p{Script=Han})"
+    : "[^\\p{L}\\p{N}]";
   return new RegExp(
-    `(?:^|[^\\p{L}\\p{N}])${modelPattern}(?:$|[^\\p{L}\\p{N}])`,
+    `(?:^|${edge})${modelPattern}(?=$|${edge})`,
     "u"
   ).test(normalizeText(haystack));
 }

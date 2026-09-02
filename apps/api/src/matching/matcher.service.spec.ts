@@ -189,6 +189,45 @@ test("compares an exact 7506 bare SKU", () => {
   assert.equal(decision.comparable, true);
 });
 
+const strictSonyRule = { ...sonyRule, effectiveAliases: [] };
+
+test("accepts a Latin model directly beside Chinese product text", () => {
+  const candidate = sonyOffer("监听耳机MDR-7506单机");
+  candidate.title = "索尼专业监听耳机";
+
+  const decision = new MatcherService().match(strictSonyRule, candidate);
+
+  assert.equal(decision.category, "BARE");
+  assert.equal(decision.comparable, true);
+});
+
+for (const continuation of ["XMDR-7506", "MDR-7506A", "MDR-75060"]) {
+  test(`rejects model continuation ${continuation}`, () => {
+    const candidate = sonyOffer(`${continuation} 单机`);
+    candidate.title = "索尼专业监听耳机";
+
+    const decision = new MatcherService().match(strictSonyRule, candidate);
+
+    assert.equal(decision.category, "REJECTED");
+    assert.equal(decision.comparable, false);
+  });
+}
+
+test("keeps a pure-Han model bounded inside longer Chinese text", () => {
+  const candidate = sonyOffer("小羚羊 单机");
+  candidate.title = "专业音频接口";
+  const hanOnlyRule = {
+    ...strictSonyRule,
+    brand: "Antelope",
+    standardModel: "羚羊"
+  };
+
+  const decision = new MatcherService().match(hanOnlyRule, candidate);
+
+  assert.equal(decision.category, "REJECTED");
+  assert.equal(decision.comparable, false);
+});
+
 test("compares an exact selected 7506 SKU on a title that lists 7506, M1, and MV1 variants", () => {
   const mixed = sonyOffer("MDR-7506 单机");
   mixed.title = "索尼 MDR-7506 / M1 / MV1 专业监听耳机 多规格可选";
