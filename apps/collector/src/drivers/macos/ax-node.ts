@@ -30,6 +30,7 @@ export interface AxNode {
   size: AxSize | null;
   actions: string[];
   children: AxNode[];
+  domClassList?: string[] | null;
 }
 
 export interface AxNodeFingerprint {
@@ -43,6 +44,11 @@ export function axNodeText(node: AxNode): string | null {
   if (node.title?.trim()) return node.title.trim();
   if (node.description?.trim()) return node.description.trim();
   return null;
+}
+
+export function hasDomClassPrefix(node: AxNode, prefix: string): boolean {
+  return Array.isArray(node.domClassList)
+    && node.domClassList.some((value) => value.startsWith(prefix));
 }
 
 export function walkAxNodes(root: AxNode): AxNode[] {
