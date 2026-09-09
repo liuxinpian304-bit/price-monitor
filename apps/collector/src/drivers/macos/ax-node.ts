@@ -30,12 +30,14 @@ export interface AxNode {
   size: AxSize | null;
   actions: string[];
   children: AxNode[];
+  domClassList?: string[] | null;
 }
 
 export interface AxNodeFingerprint {
   role?: string;
   title?: string;
   identifier?: string;
+  domClassList?: string[];
 }
 
 export function axNodeText(node: AxNode): string | null {
@@ -43,6 +45,11 @@ export function axNodeText(node: AxNode): string | null {
   if (node.title?.trim()) return node.title.trim();
   if (node.description?.trim()) return node.description.trim();
   return null;
+}
+
+export function hasDomClassPrefix(node: AxNode, prefix: string): boolean {
+  return Array.isArray(node.domClassList)
+    && node.domClassList.some((value) => value.startsWith(prefix));
 }
 
 export function walkAxNodes(root: AxNode): AxNode[] {
@@ -69,5 +76,6 @@ export function fingerprintFor(node: AxNode): AxNodeFingerprint {
   if (node.role) fingerprint.role = node.role;
   if (node.title) fingerprint.title = node.title;
   if (node.identifier) fingerprint.identifier = node.identifier;
+  if (Array.isArray(node.domClassList)) fingerprint.domClassList = [...node.domClassList].sort();
   return fingerprint;
 }

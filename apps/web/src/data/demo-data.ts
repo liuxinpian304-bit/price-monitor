@@ -95,8 +95,8 @@ export const alerts: DemoAlert[] = [
 ];
 
 export const schedule = [
-  "03:30", "09:30", "10:30", "11:30", "12:30", "13:30",
-  "14:30", "15:30", "16:30", "17:30", "18:30", "22:30"
+  "09:30", "10:30", "11:30", "12:30", "13:30",
+  "14:30", "15:30", "16:30", "17:30", "18:30"
 ].map((time, index) => ({
   time,
   status: index < 3 ? "DONE" as const : index === 3 ? "RUNNING" as const : "WAITING" as const

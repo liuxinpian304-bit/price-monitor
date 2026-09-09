@@ -111,6 +111,12 @@ test("requeue preserves desktop ownership checkpoint while clearing a pause", as
   createdRunIds.push(run.id);
   const service = new CollectionRunQueueService(new PrismaCollectionRunQueueRepository(prisma));
 
+  await assert.rejects(() => service.requeuePausedRun(run.id));
+  assert.equal((await prisma.collectionRun.findUniqueOrThrow({ where: { id: run.id } })).status, "PAUSED_LOGIN");
+  await prisma.collectorAgent.update({
+    where: { id: agent.id },
+    data: { sessionState: "READY", sessionObservedAt: new Date(), sessionChangedAt: new Date() }
+  });
   assert.deepEqual(await service.requeuePausedRun(run.id), { runId: run.id });
   const retried = await prisma.collectionRun.findUniqueOrThrow({ where: { id: run.id } });
   assert.equal(retried.status, "QUEUED");

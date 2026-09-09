@@ -24,7 +24,7 @@ export function isSupportedLiveShopUrl(rawUrl: string | null): boolean {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
     const host = parsed.hostname.toLowerCase();
     return isLivePlatformHost(host)
-      && host.split(".").some((segment) => SHOP_HOST_SEGMENTS.has(segment));
+      && host.split(".").some((segment) => SHOP_HOST_SEGMENTS.has(segment) || /^shop\d+$/.test(segment));
   } catch {
     return false;
   }

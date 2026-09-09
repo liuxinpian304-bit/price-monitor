@@ -44,6 +44,13 @@ enum CollectorPlatform {
   WINDOWS
 }
 
+enum CollectorSessionState {
+  READY
+  LOGIN_REQUIRED
+  CHALLENGE_REQUIRED
+  UNAVAILABLE
+}
+
 enum PriceConfidence {
   CONFIRMED
   ESTIMATED
@@ -312,17 +319,39 @@ model OfferSnapshot {
 }
 
 model CollectorAgent {
-  id             String            @id @default(cuid())
-  name           String            @unique @db.VarChar(160)
-  platform       CollectorPlatform
-  tokenHash      String            @unique @db.VarChar(160)
-  enabled        Boolean           @default(true)
-  appVersion     String?           @db.VarChar(120)
-  capabilities   Json?
-  lastSeenAt     DateTime?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  collectionRuns CollectionRun[]
+  id                String                @id @default(cuid())
+  name              String                @unique @db.VarChar(160)
+  platform          CollectorPlatform
+  tokenHash         String                @unique @db.VarChar(160)
+  enabled           Boolean               @default(true)
+  appVersion        String?               @db.VarChar(120)
+  capabilities      Json?
+  sessionState      CollectorSessionState @default(UNAVAILABLE)
+  sessionObservedAt DateTime?
+  sessionChangedAt  DateTime?
+  lastSeenAt        DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  collectionRuns    CollectionRun[]
+  sessionIncidents  CollectorSessionIncident[]
+}
+
+model CollectorSessionIncident {
+  id                    String                    @id @default(cuid())
+  collectorAgentId      String
+  state                 CollectorSessionState
+  activeKey             String?                   @unique @db.VarChar(200)
+  openedAt              DateTime                  @default(now())
+  recoveredAt           DateTime?
+  notificationState     RunAlertNotificationState @default(PENDING)
+  notificationAttempts  Int                       @default(0)
+  notificationStartedAt DateTime?
+  notifiedAt            DateTime?
+  lastNotificationError String?                   @db.VarChar(120)
+  collectorAgent        CollectorAgent            @relation(fields: [collectorAgentId], references: [id], onDelete: Cascade)
+
+  @@index([collectorAgentId, openedAt])
+  @@index([notificationState, openedAt])
 }
 
 model CollectionSearchPosition {

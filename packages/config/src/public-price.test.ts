@@ -287,6 +287,44 @@ test("adds mandatory fees to the payable price", () => {
   assert.equal(result.payableFen, 59_600);
 });
 
+test("confirms a displayed payable that agrees with public discounts and mandatory fees", () => {
+  const result = calculatePublicPrice({
+    listPriceFen: 80_000,
+    activityPriceFen: 70_000,
+    promotions: [
+      { kind: "COUPON", label: "满600减10", amountFen: 1_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" },
+      { kind: "DIRECT_DISCOUNT", label: "平台立减5", amountFen: 500, thresholdFen: 0, audience: "PUBLIC", stackGroup: "platform-direct", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
+    ],
+    mandatoryFeeFen: 600,
+    displayedEstimatedPayableFen: 69_100
+  });
+
+  assert.equal(result.publicDiscountFen, 1_500);
+  assert.equal(result.mandatoryFeeFen, 600);
+  assert.equal(result.payableFen, 69_100);
+  assert.equal(result.confidence, "CONFIRMED");
+  assert.deepEqual(result.reviewReasons, []);
+});
+
+test("marks a conflicting displayed payable as estimated instead of confirmed", () => {
+  const result = calculatePublicPrice({
+    listPriceFen: 80_000,
+    activityPriceFen: 70_000,
+    promotions: [
+      { kind: "COUPON", label: "满600减10", amountFen: 1_000, thresholdFen: 60_000, audience: "PUBLIC", stackGroup: "shop-coupon", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" },
+      { kind: "DIRECT_DISCOUNT", label: "平台立减5", amountFen: 500, thresholdFen: 0, audience: "PUBLIC", stackGroup: "platform-direct", includedInActivityPrice: false, activityPriceInclusion: "EXCLUDED" }
+    ],
+    mandatoryFeeFen: 600,
+    displayedEstimatedPayableFen: 69_000
+  });
+
+  assert.equal(result.publicDiscountFen, 1_500);
+  assert.equal(result.mandatoryFeeFen, 600);
+  assert.equal(result.payableFen, 69_000);
+  assert.equal(result.confidence, "ESTIMATED");
+  assert.deepEqual(result.reviewReasons, ["页面预估到手价与可复算到手价不一致，需要人工核对"]);
+});
+
 test("returns manual review when discounts would make the payable price negative", () => {
   const result = calculatePublicPrice({
     listPriceFen: 1_000,

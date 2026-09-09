@@ -253,7 +253,8 @@ export class PrismaCollectionRunQueueRepository implements CollectionRunQueueRep
         id: runId,
         providerKey: "taobao-desktop",
         status: { in: ["PAUSED_LOGIN", "PAUSED_CHALLENGE"] },
-        coalescedIntoRunId: null
+        coalescedIntoRunId: null,
+        collectorAgent: { is: { sessionState: "READY" } }
       },
       data: { status: "QUEUED", errorCode: null, errorMessage: null }
     });

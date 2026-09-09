@@ -39,6 +39,14 @@ pnpm dev:api
 pnpm dev:web
 ```
 
+当前 Mac 同时是唯一固定采集机。完成 [淘宝桌面采集器操作手册](macos-collector.md) 中的登记和诊断后，在第三个 Terminal 窗口只在这台 Mac 上启动：
+
+```bash
+pnpm collector:worker
+```
+
+另一台 Mac 和 Windows 电脑只通过浏览器打开管理后台，不复制 `.env.collector`、不保存采集 token，也不运行 `collector:worker`。这样淘宝桌面版登录会话始终由同一台机器维护，避免多机轮流触发登录和平台验证。
+
 ## 3. 验证与停止
 
 ```bash

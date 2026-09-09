@@ -15,11 +15,15 @@ import {
   findSearchResultContainer,
   hasSearchEndMarker,
   readDetailPage,
+  readSearchAdvance,
   readSearchCards,
+  readSearchPaginationState,
   readSearchResultQuery,
+  readSearchRetreat,
   readSelectedLabels,
   readSkuDimensions
 } from "./taobao-selectors.ts";
+import { liveFindBackAction, liveFindSearchSubmitButton } from "./taobao-live-selectors.ts";
 import { parseLiveItemUrl } from "./taobao-url.ts";
 
 async function fixture(name: string): Promise<AxNode> {
@@ -112,6 +116,73 @@ interface SplitPriceOptions {
   fractionSize?: { width: number; height: number } | null;
   duplicateMajor?: boolean;
   thirdNumeric?: string | null;
+}
+
+interface DomPriceOptions {
+  major: string;
+  fraction?: string;
+  extraNumericText?: string;
+}
+
+function replaceFirstCardPriceWithDom(
+  root: AxNode,
+  options: DomPriceOptions
+): void {
+  const scope = firstCardScope(root);
+  const priceIndex = scope.children.findIndex((node) => node.description === "价格");
+  assert.notEqual(priceIndex, -1);
+  const currency = axNode([...scope.path, priceIndex, 0], {
+    role: "AXStaticText",
+    value: "¥",
+    enabled: true,
+    position: { x: 100, y: 100 },
+    size: { width: 10, height: 20 }
+  });
+  const major = axNode([...scope.path, priceIndex, 1], {
+    domClassList: ["priceInt--fixture"],
+    children: [axNode([...scope.path, priceIndex, 1, 0], {
+      role: "AXStaticText",
+      value: options.major,
+      enabled: true,
+      position: { x: 120, y: 100 },
+      size: { width: 100, height: 20 }
+    })]
+  });
+  const priceChildren = [currency, major];
+  if (options.fraction) {
+    priceChildren.push(axNode([...scope.path, priceIndex, 2], {
+      domClassList: ["priceFloat--fixture"],
+      children: [axNode([...scope.path, priceIndex, 2, 0], {
+        role: "AXStaticText",
+        value: options.fraction,
+        enabled: true,
+        position: { x: 195, y: 100 },
+        size: { width: 10, height: 20 }
+      })]
+    }));
+  }
+  const priceWrapper = axNode([...scope.path, priceIndex], {
+    domClassList: ["innerNormalPriceWrapper--fixture"],
+    children: priceChildren
+  });
+  const replacements: AxNode[] = [priceWrapper];
+  if (options.extraNumericText) {
+    replacements.unshift(axNode([...scope.path, priceIndex], {
+      role: "AXStaticText",
+      value: options.extraNumericText,
+      enabled: true,
+      position: { x: 195, y: 100 },
+      size: { width: 10, height: 20 }
+    }));
+    priceWrapper.path = [...scope.path, priceIndex + 1];
+    priceWrapper.children.forEach((child, index) => {
+      child.path = [...priceWrapper.path, index];
+      child.children.forEach((grandchild, childIndex) => {
+        grandchild.path = [...child.path, childIndex];
+      });
+    });
+  }
+  scope.children.splice(priceIndex, 1, ...replacements);
 }
 
 function replaceFirstCardPriceWithSplit(
@@ -217,6 +288,29 @@ test("ignores a fictional internal account-management loginPop frame", () => {
   assert.doesNotThrow(() => assertNoStopState(root));
 });
 
+test("finds the verified back control when unrelated pressable nodes omit nullable fields", () => {
+  const root = {
+    path: [],
+    role: "AXApplication",
+    actions: [],
+    children: [
+      { path: [0], role: "AXButton", enabled: true, actions: ["AXPress"], children: [] },
+      { path: [1], role: "AXRadioButton", enabled: true, actions: ["AXPress"], children: [] },
+      {
+        path: [2],
+        role: "AXButton",
+        title: "返回",
+        enabled: true,
+        actions: ["AXPress"],
+        children: []
+      }
+    ]
+  } as unknown as AxNode;
+
+  assert.doesNotThrow(() => liveFindBackAction(root, "RME Babyface"));
+  assert.equal(liveFindBackAction(root, "RME Babyface").path.join(","), "2");
+});
+
 test("does not exempt a loginPop frame without confirmed account-management controls", () => {
   const root = stopStateRoot(axNode([1], {
     role: "AXWebArea",
@@ -279,6 +373,37 @@ test("does not exempt the Taobao pages/loginPop 登陆 title when either logged-
     }));
 
     assert.throws(() => assertNoStopState(root), LoginRequiredError, onlyControl);
+  }
+});
+
+test("stops for an enabled pressable login action inside an ordinary web area", () => {
+  const root = stopStateRoot(axNode([1], {
+    role: "AXWebArea",
+    title: "首页",
+    url: "https://pages.example.test/home",
+    children: [axNode([1, 0], {
+      role: "AXButton",
+      title: "立即登录",
+      enabled: true,
+      actions: ["AXPress"]
+    })]
+  }));
+
+  assert.throws(() => assertNoStopState(root), LoginRequiredError);
+});
+
+test("does not treat disabled or non-action login copy as a confirmed login stop", () => {
+  for (const child of [
+    axNode([1, 0], { role: "AXButton", title: "立即登录", enabled: false, actions: ["AXPress"] }),
+    axNode([1, 0], { role: "AXStaticText", value: "立即登录" })
+  ]) {
+    const root = stopStateRoot(axNode([1], {
+      role: "AXWebArea",
+      title: "首页",
+      url: "https://pages.example.test/home",
+      children: [child]
+    }));
+    assert.doesNotThrow(() => assertNoStopState(root));
   }
 });
 
@@ -412,11 +537,299 @@ function skuOption(root: AxNode, dimensionIndex: number, optionIndex: number): A
     ?? assert.fail("SKU option is missing");
 }
 
+function domPurchaseRegion(root: AxNode): AxNode {
+  return detailArea(root).children[0] ?? assert.fail("DOM purchase region is missing");
+}
+
+function domShopLink(root: AxNode): AxNode {
+  return domPurchaseRegion(root).children[0] ?? assert.fail("DOM shop link is missing");
+}
+
+function domPriceRegion(root: AxNode): AxNode {
+  return domPurchaseRegion(root).children[2] ?? assert.fail("DOM price region is missing");
+}
+
+function domDimension(root: AxNode): AxNode {
+  return domPurchaseRegion(root).children[6] ?? assert.fail("DOM dimension is missing");
+}
+
+function domOption(root: AxNode, optionIndex: number): AxNode {
+  return domDimension(root).children[1]?.children[optionIndex] ?? assert.fail("DOM option is missing");
+}
+
+function applyCurrentDetailDomProfile(root: AxNode): void {
+  const region = domPurchaseRegion(root);
+  const shopLink = domShopLink(root);
+  shopLink.title = null;
+  shopLink.children = [
+    axNode([...shopLink.path, 0], {
+      domClassList: ["shopName--fixture"],
+      children: [staticText([...shopLink.path, 0, 0], "Example Audio A", "店铺名称")]
+    }),
+    staticText([...shopLink.path, 1], "4.2 90天新增73条好评", "店铺指标")
+  ];
+  const title = region.children[1] ?? assert.fail("DOM title is missing");
+  region.children[1] = axNode(title.path, {
+    domClassList: ["MainTitle--fixture"],
+    children: [axNode([...title.path, 0], {
+      domClassList: ["mainTitle--fixture"],
+      children: [title]
+    })]
+  });
+  domPriceRegion(root).domClassList = ["priceWrap--fixture"];
+  const dimension = domDimension(root);
+  const label = dimension.children[0] ?? assert.fail("dimension label is missing");
+  const optionList = dimension.children[1] ?? assert.fail("option list is missing");
+  optionList.children.forEach((option, index) => {
+    const optionLabel = option.children[0] ?? assert.fail("option label is missing");
+    option.children = [
+      axNode([...option.path, 0], {
+        role: "AXImage",
+        value: `/fixture-${index}.png`
+      }),
+      axNode([...option.path, 1], {
+        domClassList: ["valueItemText--fixture"],
+        children: [optionLabel]
+      }),
+      ...(index === 0 ? [axNode([...option.path, 2], {
+        domClassList: ["cornerText--fixture"],
+        children: [staticText([...option.path, 2, 0], "推荐", "角标")]
+      })] : [])
+    ];
+  });
+  dimension.domClassList = ["root--fixture"];
+  dimension.children = [
+    label,
+    axNode([...dimension.path, 1], {
+      domClassList: ["skuValueWrap--fixture"],
+      children: [axNode([...dimension.path, 1, 0], {
+        domClassList: ["contentWrap--fixture"],
+        children: [optionList]
+      }), axNode([...dimension.path, 1, 1], {
+        domClassList: ["moreValueItemTipWrap--fixture"],
+        children: [staticText([...dimension.path, 1, 1, 0], "查看全部", "更多规格")]
+      })]
+    })
+  ];
+  const purchase = region.children[8] ?? assert.fail("purchase button is missing");
+  purchase.title = "领券购买";
+  region.children.push(axNode([...region.path, region.children.length], {
+    role: "AXLink",
+    title: "\ue000",
+    url: shopLink.url,
+    enabled: true,
+    actions: ["AXPress"]
+  }));
+  repath(region, region.path);
+}
+
+function repath(root: AxNode, path: number[]): void {
+  root.path = path;
+  root.children.forEach((child, index) => repath(child, [...path, index]));
+}
+
+function withLivePagination(source: AxNode, currentPage: number, totalPages: number): AxNode {
+  const root = structuredClone(source);
+  const area = searchArea(root);
+  const path = [...area.path, area.children.length];
+  area.children.push(axNode(path, {
+    domClassList: ["next-pagination-pages"],
+    children: [
+      axNode([...path, 0], {
+        role: "AXButton",
+        description: `上一页，当前第${currentPage}页`,
+        enabled: currentPage > 1,
+        actions: ["AXPress"],
+        domClassList: ["next-btn", "next-btn-normal", "next-medium", "next-prev", "next-pagination-item"]
+      }),
+      axNode([...path, 1], {
+        domClassList: ["next-pagination-list"],
+        children: [
+          axNode([...path, 1, 0], {
+            role: "AXButton",
+            description: `第${currentPage}页，共${totalPages}页`,
+            enabled: true,
+            actions: ["AXPress"],
+            domClassList: ["next-btn", "next-btn-normal", "next-medium", "next-current", "next-pagination-item"]
+          }),
+          axNode([...path, 1, 1], {
+            role: "AXButton",
+            description: `第${currentPage === 1 ? 2 : 1}页，共${totalPages}页`,
+            enabled: true,
+            actions: ["AXPress"],
+            domClassList: ["next-btn", "next-btn-normal", "next-medium", "next-pagination-item"]
+          })
+        ]
+      }),
+      axNode([...path, 2], {
+        domClassList: ["next-pagination-display"],
+        children: [
+          staticText([...path, 2, 0], String(currentPage), "当前页"),
+          staticText([...path, 2, 1], "/", "分页分隔符"),
+          staticText([...path, 2, 2], String(totalPages), "总页数")
+        ]
+      }),
+      axNode([...path, 3], {
+        role: "AXButton",
+        description: `下一页，当前第${currentPage}页`,
+        enabled: currentPage < totalPages,
+        actions: ["AXPress"],
+        domClassList: ["next-btn", "next-btn-normal", "next-medium", "next-next", "next-pagination-item"]
+      })
+    ]
+  }));
+  return root;
+}
+
+function paginationGroup(root: AxNode): AxNode {
+  return findAxNode(root, (node) => node.domClassList?.includes("next-pagination-pages") === true)
+    ?? assert.fail("pagination group is missing");
+}
+
+function paginationControl(root: AxNode, className: "next-prev" | "next-next"): AxNode {
+  return paginationGroup(root).children.find((node) => node.domClassList?.includes(className) === true)
+    ?? assert.fail(`${className} pagination control is missing`);
+}
+
+function paginationList(root: AxNode): AxNode {
+  return findAxNode(root, (node) => node.domClassList?.includes("next-pagination-list") === true)
+    ?? assert.fail("pagination list is missing");
+}
+
+function currentPaginationButton(root: AxNode): AxNode {
+  return paginationList(root).children.find((node) => node.domClassList?.includes("next-current") === true)
+    ?? assert.fail("current pagination button is missing");
+}
+
+function paginationDisplay(root: AxNode): AxNode {
+  return paginationGroup(root).children.find((node) => node.domClassList?.includes("next-pagination-display") === true)
+    ?? assert.fail("pagination display is missing");
+}
+
+test("reads strict live pagination and chooses page-aware movement actions", async () => {
+  const pageOne = withLivePagination(await fixture("live-search-results.json"), 1, 2);
+  assert.deepEqual(readSearchPaginationState(pageOne), { currentPage: 1, totalPages: 2 });
+  assert.deepEqual(readSearchAdvance(pageOne), {
+    kind: "AX_ACTION",
+    action: "AXPress",
+    node: paginationControl(pageOne, "next-next")
+  });
+  assert.deepEqual(readSearchRetreat(pageOne), { kind: "KEY", keyCode: 115 });
+  assert.equal(hasSearchEndMarker(pageOne), false);
+
+  const pageTwo = withLivePagination(await fixture("live-search-results-next.json"), 2, 2);
+  assert.equal(hasSearchEndMarker(pageTwo), true);
+  assert.deepEqual(readSearchRetreat(pageTwo), {
+    kind: "AX_ACTION",
+    action: "AXPress",
+    node: paginationControl(pageTwo, "next-prev")
+  });
+});
+
+test("treats the final strict live pagination page as the search end", async () => {
+  const root = withLivePagination(await fixture("live-search-results.json"), 2, 2);
+
+  assert.equal(hasSearchEndMarker(root), true);
+});
+
+test("preserves live search fallbacks when strict pagination is absent", async () => {
+  const root = await fixture("live-search-results.json");
+
+  assert.equal(readSearchPaginationState(root), null);
+  assert.deepEqual(readSearchAdvance(root), { kind: "KEY", keyCode: 121 });
+  assert.deepEqual(readSearchRetreat(root), { kind: "KEY", keyCode: 115 });
+  assert.equal(hasSearchEndMarker(root), false);
+});
+
+test("rejects malformed or ambiguous strict live pagination", async () => {
+  const cases: Array<[string, (root: AxNode) => void]> = [
+    ["duplicate pagination groups", (root) => {
+      const duplicate = structuredClone(paginationGroup(root));
+      searchArea(root).children.push(duplicate);
+      repath(duplicate, [...searchArea(root).path, searchArea(root).children.length - 1]);
+    }],
+    ["mismatched display values", (root) => {
+      paginationDisplay(root).children[0]!.value = "2";
+    }],
+    ["disabled next button before the final page", (root) => {
+      paginationControl(root, "next-next").enabled = false;
+    }],
+    ["next button without AXPress", (root) => {
+      paginationControl(root, "next-next").actions = [];
+    }],
+    ["stale next button current-page description", (root) => {
+      paginationControl(root, "next-next").description = "下一页，当前第2页";
+    }],
+    ["missing next-current button", (root) => {
+      const current = currentPaginationButton(root);
+      current.domClassList = current.domClassList?.filter((value) => value !== "next-current") ?? null;
+    }],
+    ["duplicate next-current buttons", (root) => {
+      const nonCurrent = paginationList(root).children.find((node) =>
+        node.domClassList?.includes("next-current") !== true) ?? assert.fail("non-current pagination button is missing");
+      nonCurrent.domClassList = [...(nonCurrent.domClassList ?? []), "next-current"];
+    }],
+    ...["next-btn", "next-btn-normal", "next-medium"].map((className) => [
+      `next button without required ${className} class`,
+      (root: AxNode) => {
+        const control = paginationControl(root, "next-next");
+        control.domClassList = control.domClassList?.filter((value) => value !== className) ?? null;
+      }
+    ] as [string, (root: AxNode) => void])
+  ];
+
+  for (const [name, mutate] of cases) {
+    const root = withLivePagination(await fixture("live-search-results.json"), 1, 2);
+    mutate(root);
+    assert.throws(() => readSearchPaginationState(root), UiContractChangedError, name);
+  }
+});
+
 test("reads the unique live search field and query", async () => {
   const root = await fixture("live-search-results.json");
   assert.equal(findSearchField(root).description, "请输入搜索文字");
   assert.equal(readSearchResultQuery(root), "Example Interface X1");
   assert.equal(findSearchResultContainer(root).role, "AXWebArea");
+});
+
+test("finds the unique enabled pressable live search button", async () => {
+  const button = liveFindSearchSubmitButton(await fixture("live-search-results.json"));
+
+  assert.equal(button.role, "AXButton");
+  assert.equal(button.title, "搜索");
+  assert.equal(button.enabled, true);
+  assert.equal(button.actions.includes("AXPress"), true);
+});
+
+test("rejects unsafe live search submit button candidates", async () => {
+  const cases: Array<[string, (root: AxNode) => void]> = [
+    ["duplicate", (root) => {
+      const button = findAxNode(root, (node) => node.role === "AXButton" && node.title === "搜索");
+      assert.ok(button);
+      searchArea(root).children[0]?.children.push({ ...structuredClone(button), path: [0, 0, 0, 2] });
+    }],
+    ["disabled", (root) => {
+      const button = findAxNode(root, (node) => node.role === "AXButton" && node.title === "搜索");
+      assert.ok(button);
+      button.enabled = false;
+    }],
+    ["non-button", (root) => {
+      const button = findAxNode(root, (node) => node.role === "AXButton" && node.title === "搜索");
+      assert.ok(button);
+      button.role = "AXLink";
+    }],
+    ["non-pressable", (root) => {
+      const button = findAxNode(root, (node) => node.role === "AXButton" && node.title === "搜索");
+      assert.ok(button);
+      button.actions = ["AXConfirm"];
+    }]
+  ];
+
+  for (const [name, mutate] of cases) {
+    const root = structuredClone(await fixture("live-search-results.json"));
+    mutate(root);
+    assert.throws(() => liveFindSearchSubmitButton(root), UiContractChangedError, name);
+  }
 });
 
 test("preserves displayed duplicates and raw live action nodes", async () => {
@@ -471,6 +884,24 @@ test("preserves a strict two-digit split-price tail", async () => {
   const card = readSearchCards(root)[0];
   assert.equal(card?.displayPriceMinText, "4999.95");
   assert.equal(card?.displayPriceMaxText, "4999.95");
+});
+
+test("prefers the live price wrapper over numeric product attributes", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  replaceFirstCardPriceWithDom(root, { major: "11000", extraNumericText: "2" });
+
+  const card = readSearchCards(root)[0];
+  assert.equal(card?.displayPriceMinText, "11000.00");
+  assert.equal(card?.displayPriceMaxText, "11000.00");
+});
+
+test("reads a dot-prefixed live price fraction from the price wrapper", async () => {
+  const root = structuredClone(await fixture("live-search-results.json"));
+  replaceFirstCardPriceWithDom(root, { major: "7198", fraction: ".8" });
+
+  const card = readSearchCards(root)[0];
+  assert.equal(card?.displayPriceMinText, "7198.80");
+  assert.equal(card?.displayPriceMaxText, "7198.80");
 });
 
 test("rejects unsupported split-price accessibility shapes", async () => {
@@ -757,6 +1188,121 @@ test("reads the selected labels from the bundle detail fixture", async () => {
     "套餐": "麦克风套装",
     "颜色": "黑色"
   });
+});
+
+test("reads the unique DOM-backed detail identity and SKU dimension", async () => {
+  const root = await fixture("live-dom-item-x1-default.json");
+  const detail = readDetailPage(root);
+  assert.deepEqual({
+    id: detail.platformItemId,
+    title: detail.title,
+    shop: detail.shopName
+  }, {
+    id: "example-x1-a",
+    title: "Example Interface X1",
+    shop: "Example Audio A"
+  });
+  assert.equal(detail.shareNode, null);
+
+  const dimensions = readSkuDimensions(root);
+  assert.deepEqual(dimensions, [{
+    name: "套餐",
+    options: [
+      { id: "live-sku-001cfeaba2e5d72e5673b495", label: "单机", enabled: true },
+      { id: "live-sku-ccf17e6cef84d51cdbd66aa0", label: "麦克风套装", enabled: true }
+    ]
+  }]);
+});
+
+test("reads the current DOM-backed detail profile with scoped title and shop evidence", async () => {
+  const root = structuredClone(await fixture("live-dom-item-x1-default.json"));
+  applyCurrentDetailDomProfile(root);
+
+  const detail = readDetailPage(root);
+  assert.equal(detail.title, "Example Interface X1");
+  assert.equal(detail.shopName, "Example Audio A");
+  assert.deepEqual(readSelectedLabels(root), { "套餐": "单机" });
+});
+
+test("keeps the current DOM-backed detail valid when a SKU is almost sold out", async () => {
+  const root = structuredClone(await fixture("live-dom-item-x1-default.json"));
+  applyCurrentDetailDomProfile(root);
+  const stock = findAxNode(domPurchaseRegion(root), (node) => node.value === "有货")
+    ?? assert.fail("stock evidence is missing");
+  stock.value = "即将售罄";
+
+  assert.equal(readDetailPage(root).platformItemId, "example-x1-a");
+  assert.deepEqual(readSelectedLabels(root), { "套餐": "单机" });
+});
+
+test("keeps the current DOM-backed detail valid with one strict undiscounted price", async () => {
+  const root = structuredClone(await fixture("live-dom-item-x1-default.json"));
+  applyCurrentDetailDomProfile(root);
+  const region = domPriceRegion(root);
+  region.children = [
+    staticText([...region.path, 0], "￥", ""),
+    staticText([...region.path, 1], "12200", "")
+  ];
+
+  assert.equal(readDetailPage(root).platformItemId, "example-x1-a");
+  assert.deepEqual(readSelectedLabels(root), { "套餐": "单机" });
+});
+
+test("returns the original DOM-backed option node and reads its unique class selection", async () => {
+  const root = await fixture("live-dom-item-x1-default.json");
+  const option = findSkuOption(root, "套餐", "麦克风套装");
+
+  assert.strictEqual(option, domOption(root, 1));
+  assert.deepEqual(option.path, [0, 0, 0, 6, 1, 1]);
+  assert.deepEqual(readSelectedLabels(root), { "套餐": "单机" });
+  assert.deepEqual(readSelectedLabels(await fixture("live-dom-item-x1-bundle.json")), {
+    "套餐": "麦克风套装"
+  });
+});
+
+test("rejects ambiguous or incomplete DOM-backed detail contracts", async () => {
+  const cases: Array<[string, (root: AxNode) => void]> = [
+    ["duplicate detail areas", (root) => {
+      root.children[0]?.children.push(structuredClone(detailArea(root)));
+    }],
+    ["duplicate shop links", (root) => {
+      domPurchaseRegion(root).children.push(structuredClone(domShopLink(root)));
+    }],
+    ["duplicate selected options", (root) => {
+      domOption(root, 1).domClassList = ["isSelected--alternate", "valueItem--fixture"];
+    }],
+    ["missing action buttons", (root) => {
+      domPurchaseRegion(root).children = domPurchaseRegion(root).children.slice(0, -2);
+    }],
+    ["missing option labels", (root) => {
+      domOption(root, 0).children = [];
+    }],
+    ["multiple purchase regions", (root) => {
+      detailArea(root).children.push(structuredClone(domPurchaseRegion(root)));
+    }]
+  ];
+
+  for (const [name, mutate] of cases) {
+    const root = structuredClone(await fixture("live-dom-item-x1-default.json"));
+    mutate(root);
+    assert.throws(() => readDetailPage(root), UiContractChangedError, name);
+  }
+});
+
+test("rejects independent complete DOM purchase regions at uneven depths", async () => {
+  const root = structuredClone(await fixture("live-dom-item-x1-default.json"));
+  const nestedRegion = structuredClone(domPurchaseRegion(root));
+  repath(nestedRegion, [0, 0, 2, 0]);
+  detailArea(root).children.push(axNode([0, 0, 2], { children: [nestedRegion] }));
+
+  assert.throws(() => readDetailPage(root), UiContractChangedError);
+});
+
+test("rejects a selected DOM option carrying a disabled class at the detail gate", async () => {
+  const root = structuredClone(await fixture("live-dom-item-x1-default.json"));
+  domOption(root, 0).domClassList?.push("disabled--fixture");
+
+  assert.throws(() => readDetailPage(root), UiContractChangedError);
 });
 
 test("rejects two live detail web areas", async () => {

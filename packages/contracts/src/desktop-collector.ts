@@ -9,6 +9,9 @@ export const SKU_COMPONENT_ROLES = [
 export const COLLECTOR_REPORT_STATUSES = [
   "SUCCEEDED", "PARTIAL_FAILED", "PAUSED_LOGIN", "PAUSED_CHALLENGE", "FAILED"
 ] as const;
+export const COLLECTOR_SESSION_STATES = [
+  "READY", "LOGIN_REQUIRED", "CHALLENGE_REQUIRED", "UNAVAILABLE"
+] as const;
 export const COLLECTOR_ISSUE_CODES = [
   "MISSING_ITEM_ID", "ITEM_UNAVAILABLE", "SKU_ENUMERATION_INCOMPLETE",
   "SKU_SELECTION_MISMATCH", "PRICE_UNSTABLE", "LOGIN_REQUIRED",
@@ -32,6 +35,18 @@ const urlSchema = z.url();
 const reportUrlSchema = urlSchema.max(2_048);
 const evidenceKeySchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const attributesSchema = z.record(z.string().min(1).max(200), z.string().max(1_000));
+
+export const collectorSessionStateSchema = z.enum(COLLECTOR_SESSION_STATES);
+export const collectorSessionObservationSchema = z.object({
+  state: collectorSessionStateSchema,
+  observedAt: timestampSchema
+}).strict();
+
+export const collectorClaimInputSchema = z.object({
+  appVersion: z.string().trim().min(1).max(120),
+  capabilities: z.array(z.string().trim().min(1).max(120)),
+  session: collectorSessionObservationSchema
+}).strict();
 
 const comparisonTypeSchema = z.enum(["BARE", "BUNDLE"]);
 const stockStateSchema = z.enum(["IN_STOCK", "OUT_OF_STOCK", "UNKNOWN"]);
@@ -403,6 +418,9 @@ export const collectorHeartbeatSchema = z.object({
 }).strict();
 
 export type PriceConfidence = z.infer<typeof priceConfidenceSchema>;
+export type CollectorSessionState = z.infer<typeof collectorSessionStateSchema>;
+export type CollectorSessionObservation = z.infer<typeof collectorSessionObservationSchema>;
+export type CollectorClaimInput = z.infer<typeof collectorClaimInputSchema>;
 export type SkuComponentRole = (typeof SKU_COMPONENT_ROLES)[number];
 export type PromotionEvidence = z.infer<typeof promotionEvidenceSchema>;
 export type CollectedSkuComponent = z.infer<typeof collectedSkuComponentSchema>;

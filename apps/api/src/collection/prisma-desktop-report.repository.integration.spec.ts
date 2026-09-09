@@ -134,7 +134,8 @@ test("claim skips queued desktop runs without an active own listing", async () =
 
     const claimed = await new PrismaCollectorAgentRepository(prisma).claimNext(agent.id, {
       appVersion: "2.4.5",
-      capabilities: ["accessibility", "all-sku", "png-evidence"]
+      capabilities: ["accessibility", "all-sku", "png-evidence"],
+      session: { state: "READY", observedAt: new Date().toISOString() }
     });
 
     assert.equal(claimed?.runId, eligibleRun.id);
@@ -218,7 +219,8 @@ test("transactionally ingests one concurrent report history and returns its orig
     const collectorRepository = new PrismaCollectorAgentRepository(prisma);
     const claimedJob = await collectorRepository.claimNext(agent.id, {
       appVersion: "2.4.5",
-      capabilities: ["accessibility", "all-sku", "png-evidence"]
+      capabilities: ["accessibility", "all-sku", "png-evidence"],
+      session: { state: "READY", observedAt: new Date().toISOString() }
     });
     assert.equal(claimedJob?.runId, run.id);
     assert.deepEqual(claimedJob?.ownListings.map((listing) => listing.id), [ownListing.id]);

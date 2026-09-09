@@ -221,6 +221,52 @@ test("collects every enabled Sony SKU while preserving duplicate search ranks", 
   }
 });
 
+test("scopes each own-listing search to the normalized model and own shop", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-own-listing-query-"));
+  try {
+    const fixtureDriver = await FixtureDriver.fromFile(fixturePath);
+    const queryJob: CollectorJob = {
+      ...job,
+      searchQuery: "RME Babyface",
+      rule: {
+        ...job.rule,
+        brand: "RME",
+        standardModel: "Babyface Pro FS",
+        version: "FS"
+      }
+    };
+    let received: [string, string] | undefined;
+    let receivedCompetitorQuery: string | undefined;
+    const driver: TaobaoDesktopDriver = {
+      diagnose: () => fixtureDriver.diagnose(),
+      async openOwnListing(url, searchQuery) {
+        received = [url, searchQuery];
+        return fixtureDriver.openOwnListing(url);
+      },
+      search(query, limit) {
+        receivedCompetitorQuery = query;
+        return fixtureDriver.search(job.searchQuery, limit);
+      },
+      openSearchPosition: (position) => fixtureDriver.openSearchPosition(position),
+      selectSku: (selection) => fixtureDriver.selectSku(selection),
+      returnToSearch: () => fixtureDriver.returnToSearch()
+    };
+
+    await new CollectionRunner(driver, new AtomicCheckpointStore(root)).run(
+      queryJob,
+      queryJob.collectorId
+    );
+
+    assert.deepEqual(received, [
+      queryJob.ownListings[0]!.url,
+      "RME Babyface Pro FS 星空乐器专营店"
+    ]);
+    assert.equal(receivedCompetitorQuery, queryJob.searchQuery);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("fails closed when a first-run own page disagrees with the claimed URL identity or shop", async () => {
   const root = await mkdtemp(join(tmpdir(), "collector-own-binding-"));
   try {
@@ -932,7 +978,7 @@ test("resolves same-URL host-only ranks independently across pause and resume", 
   }
 });
 
-test("pauses a fresh run when diagnosis requires login and resumes without diagnosing again", async () => {
+test("pauses a fresh run when diagnosis requires login and revalidates before resume", async () => {
   const root = await mkdtemp(join(tmpdir(), "collector-diagnose-login-"));
   const diagnoseJob = { ...job, runId: "sony-diagnose-login-run" };
   try {
@@ -953,17 +999,129 @@ test("pauses a fresh run when diagnosis requires login and resumes without diagn
     assert.equal((await store.load(diagnoseJob.runId))?.report.status, "PAUSED_LOGIN");
     assert.doesNotThrow(() => collectorReportSchema.parse(paused));
 
+    const pausedCheckpoint = await store.load(diagnoseJob.runId);
+    assert.ok(pausedCheckpoint);
+    pausedCheckpoint.report.issues.push({
+      code: "UI_CONTRACT_CHANGED",
+      message: "Unrelated prior issue",
+      capturedAt: pausedCheckpoint.report.completedAt
+    });
+    await store.save(diagnoseJob.runId, pausedCheckpoint);
+
     const healthyFixture = await FixtureDriver.fromFile(fixturePath);
     let resumedDiagnoseCalls = 0;
-    const resumedDriver = withDiagnose(healthyFixture, async () => {
-      resumedDiagnoseCalls += 1;
-      return healthyFixture.diagnose();
-    });
+    let checkpointSavedBeforeFirstPageAccess = false;
+    const healthyDiagnostic = await healthyFixture.diagnose();
+    const resumedDriver: TaobaoDesktopDriver = {
+      diagnose: async () => {
+        resumedDiagnoseCalls += 1;
+        return { ...healthyDiagnostic, appVersion: "fixture-resumed-1.0" };
+      },
+      openOwnListing: async (url) => {
+        const persisted = await store.load(diagnoseJob.runId);
+        assert.ok(persisted);
+        assert.equal(persisted.report.status, "FAILED");
+        assert.equal(persisted.report.appVersion, "fixture-resumed-1.0");
+        assert.equal(persisted.report.issues.some((entry) => entry.code === "LOGIN_REQUIRED"), false);
+        assert.equal(persisted.report.issues.some((entry) => entry.code === "UI_CONTRACT_CHANGED"), true);
+        assert.doesNotThrow(() => assertCheckpointSemanticCoherence(persisted, diagnoseJob));
+        checkpointSavedBeforeFirstPageAccess = true;
+        return healthyFixture.openOwnListing(url);
+      },
+      search: (query, limit) => healthyFixture.search(query, limit),
+      openSearchPosition: (position) => healthyFixture.openSearchPosition(position),
+      selectSku: (selection) => healthyFixture.selectSku(selection),
+      returnToSearch: () => healthyFixture.returnToSearch()
+    };
     const resumed = await new CollectionRunner(resumedDriver, store)
       .run(diagnoseJob, diagnoseJob.collectorId);
-    assert.equal(resumed.status, "SUCCEEDED");
-    assert.equal(resumed.appVersion, "unknown");
-    assert.equal(resumedDiagnoseCalls, 0);
+    assert.equal(resumed.status, "PARTIAL_FAILED");
+    assert.equal(resumed.appVersion, "fixture-resumed-1.0");
+    assert.equal(resumedDiagnoseCalls, 1);
+    assert.equal(resumed.issues.some((entry) => entry.code === "LOGIN_REQUIRED"), false);
+    assert.equal(resumed.issues.some((entry) => entry.code === "UI_CONTRACT_CHANGED"), true);
+    assert.equal(checkpointSavedBeforeFirstPageAccess, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("revalidates desktop readiness before a resumed attempt and removes only stale readiness issues", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-resume-readiness-"));
+  const readinessJob = { ...job, runId: "sony-resume-readiness-run" };
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const fixture = await FixtureDriver.fromFile(fixturePath);
+    const diagnostic = await fixture.diagnose();
+    let diagnosticCalls = 0;
+    let pageAccessStartedAfterSecondDiagnostic = false;
+    const driver: TaobaoDesktopDriver = {
+      diagnose: async () => {
+        diagnosticCalls += 1;
+        return { ...diagnostic, hasFrontWindow: diagnosticCalls > 1 };
+      },
+      openOwnListing: async (url) => {
+        pageAccessStartedAfterSecondDiagnostic = diagnosticCalls === 2;
+        return fixture.openOwnListing(url);
+      },
+      search: (query, limit) => fixture.search(query, limit),
+      openSearchPosition: (position) => fixture.openSearchPosition(position),
+      selectSku: (selection) => fixture.selectSku(selection),
+      returnToSearch: () => fixture.returnToSearch()
+    };
+    const runner = new CollectionRunner(driver, store);
+
+    const first = await runner.run(readinessJob, readinessJob.collectorId);
+    assert.equal(first.status, "FAILED");
+    assert.equal(first.issues.some((entry) => entry.code === "TAOBAO_NOT_FRONTMOST"), true);
+
+    const checkpoint = await store.load(readinessJob.runId);
+    assert.ok(checkpoint);
+    checkpoint.report.issues.push({
+      code: "UI_CONTRACT_CHANGED",
+      message: "Unrelated prior issue",
+      capturedAt: checkpoint.report.completedAt
+    });
+    await store.save(readinessJob.runId, checkpoint);
+
+    const resumed = await runner.run(readinessJob, readinessJob.collectorId);
+    assert.equal(diagnosticCalls, 2);
+    assert.equal(pageAccessStartedAfterSecondDiagnostic, true);
+    assert.equal(resumed.issues.some((entry) => entry.code === "TAOBAO_NOT_FRONTMOST"), false);
+    assert.equal(resumed.issues.some((entry) => entry.code === "UI_CONTRACT_CHANGED"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("blocks a resumed attempt before page access when desktop remains out of front", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-resume-no-front-window-"));
+  const readinessJob = { ...job, runId: "sony-resume-no-front-window-run" };
+  try {
+    const store = new AtomicCheckpointStore(join(root, "checkpoints"));
+    const fixture = await FixtureDriver.fromFile(fixturePath);
+    const diagnostic = await fixture.diagnose();
+    let diagnosticCalls = 0;
+    let pageAccesses = 0;
+    const driver: TaobaoDesktopDriver = {
+      diagnose: async () => {
+        diagnosticCalls += 1;
+        return { ...diagnostic, hasFrontWindow: false };
+      },
+      openOwnListing: async () => { pageAccesses += 1; return assert.fail("must not open own listing"); },
+      search: async () => { pageAccesses += 1; return assert.fail("must not search"); },
+      openSearchPosition: async () => { pageAccesses += 1; return assert.fail("must not open result"); },
+      selectSku: async () => { pageAccesses += 1; return assert.fail("must not select SKU"); },
+      returnToSearch: async () => { pageAccesses += 1; }
+    };
+    const runner = new CollectionRunner(driver, store);
+
+    await runner.run(readinessJob, readinessJob.collectorId);
+    const resumed = await runner.run(readinessJob, readinessJob.collectorId);
+
+    assert.equal(diagnosticCalls, 2);
+    assert.equal(resumed.issues.some((entry) => entry.code === "TAOBAO_NOT_FRONTMOST"), true);
+    assert.equal(pageAccesses, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1946,6 +2104,64 @@ test("reports a non-frontmost Taobao driver issue after zero and durable progres
     ).run({ ...job, runId: "driver-not-frontmost-progressed" }, job.collectorId);
     assert.equal(progressed.status, "PARTIAL_FAILED");
     assert.equal(progressed.issues.some((entry) => entry.code === "TAOBAO_NOT_FRONTMOST"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("stops before page access when diagnostics report no front window", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-diagnostic-front-window-"));
+  try {
+    const base = await FixtureDriver.fromFile(fixturePath);
+    const observed = await base.diagnose();
+    let pageAccesses = 0;
+    const driver: TaobaoDesktopDriver = {
+      diagnose: async () => ({ ...observed, hasFrontWindow: false }),
+      openOwnListing: async () => { pageAccesses += 1; return assert.fail("must not open own listing"); },
+      search: async () => { pageAccesses += 1; return assert.fail("must not search"); },
+      openSearchPosition: async () => { pageAccesses += 1; return assert.fail("must not open result"); },
+      selectSku: async () => { pageAccesses += 1; return assert.fail("must not select SKU"); },
+      returnToSearch: async () => { pageAccesses += 1; }
+    };
+
+    const report = await new CollectionRunner(
+      driver,
+      new AtomicCheckpointStore(join(root, "checkpoints"))
+    ).run({ ...job, runId: "diagnostic-no-front-window" }, job.collectorId);
+
+    assert.equal(report.status, "FAILED");
+    assert.equal(report.issues.some((entry) => entry.code === "TAOBAO_NOT_FRONTMOST"), true);
+    assert.equal(pageAccesses, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pauses before page access when diagnostics cannot confirm login", async () => {
+  const root = await mkdtemp(join(tmpdir(), "collector-diagnostic-login-"));
+  try {
+    for (const loginState of ["LOGGED_OUT", "UNKNOWN"] as const) {
+      const base = await FixtureDriver.fromFile(fixturePath);
+      const observed = await base.diagnose();
+      let pageAccesses = 0;
+      const driver: TaobaoDesktopDriver = {
+        diagnose: async () => ({ ...observed, loginState }),
+        openOwnListing: async () => { pageAccesses += 1; return assert.fail("must not open own listing"); },
+        search: async () => { pageAccesses += 1; return assert.fail("must not search"); },
+        openSearchPosition: async () => { pageAccesses += 1; return assert.fail("must not open result"); },
+        selectSku: async () => { pageAccesses += 1; return assert.fail("must not select SKU"); },
+        returnToSearch: async () => { pageAccesses += 1; }
+      };
+
+      const report = await new CollectionRunner(
+        driver,
+        new AtomicCheckpointStore(join(root, loginState.toLowerCase()))
+      ).run({ ...job, runId: `diagnostic-${loginState.toLowerCase()}` }, job.collectorId);
+
+      assert.equal(report.status, "PAUSED_LOGIN");
+      assert.equal(report.issues.some((entry) => entry.code === "LOGIN_REQUIRED"), true);
+      assert.equal(pageAccesses, 0);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

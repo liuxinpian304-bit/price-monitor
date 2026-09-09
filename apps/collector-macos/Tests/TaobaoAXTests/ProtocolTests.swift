@@ -48,6 +48,25 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(command.value, "声卡 直播")
     }
 
+    func testPressSkuOptionCommandDecodesRequiredTargetFields() throws {
+        let command = try decoder.decode(HelperCommand.self, from: Data(
+            #"{"id":"sku-press-1","command":"pressSkuOption","bundleId":"com.taobao.pcdesktop","nodePath":[4,2],"value":"Fixture Blue","fingerprint":{"role":"AXGroup","domClassList":["valueItem--fixture"]}}"#.utf8
+        ))
+
+        XCTAssertEqual(command.command, .pressSkuOption)
+        XCTAssertEqual(command.nodePath, [4, 2])
+        XCTAssertEqual(command.value, "Fixture Blue")
+        XCTAssertEqual(
+            command.fingerprint,
+            AXNodeFingerprint(
+                role: "AXGroup",
+                title: nil,
+                identifier: nil,
+                domClassList: ["valueItem--fixture"]
+            )
+        )
+    }
+
     func testResponseRoundTripsEveryJSONValueShape() throws {
         let response = HelperResponse(
             id: "response-1",
@@ -254,6 +273,77 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNotEqual(response.payload, .object(["typed": .string(query)]))
     }
 
+    func testPressSkuOptionRejectsMissingRequiredFields() {
+        let inputs = [
+            #"{"id":"missing-path","command":"pressSkuOption","bundleId":"com.taobao.pcdesktop","value":"Fixture Blue","fingerprint":{"role":"AXGroup","domClassList":["valueItem--fixture"]}}"#,
+            #"{"id":"missing-value","command":"pressSkuOption","bundleId":"com.taobao.pcdesktop","nodePath":[4,2],"fingerprint":{"role":"AXGroup","domClassList":["valueItem--fixture"]}}"#,
+            #"{"id":"missing-fingerprint","command":"pressSkuOption","bundleId":"com.taobao.pcdesktop","nodePath":[4,2],"value":"Fixture Blue"}"#,
+        ]
+        let protocolHandler = JSONLineProtocol(handler: MacOSCommandHandler(applicationFactory: { _ in
+            ProtocolApplicationSpy()
+        }))
+
+        for input in inputs {
+            let response = protocolHandler.response(for: input)
+            XCTAssertFalse(response.ok, input)
+            XCTAssertEqual(response.error?.code, "INVALID_REQUEST", input)
+        }
+    }
+
+    func testPressSkuOptionRejectsWeakFingerprintsBeforeConstructingApplication() {
+        let fingerprints = [
+            #"{}"#,
+            #"{"role":"AXGroup"}"#,
+            #"{"role":"AXGroup","domClassList":[]}"#,
+            #"{"domClassList":["valueItem--fixture"]}"#,
+            #"{"role":"AXGroup","domClassList":["valueItem--fixture","valueItem--fixture"]}"#,
+            #"{"role":"AXGroup","domClassList":["valueItem--fixture","isSelected--fixture","isSelected--fixture"]}"#,
+        ]
+
+        for fingerprint in fingerprints {
+            var factoryCalls = 0
+            let protocolHandler = JSONLineProtocol(handler: MacOSCommandHandler(applicationFactory: { _ in
+                factoryCalls += 1
+                return ProtocolApplicationSpy()
+            }))
+
+            let response = protocolHandler.response(for: """
+            {"id":"weak-fingerprint","command":"pressSkuOption","bundleId":"com.taobao.pcdesktop","nodePath":[4,2],"value":"Fixture Blue","fingerprint":\(fingerprint)}
+            """)
+
+            XCTAssertFalse(response.ok, fingerprint)
+            XCTAssertEqual(response.error?.code, "SKU_OPTION_GUARD_FAILED", fingerprint)
+            XCTAssertEqual(factoryCalls, 0, fingerprint)
+        }
+    }
+
+    func testPressSkuOptionRejectsAnyExtraFieldsBeforeConstructingApplication() {
+        let extras = [
+            #""action":"AXPress""#,
+            #""keyCode":36"#,
+            #""destination":"evidence.png""#,
+            #""unknown":true"#,
+            #""action":null"#,
+            #""unknown":null"#,
+        ]
+
+        for extra in extras {
+            var factoryCalls = 0
+            let protocolHandler = JSONLineProtocol(handler: MacOSCommandHandler(applicationFactory: { _ in
+                factoryCalls += 1
+                return ProtocolApplicationSpy()
+            }))
+
+            let response = protocolHandler.response(for: """
+            {"id":"extra-field","command":"pressSkuOption","bundleId":"com.taobao.pcdesktop","nodePath":[4,2],"value":"Fixture Blue","fingerprint":{"role":"AXGroup","domClassList":["valueItem--fixture"]},\(extra)}
+            """)
+
+            XCTAssertFalse(response.ok, extra)
+            XCTAssertEqual(response.error?.code, "INVALID_REQUEST", extra)
+            XCTAssertEqual(factoryCalls, 0, extra)
+        }
+    }
+
     private func makeProtocol() -> JSONLineProtocol {
         JSONLineProtocol(handler: NotImplementedHandler())
     }
@@ -276,6 +366,9 @@ private final class ProtocolApplicationSpy: AccessibilityApplicationHandling {
     }
     func replaceText(path: [Int], value: String, fingerprint: AXNodeFingerprint) throws -> JSONValue {
         .object(["typed": .boolean(true)])
+    }
+    func pressSkuOption(path: [Int], expectedLabel: String, fingerprint: AXNodeFingerprint) throws -> JSONValue {
+        .object(["performed": .boolean(true)])
     }
     func keyPress(keyCode: Int) throws -> JSONValue { try unexpected() }
     func captureCopiedText(path: [Int], action: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue {

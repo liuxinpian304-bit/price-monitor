@@ -1,0 +1,6 @@
+CREATE TYPE "CollectorSessionState" AS ENUM ('READY', 'LOGIN_REQUIRED', 'CHALLENGE_REQUIRED', 'UNAVAILABLE');
+
+ALTER TABLE "CollectorAgent"
+ADD COLUMN "sessionState" "CollectorSessionState" NOT NULL DEFAULT 'UNAVAILABLE',
+ADD COLUMN "sessionObservedAt" TIMESTAMP(3),
+ADD COLUMN "sessionChangedAt" TIMESTAMP(3);

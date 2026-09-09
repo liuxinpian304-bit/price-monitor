@@ -27,10 +27,10 @@ docker compose -f infra/docker-compose.yml ps
 | 大量价格为空 | 具体 SKU、公开优惠或库存字段缺失 | 转人工核对，不使用搜索页价格补位 |
 | 企业微信发送失败 | Webhook 失效、群机器人被移除或网络故障 | 更新 Webhook，发送单条测试消息，再恢复通知 |
 | 同一价格重复提醒 | 去重键或商品 SKU 标识变化 | 暂停任务，检查 `platformItemId + skuId + price`，不得直接清空预警表 |
-| `PAUSED_LOGIN` | Mac 上淘宝登录失效 | 在原登记 Mac 上手动恢复登录，确认搜索页可用后由管理员在“采集报告”重新入队 |
-| `PAUSED_CHALLENGE` | 平台要求人工验证 | 在原登记 Mac 上手动完成验证，确认回到搜索结果后再由管理员重新入队 |
+| `PAUSED_LOGIN` | 固定采集 Mac 上淘宝登录失效 | 只在固定采集 Mac 上手动恢复一次登录；采集器确认 `READY` 后自动续跑 |
+| `PAUSED_CHALLENGE` | 平台要求人工验证 | 只在固定采集 Mac 上完成平台要求的人工验证；采集器确认 `READY` 后自动续跑 |
 
-只有 `PAUSED_LOGIN` 和 `PAUSED_CHALLENGE` 显示重新入队操作。不得通过脚本绕过登录、验证码或平台挑战；`RUNNING`、`SUCCEEDED`、`PARTIAL_FAILED` 和 `FAILED` 不显示该操作。
+`PAUSED_LOGIN` 和 `PAUSED_CHALLENGE` 不需要人工重新入队。系统保持原运行暂停，并在固定采集 Mac 报告 `READY` 后自动恢复。不得通过脚本绕过登录、验证码或平台挑战，也不得把账号、密码或登录凭据交给采集器。
 
 ## 3. 供应商字段契约恢复
 
@@ -52,7 +52,7 @@ curl -fsS http://127.0.0.1:4100/api/health
 
 ## 5. Redis 恢复
 
-Redis 恢复后先确认 `PING` 正常，再重启已登记 Mac 上的采集器 Worker。任务使用型号锁和幂等 `runId`；仍需检查是否存在长时间未结束的 `RUNNING` 记录。系统不会自动补齐停机期间全部历史时点，恢复后从下一计划时点继续。
+Redis 恢复后先确认 `PING` 正常，再只在固定采集 Mac 上重启采集器 Worker。其他 Mac 和 Windows 电脑只打开管理后台，不运行 Worker。任务使用型号锁和幂等 `runId`；仍需检查是否存在长时间未结束的 `RUNNING` 记录。系统不会自动补齐停机期间全部历史时点，恢复后从下一计划时点继续。
 
 ## 6. 恢复验收
 

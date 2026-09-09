@@ -7,6 +7,7 @@ enum CommandName: String, Codable, Equatable {
     case perform
     case setValue
     case replaceText
+    case pressSkuOption
     case keyPress
     case captureCopiedText
     case screenshot
@@ -127,6 +128,14 @@ struct JSONLineProtocol {
         "keyCode",
         "destination",
     ]
+    private static let pressSkuOptionFieldNames: Set<String> = [
+        "id",
+        "command",
+        "bundleId",
+        "nodePath",
+        "value",
+        "fingerprint",
+    ]
 
     private let handler: any CommandHandling
 
@@ -153,6 +162,10 @@ struct JSONLineProtocol {
 
         if resolvedCommand == .activate,
            Self.activateMutationFieldNames.contains(where: { object[$0] != nil }) {
+            return invalidRequest(id: id)
+        }
+        if resolvedCommand == .pressSkuOption,
+           !Set(object.keys).isSubset(of: Self.pressSkuOptionFieldNames) {
             return invalidRequest(id: id)
         }
 

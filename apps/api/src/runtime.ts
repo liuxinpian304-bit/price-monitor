@@ -24,6 +24,11 @@ import { CatalogImportService } from "./catalog/import/catalog-import.service.ts
 import { PrismaCatalogImportWriter } from "./catalog/import/prisma-catalog-import.writer.ts";
 import { PrismaCatalogRepository } from "./catalog/prisma-catalog.repository.ts";
 import { CollectorAgentService } from "./collector-agent/collector-agent.service.ts";
+import { PrismaCollectorSessionIncidentRepository } from "./collector-agent/collector-session-incident.repository.ts";
+import {
+  CollectorSessionIncidentNotifier,
+  createCollectorSessionWecomSender
+} from "./collector-agent/collector-session-notifier.ts";
 import { PrismaCollectorAgentRepository } from "./collector-agent/prisma-collector-agent.repository.ts";
 import { CollectionEvidenceStore } from "./collection/collection-evidence-store.ts";
 import { CollectionScheduleProcessor, BullMqCollectionScheduleQueue } from "./collection/collection.processor.ts";
@@ -121,8 +126,18 @@ export const manualClassificationService = new ManualClassificationService(
   new PrismaManualClassificationRepository(prisma),
   audit
 );
+const collectorSessionIncidentRepository = new PrismaCollectorSessionIncidentRepository(prisma);
+export const collectorSessionIncidentNotifier = new CollectorSessionIncidentNotifier(
+  collectorSessionIncidentRepository,
+  async () => {
+    const webhookUrl = await settingsService.readSecretForInternalUse("WECOM_WEBHOOK");
+    return webhookUrl ? createCollectorSessionWecomSender(webhookUrl) : null;
+  },
+  () => settingsService.isWecomLiveSendingApproved()
+);
 export const collectorAgentService = new CollectorAgentService(
-  new PrismaCollectorAgentRepository(prisma)
+  new PrismaCollectorAgentRepository(prisma),
+  collectorSessionIncidentNotifier
 );
 export const collectionRunQueueService = new CollectionRunQueueService(
   new PrismaCollectionRunQueueRepository(prisma)

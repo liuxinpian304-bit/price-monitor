@@ -151,7 +151,7 @@ function service(provider: CommerceProvider, repository = new FakeRepository(), 
   };
 }
 
-test("registers exactly the twelve approved Asia/Shanghai schedules", async () => {
+test("registers exactly the ten approved Asia/Shanghai schedules", async () => {
   const schedules: CollectionSchedule[] = [];
   const queue: CollectionScheduleQueue = {
     upsertSchedule: async (schedule) => { schedules.push(schedule); },
@@ -161,13 +161,13 @@ test("registers exactly the twelve approved Asia/Shanghai schedules", async () =
 
   await new CollectionScheduler(queue).registerSchedules();
 
-  assert.equal(schedules.length, 12);
+  assert.equal(schedules.length, 10);
   assert.ok(schedules.every((schedule) => schedule.timeZone === "Asia/Shanghai"));
   assert.deepEqual(schedules.map((schedule) => schedule.localTime), [
-    "03:30", "09:30", "10:30", "11:30", "12:30", "13:30",
-    "14:30", "15:30", "16:30", "17:30", "18:30", "22:30"
+    "09:30", "10:30", "11:30", "12:30", "13:30",
+    "14:30", "15:30", "16:30", "17:30", "18:30"
   ]);
-  assert.equal(schedules[0]?.pattern, "0 30 3 * * *");
+  assert.equal(schedules[0]?.pattern, "0 30 9 * * *");
 });
 
 test("continues the batch when one offer is unavailable", async () => {

@@ -81,6 +81,21 @@ test("operations guides distinguish the current prototype from the production ta
   assert.doesNotMatch(collectorRecovery, /当前版本不自动补齐/);
 });
 
+test("operator documentation lists only the ten daytime default slots", async () => {
+  const [operatorGuide, deploymentGuide] = await Promise.all([
+    read("docs/operations/operator-guide.md"),
+    read("docs/operations/deployment-guide.md")
+  ]);
+
+  const slots = "09:30、10:30、11:30、12:30、13:30、14:30、15:30、16:30、17:30、18:30";
+  assert.match(operatorGuide, new RegExp(slots));
+  assert.match(operatorGuide, /10 个检查时点/);
+  assert.match(deploymentGuide, /10 个检查时间/);
+  for (const content of [operatorGuide, deploymentGuide]) {
+    assert.doesNotMatch(content, /03:30|22:30|12 个检查(?:时点|时间)/);
+  }
+});
+
 test("platform setup guides and security policy use the public release conventions", async () => {
   const [windowsGuide, macosGuide, security] = await Promise.all([
     read("docs/operations/windows-setup.md"),

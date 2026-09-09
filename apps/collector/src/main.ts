@@ -16,6 +16,7 @@ import {
   type OnceResult
 } from "./agent/collector-worker.ts";
 import { EvidenceUploader } from "./agent/evidence-uploader.ts";
+import { TaobaoSessionObserver } from "./agent/taobao-session-observer.ts";
 
 export interface CollectorCliApi {
   checkReachability(): Promise<CollectorHealth>;
@@ -91,7 +92,10 @@ function defaultCreateApi(config: CollectorConfig): CollectorApiClient {
 }
 
 function defaultDiagnosticDriver(config: CollectorConfig): CollectorDiagnosticDriver {
-  const client = new AxHelperClient({ helperPath: config.helperPath });
+  const client = new AxHelperClient({
+    helperPath: config.helperPath,
+    evidenceRoot: config.workDir
+  });
   const driver = new TaobaoMacDriver({ client, workDir: config.workDir });
   return {
     diagnose: () => driver.diagnose(),
@@ -107,15 +111,23 @@ function defaultCreateWorker(
   const api = diagnosticApi as CollectorApiClient;
   const checkpointStore = new AtomicCheckpointStore(config.workDir);
   const evidenceUploader = new EvidenceUploader(api, config.workDir);
+  const sessionObserver = new TaobaoSessionObserver(new AxHelperClient({
+    helperPath: config.helperPath,
+    evidenceRoot: config.workDir
+  }));
   return new CollectorWorker({
     api,
+    sessionObserver,
     checkpointStore,
     evidenceUploader,
     appVersion: "2.4.5",
     capabilities: ["accessibility", "all-sku", "png-evidence"],
     log,
     runnerFactory(runId) {
-      const client = new AxHelperClient({ helperPath: config.helperPath });
+      const client = new AxHelperClient({
+        helperPath: config.helperPath,
+        evidenceRoot: join(config.workDir, runId)
+      });
       const driver = new TaobaoMacDriver({
         client,
         workDir: join(config.workDir, runId)
@@ -224,7 +236,11 @@ export async function runCollectorCli(
     await worker.run();
     return "stopped";
   } finally {
-    cleanupSignals();
+    try {
+      worker.stop();
+    } finally {
+      cleanupSignals();
+    }
   }
 }
 

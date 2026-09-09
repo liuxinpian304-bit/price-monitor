@@ -77,5 +77,14 @@ export function calculatePublicPrice(input: PublicPriceInput): PublicPriceResult
     };
   }
 
+  if (input.displayedEstimatedPayableFen !== undefined && input.displayedEstimatedPayableFen !== payableFen) {
+    return {
+      ...baseResult,
+      payableFen: input.displayedEstimatedPayableFen,
+      confidence: "ESTIMATED",
+      reviewReasons: ["页面预估到手价与可复算到手价不一致，需要人工核对"]
+    };
+  }
+
   return { ...baseResult, payableFen, confidence: "CONFIRMED" };
 }

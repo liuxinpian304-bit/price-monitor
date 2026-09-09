@@ -1,14 +1,16 @@
 import {
   collectorJobSchema,
+  type CollectorClaimInput,
   type CollectorJob,
   type CollectorRunReleaseInput
 } from "../../../../packages/contracts/src/index.ts";
 import { Prisma, type PrismaClient } from "../../../../generated/prisma/client.ts";
 
 import type { CollectorAgentRepository } from "./collector-agent.service.ts";
+import { reconcileCollectorSessionIncident } from "./collector-session-incident.repository.ts";
 import { verifyCollectorToken } from "./collector-token.ts";
 
-const maximumClaimAttempts = 5;
+const maximumSerializableAttempts = 5;
 export const COLLECTOR_RUN_LEASE_MILLISECONDS = 90_000;
 
 const PROVIDER_PROFILES = [{
@@ -62,13 +64,13 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
 
   async claimNext(
     agentId: string,
-    input: { appVersion: string; capabilities: string[] }
+    input: CollectorClaimInput
   ): Promise<CollectorJob | null> {
-    for (let attempt = 0; attempt < maximumClaimAttempts; attempt += 1) {
+    for (let attempt = 0; attempt < maximumSerializableAttempts; attempt += 1) {
       try {
         return await this.claimInSerializableTransaction(agentId, input);
       } catch (error) {
-        if (!isSerializableConflict(error) || attempt === maximumClaimAttempts - 1) throw error;
+        if (!isSerializableConflict(error) || attempt === maximumSerializableAttempts - 1) throw error;
       }
     }
     return null;
@@ -102,25 +104,69 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
     runId: string,
     status: "PAUSED_LOGIN" | "PAUSED_CHALLENGE",
     code: "LOGIN_REQUIRED" | "PLATFORM_CHALLENGE",
-    message: string
+    message: string,
+    observedAt: Date = new Date()
   ): Promise<boolean> {
-    const now = new Date();
-    const updated = await this.prisma.collectionRun.updateMany({
-      where: { id: runId, collectorAgentId: agentId, status: "RUNNING" },
-      data: {
-        status,
-        heartbeatAt: now,
-        errorCode: code,
-        errorMessage: message
+    for (let attempt = 0; attempt < maximumSerializableAttempts; attempt += 1) {
+      try {
+        return await this.pauseInSerializableTransaction(
+          agentId,
+          runId,
+          status,
+          code,
+          message,
+          observedAt
+        );
+      } catch (error) {
+        if (!isSerializableConflict(error) || attempt === maximumSerializableAttempts - 1) throw error;
       }
-    });
-    if (updated.count === 0) return false;
+    }
+    return false;
+  }
 
-    await this.prisma.collectorAgent.update({
-      where: { id: agentId },
-      data: { lastSeenAt: now }
-    });
-    return true;
+  private async pauseInSerializableTransaction(
+    agentId: string,
+    runId: string,
+    status: "PAUSED_LOGIN" | "PAUSED_CHALLENGE",
+    code: "LOGIN_REQUIRED" | "PLATFORM_CHALLENGE",
+    message: string,
+    observedAt: Date
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (transaction) => {
+      const updated = await transaction.collectionRun.updateMany({
+        where: { id: runId, collectorAgentId: agentId, status: "RUNNING" },
+        data: {
+          status,
+          heartbeatAt: observedAt,
+          errorCode: code,
+          errorMessage: message
+        }
+      });
+      if (updated.count === 0) return false;
+
+      const agent = await transaction.collectorAgent.findUnique({
+        where: { id: agentId },
+        select: { sessionState: true }
+      });
+      const sessionState = code === "LOGIN_REQUIRED" ? "LOGIN_REQUIRED" : "CHALLENGE_REQUIRED";
+      await transaction.collectorAgent.update({
+        where: { id: agentId },
+        data: {
+          lastSeenAt: observedAt,
+          sessionState,
+          sessionObservedAt: observedAt,
+          ...(agent?.sessionState === sessionState ? {} : { sessionChangedAt: observedAt })
+        }
+      });
+      await reconcileCollectorSessionIncident(
+        transaction,
+        agentId,
+        agent?.sessionState ?? "UNAVAILABLE",
+        sessionState,
+        observedAt
+      );
+      return true;
+    }, { isolationLevel: "Serializable" });
   }
 
   async release(
@@ -156,41 +202,85 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
 
   private async claimInSerializableTransaction(
     agentId: string,
-    input: { appVersion: string; capabilities: string[] }
+    input: CollectorClaimInput
   ): Promise<CollectorJob | null> {
     return this.prisma.$transaction(async (transaction) => {
       const now = new Date();
+      const agentProfile = await transaction.collectorAgent.findFirst({
+        where: { id: agentId, enabled: true },
+        select: { platform: true, sessionState: true, sessionObservedAt: true }
+      });
+      if (!agentProfile) return null;
+      const observedAt = new Date(input.session.observedAt);
+      const acceptsObservation = agentProfile.sessionObservedAt === null
+        || observedAt.getTime() > agentProfile.sessionObservedAt.getTime();
+      const effectiveSessionState = acceptsObservation
+        ? input.session.state
+        : agentProfile.sessionState;
       const activeAgent = await transaction.collectorAgent.updateMany({
         where: { id: agentId, enabled: true },
         data: {
           appVersion: input.appVersion,
           capabilities: input.capabilities,
-          lastSeenAt: now
+          lastSeenAt: now,
+          ...(acceptsObservation ? {
+            sessionState: input.session.state,
+            sessionObservedAt: observedAt,
+            ...(agentProfile.sessionState === input.session.state ? {} : { sessionChangedAt: now })
+          } : {})
         }
       });
       if (activeAgent.count === 0) return null;
-      const agentProfile = await transaction.collectorAgent.findUnique({
-        where: { id: agentId },
-        select: { platform: true }
-      });
-      if (!agentProfile) return null;
+      if (acceptsObservation) {
+        await reconcileCollectorSessionIncident(
+          transaction,
+          agentId,
+          agentProfile.sessionState,
+          input.session.state,
+          observedAt
+        );
+      }
+      if (effectiveSessionState !== "READY") return null;
       const providerKeys = compatibleProviderKeys(agentProfile.platform, input.capabilities);
       if (providerKeys.length === 0) return null;
 
       const staleBefore = new Date(now.getTime() - COLLECTOR_RUN_LEASE_MILLISECONDS);
+      const activeOwnedRun = await transaction.collectionRun.findFirst({
+        where: {
+          status: "RUNNING",
+          collectorAgentId: agentId,
+          heartbeatAt: { gt: staleBefore },
+          desktopReportDigest: null
+        },
+        select: { id: true }
+      });
+      if (activeOwnedRun) return null;
+
       const staleOwnedRun = await transaction.collectionRun.findFirst({
         where: {
           providerKey: { in: providerKeys },
           status: "RUNNING",
           collectorAgentId: agentId,
-          heartbeatAt: { lte: staleBefore },
+          OR: [{ heartbeatAt: null }, { heartbeatAt: { lte: staleBefore } }],
           desktopReportDigest: null,
           monitoredModel: { ownListings: { some: { active: true } } }
         },
         orderBy: [{ heartbeatAt: "asc" }, { scheduledFor: "asc" }, { id: "asc" }],
         select: { id: true }
       });
-      const nextRun = staleOwnedRun ?? await transaction.collectionRun.findFirst({
+
+      const pausedOwnedRun = staleOwnedRun ? null : await transaction.collectionRun.findFirst({
+        where: {
+          providerKey: { in: providerKeys },
+          status: { in: ["PAUSED_LOGIN", "PAUSED_CHALLENGE"] },
+          collectorAgentId: agentId,
+          desktopReportDigest: null,
+          monitoredModel: { ownListings: { some: { active: true } } }
+        },
+        orderBy: [{ scheduledFor: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+        select: { id: true }
+      });
+      const queuedRun = staleOwnedRun || pausedOwnedRun ? null : await transaction.collectionRun.findFirst({
         where: {
           providerKey: { in: providerKeys },
           status: "QUEUED",
@@ -200,6 +290,7 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
         orderBy: [{ scheduledFor: "asc" }, { createdAt: "asc" }, { id: "asc" }],
         select: { id: true }
       });
+      const nextRun = staleOwnedRun ?? pausedOwnedRun ?? queuedRun;
       if (!nextRun) return null;
 
       const claimed = staleOwnedRun
@@ -209,12 +300,30 @@ export class PrismaCollectorAgentRepository implements CollectorAgentRepository 
               providerKey: { in: providerKeys },
               status: "RUNNING",
               collectorAgentId: agentId,
-              heartbeatAt: { lte: staleBefore },
+              OR: [{ heartbeatAt: null }, { heartbeatAt: { lte: staleBefore } }],
               desktopReportDigest: null
             },
             data: { claimedAt: now, heartbeatAt: now }
           })
-        : await transaction.collectionRun.updateMany({
+        : pausedOwnedRun
+          ? await transaction.collectionRun.updateMany({
+              where: {
+                id: nextRun.id,
+                providerKey: { in: providerKeys },
+                status: { in: ["PAUSED_LOGIN", "PAUSED_CHALLENGE"] },
+                collectorAgentId: agentId,
+                desktopReportDigest: null
+              },
+              data: {
+                status: "RUNNING",
+                claimedAt: now,
+                heartbeatAt: now,
+                finishedAt: null,
+                errorCode: null,
+                errorMessage: null
+              }
+            })
+          : await transaction.collectionRun.updateMany({
             where: {
               id: nextRun.id,
               providerKey: { in: providerKeys },

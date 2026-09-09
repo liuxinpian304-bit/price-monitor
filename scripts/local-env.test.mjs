@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -7,6 +8,23 @@ import {
   commandSpawnOptions,
   createLocalEnv
 } from "./local-env.mjs";
+
+test("API runtime scripts load the repository root env file with Node", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("../apps/api/package.json", import.meta.url), "utf8"));
+
+  assert.equal(
+    packageJson.scripts.dev,
+    "node --env-file=../../.env --import=tsx --watch src/main.ts"
+  );
+  assert.equal(
+    packageJson.scripts.start,
+    "node --env-file=../../.env --import=tsx src/main.ts"
+  );
+  assert.equal(
+    packageJson.scripts["seed:demo"],
+    "node --env-file=../../.env --import=tsx src/database/seed-demo.ts"
+  );
+});
 
 test("creates a local env with a generated key and preserves all public settings", () => {
   const result = createLocalEnv(

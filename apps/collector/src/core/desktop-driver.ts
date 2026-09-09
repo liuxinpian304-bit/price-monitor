@@ -94,7 +94,7 @@ export type DriverSkuSelectionResult =
 
 export interface TaobaoDesktopDriver {
   diagnose(): Promise<DriverDiagnostic>;
-  openOwnListing(url: string): Promise<DriverItemPage>;
+  openOwnListing(url: string, ownSearchQuery: string): Promise<DriverItemPage>;
   search(query: string, limit: number): Promise<DriverSearchResult>;
   openSearchPosition(position: DriverSearchPosition): Promise<DriverItemPage>;
   selectSku(selection: SkuSelection): Promise<DriverSkuSelectionResult>;

@@ -1,0 +1,60 @@
+{
+  "fixtureMetadata": {
+    "kind": "live-sanitized",
+    "profile": "taobao-desktop-2.4.5-build-15"
+  },
+  "path": [], "role": "AXApplication", "subrole": null, "identifier": null, "title": "淘宝", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+  "children": [
+    {
+      "path": [0], "role": "AXWindow", "subrole": "AXStandardWindow", "identifier": null, "title": "淘宝", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+      "children": [
+        {
+          "path": [0, 0], "role": "AXWebArea", "subrole": null, "identifier": null, "title": "商品详情", "description": null, "value": null, "url": "https://detail.tmall.com/item.htm?id=example-x1-a", "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+          "children": [
+            {
+              "path": [0, 0, 0], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+              "children": [
+                { "path": [0, 0, 0, 0], "role": "AXLink", "subrole": null, "identifier": null, "title": "Example Audio A", "description": null, "value": null, "url": "https://fixture.shop.taobao.com/", "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+                { "path": [0, 0, 0, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "Example Interface X1", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                {
+                  "path": [0, 0, 0, 2], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "domClassList": ["price--fixture"],
+                  "children": [
+                    { "path": [0, 0, 0, 2, 0], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+                      { "path": [0, 0, 0, 2, 0, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "活动价", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                      { "path": [0, 0, 0, 2, 0, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "899.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+                    ] },
+                    { "path": [0, 0, 0, 2, 1], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+                      { "path": [0, 0, 0, 2, 1, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "优惠前", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                      { "path": [0, 0, 0, 2, 1, 1], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "799.00", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+                    ] }
+                  ]
+                },
+                { "path": [0, 0, 0, 3], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "有货", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                { "path": [0, 0, 0, 4], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "满500减20", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                { "path": [0, 0, 0, 5], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "包邮", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] },
+                {
+                  "path": [0, 0, 0, 6], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [],
+                  "children": [
+                    { "path": [0, 0, 0, 6, 0], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+                      { "path": [0, 0, 0, 6, 0, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "套餐", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+                    ] },
+                    { "path": [0, 0, 0, 6, 1], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "children": [
+                      { "path": [0, 0, 0, 6, 1, 0], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "domClassList": ["valueItem--fixture"], "children": [
+                        { "path": [0, 0, 0, 6, 1, 0, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "单机", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+                      ] },
+                      { "path": [0, 0, 0, 6, 1, 1], "role": "AXGroup", "subrole": null, "identifier": null, "title": null, "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": [], "domClassList": ["isSelected--fixture", "valueItem--fixture"], "children": [
+                        { "path": [0, 0, 0, 6, 1, 1, 0], "role": "AXStaticText", "subrole": null, "identifier": null, "title": null, "description": null, "value": "麦克风套装", "url": null, "enabled": null, "selected": null, "position": null, "size": null, "actions": [], "children": [] }
+                      ] }
+                    ] }
+                  ]
+                },
+                { "path": [0, 0, 0, 7], "role": "AXButton", "subrole": null, "identifier": null, "title": "加入购物车", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] },
+                { "path": [0, 0, 0, 8], "role": "AXButton", "subrole": null, "identifier": null, "title": "立即购买", "description": null, "value": null, "url": null, "enabled": true, "selected": null, "position": null, "size": null, "actions": ["AXPress"], "children": [] }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

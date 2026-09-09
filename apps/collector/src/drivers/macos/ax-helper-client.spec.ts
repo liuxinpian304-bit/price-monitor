@@ -12,6 +12,7 @@ import {
   type AxHelperProcess,
   type AxHelperSpawn
 } from "./ax-helper-client.ts";
+import { fingerprintFor, type AxNode } from "./ax-node.ts";
 
 const localPathMarker = `/${"Users"}/`;
 const privateLocalPath = `${localPathMarker}example/private`;
@@ -56,11 +57,114 @@ function response(process: FakeProcess, value: object): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
+function skuOption(): AxNode {
+  return {
+    path: [4, 2],
+    role: "AXGroup",
+    subrole: null,
+    identifier: null,
+    title: null,
+    description: null,
+    value: null,
+    url: null,
+    enabled: true,
+    selected: false,
+    position: null,
+    size: null,
+    actions: ["AXShowMenu", "AXScrollToVisible"],
+    children: [],
+    domClassList: ["valueItem--fixture", "isSelected--fixture"]
+  };
+}
+
+test("fingerprint copies a sorted DOM class list", () => {
+  const option = skuOption();
+  const originalClasses = option.domClassList;
+
+  const fingerprint = fingerprintFor(option);
+
+  assert.deepEqual(fingerprint.domClassList, ["isSelected--fixture", "valueItem--fixture"]);
+  assert.notEqual(fingerprint.domClassList, originalClasses);
+  assert.deepEqual(option.domClassList, ["valueItem--fixture", "isSelected--fixture"]);
+});
+
 test("uses the exact required command timeout", () => {
   assert.equal(AX_HELPER_TIMEOUT_MS, 15_000);
   assert.equal(defaultAxHelperPath().endsWith(
     join("apps", "collector-macos", ".build", "debug", "taobao-ax-helper")
   ), true);
+});
+
+test("passes the configured absolute evidence root to the helper process", async () => {
+  const process = new FakeProcess();
+  let spawnArguments: unknown[] = [];
+  const spawn = ((...arguments_: unknown[]) => {
+    spawnArguments = arguments_;
+    return process;
+  }) as AxHelperSpawn;
+  const client = new AxHelperClient({
+    spawn,
+    evidenceRoot: "/private/tmp/stau-collector-evidence"
+  });
+  process.stdin.once("data", (chunk) => {
+    const command = JSON.parse(String(chunk)) as { id: string };
+    response(process, { id: command.id, ok: true, payload: { appInstalled: true } });
+  });
+
+  await client.command("diagnose");
+
+  assert.equal(
+    (spawnArguments[1] as NodeJS.ProcessEnv | undefined)?.COLLECTOR_WORK_DIR,
+    "/private/tmp/stau-collector-evidence"
+  );
+  client.close();
+});
+
+test("normalizes omitted nullable fields in recursive helper snapshots", async () => {
+  const process = new FakeProcess();
+  const client = new AxHelperClient({ spawn: () => process });
+  process.stdin.once("data", (chunk) => {
+    const command = JSON.parse(String(chunk)) as { id: string };
+    response(process, {
+      id: command.id,
+      ok: true,
+      payload: {
+        path: [],
+        actions: [],
+        children: [{ path: [0], actions: [], children: [{ path: [0, 0], actions: [], children: [] }] }]
+      }
+    });
+  });
+
+  const snapshot = await client.snapshot();
+
+  assert.equal(snapshot.title, null);
+  assert.equal(snapshot.value, null);
+  assert.equal(snapshot.children[0]?.description, null);
+  assert.equal(snapshot.children[0]?.children[0]?.url, null);
+  client.close();
+});
+
+test("rejects non-object snapshot children with the snapshot contract error", async () => {
+  for (const invalidChild of [0, false, "invalid", null]) {
+    const process = new FakeProcess();
+    const client = new AxHelperClient({ spawn: () => process });
+    process.stdin.once("data", (chunk) => {
+      const command = JSON.parse(String(chunk)) as { id: string };
+      response(process, {
+        id: command.id,
+        ok: true,
+        payload: { path: [], actions: [], children: [invalidChild] }
+      });
+    });
+
+    await assert.rejects(client.snapshot(), (error: unknown) => {
+      assert.equal(error instanceof UiContractChangedError, true);
+      assert.equal((error as Error).message, "Taobao Accessibility helper emitted an invalid snapshot.");
+      return true;
+    });
+    client.close();
+  }
 });
 
 test("sends activation and Unicode replacement commands through the helper protocol", async () => {
@@ -97,6 +201,77 @@ test("sends activation and Unicode replacement commands through the helper proto
     }
   ]);
   client.close();
+});
+
+test("pressSkuOption sends only the guarded SKU target fields", async () => {
+  const process = new FakeProcess();
+  const client = new AxHelperClient({ spawn: () => process });
+  let sent: Record<string, unknown> | undefined;
+  process.stdin.once("data", (chunk) => {
+    const command = JSON.parse(String(chunk)) as { id: string } & Record<string, unknown>;
+    sent = command;
+    response(process, { id: command.id, ok: true, payload: { performed: true } });
+  });
+
+  await client.pressSkuOption(skuOption(), "Fixture Blue");
+
+  const { id, bundleId, ...request } = sent!;
+  assert.match(String(id), /^[0-9a-f-]{36}$/i);
+  assert.equal(bundleId, "com.taobao.pcdesktop");
+  assert.deepEqual(request, {
+    command: "pressSkuOption",
+    nodePath: [4, 2],
+    value: "Fixture Blue",
+    fingerprint: {
+      role: "AXGroup",
+      domClassList: ["isSelected--fixture", "valueItem--fixture"]
+    }
+  });
+  client.close();
+});
+
+test("pressSkuOption fails closed before starting the helper for weak SKU fingerprints", async () => {
+  const missingRole = skuOption();
+  missingRole.role = null;
+  const missingClassList = skuOption();
+  delete missingClassList.domClassList;
+  const weakOptions = [
+    missingRole,
+    missingClassList,
+    { ...skuOption(), domClassList: [] },
+    { ...skuOption(), domClassList: ["valueItem--fixture", "valueItem--fixture"] },
+    { ...skuOption(), domClassList: ["valueItem--fixture", "valueItem--alternate"] },
+    { ...skuOption(), domClassList: ["valueItem--fixture", "isSelected--fixture", "isSelected--fixture"] }
+  ];
+
+  for (const option of weakOptions) {
+    let spawns = 0;
+    const client = new AxHelperClient({
+      timeoutMs: 1,
+      spawn: () => {
+        spawns += 1;
+        return new FakeProcess();
+      }
+    });
+
+    await assert.rejects(client.pressSkuOption(option, "Fixture Blue"), UiContractChangedError);
+    assert.equal(spawns, 0);
+    client.close();
+  }
+});
+
+test("pressSkuOption fails closed on malformed success acknowledgements", async () => {
+  for (const payload of [undefined, null, {}, { performed: false }, { performed: "true" }]) {
+    const process = new FakeProcess();
+    const client = new AxHelperClient({ spawn: () => process });
+    process.stdin.once("data", (chunk) => {
+      const command = JSON.parse(String(chunk)) as { id: string };
+      response(process, { id: command.id, ok: true, payload });
+    });
+
+    await assert.rejects(client.pressSkuOption(skuOption(), "Fixture Blue"), UiContractChangedError);
+    client.close();
+  }
 });
 
 test("correlates concurrent one-line responses by UUID", async () => {

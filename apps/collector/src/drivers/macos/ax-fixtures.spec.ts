@@ -31,6 +31,8 @@ test("every committed AX fixture path equals its recursive child index", async (
   assert.deepEqual(names, [
     "item-7506-cable.json",
     "item-7506-default.json",
+    "live-dom-item-x1-bundle.json",
+    "live-dom-item-x1-default.json",
     "live-item-x1-bundle.json",
     "live-item-x1-default.json",
     "live-search-results-next.json",

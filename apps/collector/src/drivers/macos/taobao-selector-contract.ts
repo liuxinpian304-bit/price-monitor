@@ -1,8 +1,17 @@
 import type { AxNode } from "./ax-node.ts";
 
+export interface SearchPaginationState {
+  currentPage: number;
+  totalPages: number;
+}
+
 export type SearchAdvance =
-  | { kind: "AX_ACTION"; action: "AXScrollDown"; node: AxNode }
+  | { kind: "AX_ACTION"; action: "AXScrollDown" | "AXPress"; node: AxNode }
   | { kind: "KEY"; keyCode: 121 };
+
+export type SearchRetreat =
+  | { kind: "AX_ACTION"; action: "AXPress"; node: AxNode }
+  | { kind: "KEY"; keyCode: 115 };
 
 export interface SelectedDetailPage {
   platformItemId: string | null;

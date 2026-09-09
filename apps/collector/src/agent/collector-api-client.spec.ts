@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { CollectorReport } from "@stau-price-monitor/contracts";
+import type { CollectorClaimInput, CollectorReport } from "@stau-price-monitor/contracts";
 
 import {
   CollectorApiClient,
@@ -11,6 +11,11 @@ import {
 
 const token = `pmc_${"B".repeat(43)}`;
 const evidenceKey = `sha256:${"a".repeat(64)}`;
+const claimInput: CollectorClaimInput = {
+  appVersion: "2.4.5",
+  capabilities: ["accessibility", "png-evidence"],
+  session: { state: "READY", observedAt: "2026-09-09T01:30:00.000Z" }
+};
 const job = {
   schemaVersion: 1,
   runId: "run-1",
@@ -115,7 +120,7 @@ test("claims with Bearer authentication and validates the returned job", async (
   const { client, requests } = clientWith(() => jsonResponse(job), timeoutCalls);
 
   assert.deepEqual(
-    await client.claim({ appVersion: "2.4.5", capabilities: ["accessibility", "png-evidence"] }),
+    await client.claim(claimInput),
     job
   );
   assert.equal(requests[0]?.url, "https://collector.example.test/api/collector-agent/jobs/claim");
@@ -123,19 +128,31 @@ test("claims with Bearer authentication and validates the returned job", async (
   assert.equal(new Headers(requests[0]?.init.headers).get("authorization"), `Bearer ${token}`);
   assert.deepEqual(JSON.parse(String(requests[0]?.init.body)), {
     appVersion: "2.4.5",
-    capabilities: ["accessibility", "png-evidence"]
+    capabilities: ["accessibility", "png-evidence"],
+    session: { state: "READY", observedAt: "2026-09-09T01:30:00.000Z" }
   });
   assert.deepEqual(timeoutCalls, [15_000]);
 
   const malformed = clientWith(() => jsonResponse({ ...job, searchLimit: 51 })).client;
-  await assert.rejects(() => malformed.claim({ appVersion: "2.4.5", capabilities: [] }), {
+  await assert.rejects(() => malformed.claim({ ...claimInput, capabilities: [] }), {
     code: "INVALID_RESPONSE"
   });
 });
 
 test("returns null only for the claim endpoint's empty 204 contract", async () => {
   const { client } = clientWith(() => new Response(null, { status: 204 }));
-  assert.equal(await client.claim({ appVersion: "2.4.5", capabilities: [] }), null);
+  assert.equal(await client.claim({ ...claimInput, capabilities: [] }), null);
+});
+
+test("rejects malformed session observations before sending a claim request", async () => {
+  const { client, requests } = clientWith(() => new Response(null, { status: 204 }));
+
+  await assert.rejects(() => client.claim({
+    ...claimInput,
+    session: { state: "LOGGED_OUT", observedAt: "2026-09-09T01:30:00.000Z" }
+  } as never), { code: "INVALID_REQUEST" });
+
+  assert.equal(requests.length, 0);
 });
 
 test("accepts the assembled runtime health contract without weakening its response validation", async () => {
@@ -251,7 +268,7 @@ test("maps status failures to safe typed metadata without retaining bodies or au
   ] as const) {
     const secretBody = `secret-response-${status}`;
     const { client } = clientWith(() => new Response(secretBody, { status }));
-    const error = await client.claim({ appVersion: "account-value", capabilities: [] })
+    const error = await client.claim({ ...claimInput, appVersion: "account-value", capabilities: [] })
       .then(() => null, (caught: unknown) => caught);
 
     assert.ok(error instanceof CollectorApiError);
@@ -291,7 +308,7 @@ test("uses timeout cancellation and converts fetch failures without retaining un
     }
   });
 
-  const error = await client.claim({ appVersion: "2.4.5", capabilities: [] })
+  const error = await client.claim({ ...claimInput, capabilities: [] })
     .then(() => null, (caught: unknown) => caught);
   assert.ok(error instanceof CollectorApiError);
   assert.equal(error.code, "TIMEOUT");
@@ -319,7 +336,7 @@ for (const [kind, responseFactory] of [
       fetch: async () => responseFactory()
     });
 
-    const pending = client.claim({ appVersion: "2.4.5", capabilities: [] });
+    const pending = client.claim({ ...claimInput, capabilities: [] });
     await new Promise((resolve) => setImmediate(resolve));
     controller.abort(new Error("unsafe response-body timeout detail"));
     const error = await Promise.race([
@@ -342,7 +359,7 @@ test("keeps a completed malformed response body non-transient", async () => {
     headers: { "content-type": "application/json" }
   }));
 
-  const error = await client.claim({ appVersion: "2.4.5", capabilities: [] })
+  const error = await client.claim({ ...claimInput, capabilities: [] })
     .then(() => null, (caught: unknown) => caught);
   assert.ok(error instanceof CollectorApiError);
   assert.deepEqual(
@@ -367,7 +384,7 @@ test("maps a body rejection caused by abort to a transient timeout", async () =>
     }) as unknown as Response
   });
 
-  const pending = client.claim({ appVersion: "2.4.5", capabilities: [] });
+  const pending = client.claim({ ...claimInput, capabilities: [] });
   await new Promise((resolve) => setImmediate(resolve));
   controller.abort(new Error("unsafe body rejection detail"));
   await assert.rejects(() => pending, {

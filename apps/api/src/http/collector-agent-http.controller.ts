@@ -30,6 +30,7 @@ import { memoryStorage } from "multer";
 import { z } from "zod";
 
 import {
+  collectorClaimInputSchema,
   collectorReportSchema,
   collectorRunReleaseInputSchema
 } from "../../../../packages/contracts/src/index.ts";
@@ -60,11 +61,6 @@ export const DESKTOP_REPORT_INGESTION_SERVICE = Symbol("DESKTOP_REPORT_INGESTION
 const registrationSchema = z.object({
   name: z.string().trim().min(1),
   platform: z.enum(["MACOS", "WINDOWS"])
-}).strict();
-
-const claimSchema = z.object({
-  appVersion: z.string().trim().min(1),
-  capabilities: z.array(z.string().trim().min(1))
 }).strict();
 
 const heartbeatSchema = z.object({
@@ -187,7 +183,7 @@ export class CollectorAgentHttpController {
   async claim(body: unknown, request: Request, response: Response) {
     const token = bearerToken(request);
     await this.assertAuthenticated(token);
-    const input = validated(claimSchema, body);
+    const input = validated(collectorClaimInputSchema, body);
     try {
       const job = await this.service.claimNext(token, input);
       if (!job) {

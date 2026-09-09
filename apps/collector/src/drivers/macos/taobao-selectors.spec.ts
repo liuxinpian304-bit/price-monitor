@@ -7,6 +7,7 @@ import { walkAxNodes, type AxNode } from "./ax-node.ts";
 import {
   assertNoStopState,
   findSearchField,
+  findSearchSubmitAction,
   findSyntheticSearchConfirmAction,
   readDetailPage,
   readSearchCards,
@@ -43,6 +44,14 @@ test("uses AXConfirm on the profiled synthetic search field", async () => {
   assert.equal(submit.action, "AXConfirm");
   assert.equal(submit.node.identifier, "search-input");
   assert.deepEqual(submit.node.path, [0, 0, 0]);
+});
+
+test("uses the profiled live search button through the shared submit selector", async () => {
+  const submit = findSearchSubmitAction(await fixture("live-search-results.json"));
+
+  assert.equal(submit.action, "AXPress");
+  assert.equal(submit.node.role, "AXButton");
+  assert.equal(submit.node.title, "搜索");
 });
 
 test("rejects a live profile as a synthetic search action", async () => {

@@ -9,6 +9,7 @@ protocol AccessibilityApplicationHandling {
     func setValue(path: [Int], value: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue
     func activate() throws -> JSONValue
     func replaceText(path: [Int], value: String, fingerprint: AXNodeFingerprint) throws -> JSONValue
+    func pressSkuOption(path: [Int], expectedLabel: String, fingerprint: AXNodeFingerprint) throws -> JSONValue
     func keyPress(keyCode: Int) throws -> JSONValue
     func captureCopiedText(path: [Int], action: String, fingerprint: AXNodeFingerprint?) throws -> JSONValue
     func runningProcessIdentifier() throws -> pid_t
@@ -22,6 +23,8 @@ final class AccessibilityApplication: AccessibilityApplicationHandling {
     private let nativeSearchTextInput: NativeSearchTextInput
     private let runningApplicationInfoProvider: () -> RunningApplicationInfo?
     private let searchTextFieldResolver: (([Int], AXNodeFingerprint) throws -> any SearchTextFieldEditing)?
+    private let skuOptionResolver: (([Int], AXNodeFingerprint) throws -> any AXElementReading)?
+    private let nativeActionPerformer: (any AXElementReading, String) -> AXError
     private let isProcessFrontmost: (pid_t) -> Bool
     private let diagnoseInfoProvider: (Bool) throws -> DiagnoseInfo
 
@@ -32,6 +35,8 @@ final class AccessibilityApplication: AccessibilityApplicationHandling {
         nativeSearchTextInput: NativeSearchTextInput = NativeSearchTextInput(poster: CGUnicodeTextPoster()),
         runningApplicationInfo: (() -> RunningApplicationInfo?)? = nil,
         searchTextFieldResolver: (([Int], AXNodeFingerprint) throws -> any SearchTextFieldEditing)? = nil,
+        skuOptionResolver: (([Int], AXNodeFingerprint) throws -> any AXElementReading)? = nil,
+        nativeActionPerformer: ((any AXElementReading, String) -> AXError)? = nil,
         isProcessFrontmost: @escaping (pid_t) -> Bool = {
             NSWorkspace.shared.frontmostApplication?.processIdentifier == $0
         },
@@ -57,6 +62,11 @@ final class AccessibilityApplication: AccessibilityApplicationHandling {
             )
         }
         self.searchTextFieldResolver = searchTextFieldResolver
+        self.skuOptionResolver = skuOptionResolver
+        self.nativeActionPerformer = nativeActionPerformer ?? { element, action in
+            guard let liveElement = element as? LiveAXElement else { return .invalidUIElement }
+            return AXUIElementPerformAction(liveElement.element, action as CFString)
+        }
         self.isProcessFrontmost = isProcessFrontmost
         self.diagnoseInfoProvider = diagnoseInfo ?? Self.makeDefaultDiagnoseInfoProvider(
             bundleIdentifier: expectedBundleIdentifier,
@@ -202,6 +212,32 @@ final class AccessibilityApplication: AccessibilityApplicationHandling {
         return .object(["typed": .boolean(true)])
     }
 
+    func pressSkuOption(
+        path: [Int],
+        expectedLabel: String,
+        fingerprint: AXNodeFingerprint
+    ) throws -> JSONValue {
+        _ = try SkuOptionPressGuard.validateRequest(
+            expectedLabel: expectedLabel,
+            fingerprint: fingerprint
+        )
+        let processIdentifier = try runningProcessIdentifier()
+        let element = try resolveSkuOption(path: path, fingerprint: fingerprint)
+        let evidence = try skuOptionEvidence(for: element)
+        _ = try SkuOptionPressGuard.validate(
+            evidence: evidence,
+            expectedLabel: expectedLabel,
+            fingerprint: fingerprint
+        )
+        guard isProcessFrontmost(processIdentifier) else {
+            throw HelperError(code: "APP_NOT_FRONTMOST", message: "Application is not frontmost.")
+        }
+
+        let result = nativeActionPerformer(element, kAXPressAction as String)
+        guard result == .success else { throw mappedActionError(result) }
+        return .object(["performed": .boolean(true)])
+    }
+
     func keyPress(keyCode: Int) throws -> JSONValue {
         let allowedKeyCodes: Set<Int> = [36, 121, 115]
         guard allowedKeyCodes.contains(keyCode), let virtualKey = CGKeyCode(exactly: keyCode) else {
@@ -309,6 +345,49 @@ final class AccessibilityApplication: AccessibilityApplicationHandling {
         return try resolve(path: path, fingerprint: fingerprint)
     }
 
+    private func resolveSkuOption(
+        path: [Int],
+        fingerprint: AXNodeFingerprint
+    ) throws -> any AXElementReading {
+        if let skuOptionResolver {
+            return try skuOptionResolver(path, fingerprint)
+        }
+        return try resolve(path: path, fingerprint: nil)
+    }
+
+    private func skuOptionEvidence(for element: any AXElementReading) throws -> SkuOptionPressEvidence {
+        SkuOptionPressEvidence(
+            role: try element.value(for: AXAttribute.role) as? String,
+            title: try element.value(for: AXAttribute.title) as? String,
+            identifier: try element.value(for: AXAttribute.identifier) as? String,
+            domClassList: try element.value(for: AXAttribute.domClassList) as? [String],
+            descendantTexts: try descendantTexts(of: element)
+        )
+    }
+
+    private func descendantTexts(of element: any AXElementReading) throws -> [String] {
+        var pending = try element.childElements()
+        var visited: [any AXElementReading] = [element]
+        var texts: [String] = []
+
+        while let current = pending.popLast() {
+            if visited.contains(where: { $0.isSameElement(as: current) }) { continue }
+            visited.append(current)
+            let candidates = [
+                try current.value(for: AXAttribute.value) as? String,
+                try current.value(for: AXAttribute.title) as? String,
+                try current.value(for: AXAttribute.description) as? String,
+            ]
+            if let text = candidates.compactMap({ $0 }).first(where: {
+                !SkuOptionPressGuard.normalizedLabel($0).isEmpty
+            }) {
+                texts.append(text)
+            }
+            pending.append(contentsOf: try current.childElements())
+        }
+        return texts
+    }
+
     private func supportedRunningApplicationInfo() throws -> RunningApplicationInfo {
         guard let application = runningApplicationInfoProvider() else {
             throw HelperError(code: "APP_NOT_RUNNING", message: "Application is not running.")
@@ -381,6 +460,22 @@ struct MacOSCommandHandler: CommandHandling {
                 throw invalidRequest()
             }
         }
+        if command.command == .pressSkuOption {
+            guard command.nodePath != nil,
+                  let value = command.value,
+                  let fingerprint = command.fingerprint else {
+                throw invalidRequest()
+            }
+            guard command.action == nil,
+                  command.keyCode == nil,
+                  command.destination == nil else {
+                throw invalidRequest()
+            }
+            _ = try SkuOptionPressGuard.validateRequest(
+                expectedLabel: value,
+                fingerprint: fingerprint
+            )
+        }
         let application = try applicationFactory(command.bundleId)
 
         switch command.command {
@@ -418,6 +513,17 @@ struct MacOSCommandHandler: CommandHandling {
             return try application.replaceText(
                 path: path,
                 value: value,
+                fingerprint: fingerprint
+            )
+        case .pressSkuOption:
+            guard let path = command.nodePath,
+                  let value = command.value,
+                  let fingerprint = command.fingerprint else {
+                throw invalidRequest()
+            }
+            return try application.pressSkuOption(
+                path: path,
+                expectedLabel: value,
                 fingerprint: fingerprint
             )
         case .keyPress:

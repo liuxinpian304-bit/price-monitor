@@ -1,7 +1,9 @@
 import {
+  collectorClaimInputSchema,
   collectorJobSchema,
   collectorReportSchema,
   collectorRunReleaseInputSchema,
+  type CollectorClaimInput,
   type CollectorJob,
   type CollectorReport,
   type CollectorRunReleaseInput
@@ -56,11 +58,6 @@ export class CollectorApiError extends Error {
     this.transient = input.transient;
   }
 }
-
-const claimInputSchema = z.object({
-  appVersion: z.string().trim().min(1),
-  capabilities: z.array(z.string().trim().min(1))
-}).strict();
 
 const progressSchema = z.object({
   discoveredCount: z.number().int().nonnegative().safe(),
@@ -160,9 +157,9 @@ export class CollectorApiClient {
     this.timeoutSignal = options.timeoutSignal ?? AbortSignal.timeout;
   }
 
-  async claim(input: { appVersion: string; capabilities: string[] }): Promise<CollectorJob | null> {
+  async claim(input: CollectorClaimInput): Promise<CollectorJob | null> {
     const route = "/api/collector-agent/jobs/claim";
-    const body = validatedInput(claimInputSchema, input, "POST", route);
+    const body = validatedInput(collectorClaimInputSchema, input, "POST", route);
     const { response, signal } = await this.request("POST", route, route, { json: body });
     if (response.status === 204) return null;
     if (response.status !== 200) throw statusError("POST", route, response.status);

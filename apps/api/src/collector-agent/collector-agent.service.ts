@@ -1,10 +1,10 @@
 import type {
+  CollectorClaimInput,
   CollectorJob,
   CollectorRunReleaseInput
 } from "../../../../packages/contracts/src/index.ts";
 
 import { createCollectorToken } from "./collector-token.ts";
-
 export interface CollectorAgentRepository {
   createAgent(input: {
     name: string;
@@ -15,7 +15,7 @@ export interface CollectorAgentRepository {
   authenticate(token: string): Promise<{ id: string; enabled: boolean } | null>;
   claimNext(
     agentId: string,
-    input: { appVersion: string; capabilities: string[] }
+    input: CollectorClaimInput
   ): Promise<CollectorJob | null>;
   heartbeat(
     agentId: string,
@@ -27,7 +27,8 @@ export interface CollectorAgentRepository {
     runId: string,
     status: "PAUSED_LOGIN" | "PAUSED_CHALLENGE",
     code: "LOGIN_REQUIRED" | "PLATFORM_CHALLENGE",
-    message: string
+    message: string,
+    observedAt: Date
   ): Promise<boolean>;
   release(agentId: string, runId: string, input: CollectorRunReleaseInput): Promise<boolean>;
   ownsRun(agentId: string, runId: string): Promise<boolean>;
@@ -47,11 +48,23 @@ export class CollectorAgentRunOwnershipError extends Error {
   }
 }
 
+export interface CollectorSessionIncidentNotificationTrigger {
+  notifyPending(agentId: string): Promise<void>;
+}
+
 export class CollectorAgentService {
   private readonly repository: CollectorAgentRepository;
+  private readonly sessionNotifier: CollectorSessionIncidentNotificationTrigger | null;
+  private readonly now: () => Date;
 
-  constructor(repository: CollectorAgentRepository) {
+  constructor(
+    repository: CollectorAgentRepository,
+    sessionNotifier: CollectorSessionIncidentNotificationTrigger | null = null,
+    now: () => Date = () => new Date()
+  ) {
     this.repository = repository;
+    this.sessionNotifier = sessionNotifier;
+    this.now = now;
   }
 
   async register(
@@ -69,10 +82,14 @@ export class CollectorAgentService {
 
   async claimNext(
     token: string,
-    input: { appVersion: string; capabilities: string[] }
+    input: CollectorClaimInput
   ): Promise<CollectorJob | null> {
     const agent = await this.authenticate(token);
-    return this.repository.claimNext(agent.id, input);
+    const job = await this.repository.claimNext(agent.id, input);
+    if (input.session.state === "LOGIN_REQUIRED" || input.session.state === "CHALLENGE_REQUIRED") {
+      await this.notifyBlockedSession(agent.id);
+    }
+    return job;
   }
 
   async heartbeat(
@@ -94,9 +111,11 @@ export class CollectorAgentService {
   ): Promise<void> {
     const agent = await this.authenticate(token);
     const status = code === "LOGIN_REQUIRED" ? "PAUSED_LOGIN" : "PAUSED_CHALLENGE";
-    if (!await this.repository.pause(agent.id, runId, status, code, message)) {
+    const observedAt = this.now();
+    if (!await this.repository.pause(agent.id, runId, status, code, message, observedAt)) {
       throw new CollectorAgentRunOwnershipError();
     }
+    await this.notifyBlockedSession(agent.id);
   }
 
   async release(
@@ -131,5 +150,13 @@ export class CollectorAgentService {
       throw new CollectorAgentAuthenticationError();
     }
     return agent;
+  }
+
+  private async notifyBlockedSession(agentId: string): Promise<void> {
+    try {
+      await this.sessionNotifier?.notifyPending(agentId);
+    } catch {
+      // The durable agent gate already stopped collection; notification is best effort.
+    }
   }
 }

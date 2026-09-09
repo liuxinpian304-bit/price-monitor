@@ -1,9 +1,12 @@
 import {
+  collectorSessionObservationSchema,
   collectorJobSchema,
   collectorReportSchema,
   type CollectorRunReleaseInput,
+  type CollectorClaimInput,
   type CollectorJob,
-  type CollectorReport
+  type CollectorReport,
+  type CollectorSessionObservation
 } from "@stau-price-monitor/contracts";
 
 import type { CollectorCheckpoint } from "../core/checkpoint-store.ts";
@@ -11,7 +14,7 @@ import { CollectionInterruptedError } from "../core/collection-runner.ts";
 import type { IngestionSummary } from "./collector-api-client.ts";
 
 export interface CollectorWorkerApi {
-  claim(input: { appVersion: string; capabilities: string[] }): Promise<CollectorJob | null>;
+  claim(input: CollectorClaimInput): Promise<CollectorJob | null>;
   heartbeat(
     runId: string,
     input: { discoveredCount: number; skuCount: number }
@@ -23,6 +26,11 @@ export interface CollectorWorkerApi {
   ): Promise<void>;
   release(runId: string, input?: CollectorRunReleaseInput): Promise<void>;
   uploadReport(runId: string, report: CollectorReport): Promise<IngestionSummary>;
+}
+
+export interface CollectorWorkerSessionObserver {
+  observe(): Promise<CollectorSessionObservation>;
+  close(): void;
 }
 
 export interface CollectorWorkerRunner {
@@ -66,6 +74,7 @@ export interface CollectorLogSummary {
 
 export interface CollectorWorkerOptions {
   api: CollectorWorkerApi;
+  sessionObserver: CollectorWorkerSessionObserver;
   checkpointStore: CollectorWorkerCheckpointStore;
   evidenceUploader: WorkerEvidenceUploader;
   runnerFactory: (runId: string) => CollectorWorkerRunner;
@@ -81,6 +90,7 @@ export class CollectorWorkerError extends Error {
   readonly code:
     | "ALREADY_RUNNING"
     | "INVALID_JOB"
+    | "INVALID_SESSION_OBSERVATION"
     | "INVALID_REPORT"
     | "RUNNER_INITIALIZATION_FAILED"
     | "COLLECTION_FAILED"
@@ -226,7 +236,7 @@ export type OnceResult = "idle" | "processed" | "paused" | "stopped";
 
 export class CollectorWorker {
   private readonly options: Required<Pick<CollectorWorkerOptions, "api" | "checkpointStore"
-    | "evidenceUploader" | "runnerFactory" | "appVersion" | "capabilities">>
+    | "evidenceUploader" | "runnerFactory" | "sessionObserver" | "appVersion" | "capabilities">>
     & Pick<CollectorWorkerOptions, "log">;
   private readonly scheduler: WorkerScheduler;
   private readonly monotonicNow: () => number;
@@ -234,6 +244,7 @@ export class CollectorWorker {
   private readonly stopController = new AbortController();
   private activeController: AbortController | null = null;
   private running = false;
+  private sessionObserverClosed = false;
 
   constructor(options: CollectorWorkerOptions) {
     this.options = options;
@@ -245,6 +256,14 @@ export class CollectorWorker {
   stop(): void {
     this.stopController.abort();
     this.activeController?.abort();
+    if (!this.sessionObserverClosed) {
+      this.sessionObserverClosed = true;
+      try {
+        this.options.sessionObserver.close();
+      } catch {
+        // Session-observer cleanup cannot expose helper or desktop details.
+      }
+    }
   }
 
   async once(): Promise<OnceResult> {
@@ -288,9 +307,14 @@ export class CollectorWorker {
 
   private async claim(): Promise<CollectorJob | null | "stopped"> {
     if (this.stopController.signal.aborted) return "stopped";
+    const inputSession = await this.options.sessionObserver.observe();
+    if (this.stopController.signal.aborted) return "stopped";
+    const session = collectorSessionObservationSchema.safeParse(inputSession);
+    if (!session.success) throw new CollectorWorkerError("INVALID_SESSION_OBSERVATION");
     const inputJob = await this.options.api.claim({
       appVersion: this.options.appVersion,
-      capabilities: [...this.options.capabilities]
+      capabilities: [...this.options.capabilities],
+      session: session.data
     });
     if (inputJob === null) return null;
     const parsedJob = collectorJobSchema.safeParse(inputJob);

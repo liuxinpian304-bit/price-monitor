@@ -1,4 +1,4 @@
-import { ExportOutlined, ReloadOutlined } from "@ant-design/icons";
+import { ExportOutlined } from "@ant-design/icons";
 import { Alert, Button, Descriptions, Modal, Result, Select, Space, Spin, Table, Tag, message } from "antd";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -8,8 +8,7 @@ import {
   collectionRunDetailReportPath,
   confirmCollectionRunNotification,
   fetchCollectionEvidence,
-  getCollectionRunNotificationPreview,
-  requeueCollectionRun
+  getCollectionRunNotificationPreview
 } from "../api/collection-runs.ts";
 import type {
   CollectionRunReportConfidence,
@@ -29,10 +28,48 @@ import { PriceBoardSection } from "../features/collection-runs/PriceBoardSection
 import { RunBusinessSummary } from "../features/collection-runs/RunBusinessSummary.tsx";
 import { formatDateTime } from "../features/operations/table-tools.ts";
 
-function pauseGuidance(status: string): string | null {
-  if (status === "PAUSED_LOGIN") return "请在已登记的 Mac 上打开淘宝桌面版，恢复登录后再重新入队。";
-  if (status === "PAUSED_CHALLENGE") return "请在已登记的 Mac 上按平台要求完成验证，确认回到搜索结果后再重新入队。";
-  return null;
+type CollectorSessionState = NonNullable<CollectionRunReportDetail["collector"]>["sessionState"];
+
+const collectorSessionLabels: Record<CollectorSessionState, string> = {
+  READY: "已就绪",
+  LOGIN_REQUIRED: "需要登录",
+  CHALLENGE_REQUIRED: "需要人工验证",
+  UNAVAILABLE: "不可用"
+};
+
+function collectorSessionColor(state: CollectorSessionState): "success" | "warning" | "error" | "default" {
+  if (state === "READY") return "success";
+  if (state === "LOGIN_REQUIRED") return "warning";
+  if (state === "CHALLENGE_REQUIRED") return "error";
+  return "default";
+}
+
+function pauseGuidance(status: string, state: CollectorSessionState): {
+  type: "info" | "warning" | "error";
+  title: string;
+  description: string;
+} | null {
+  if (status !== "PAUSED_LOGIN" && status !== "PAUSED_CHALLENGE") return null;
+  if (state === "READY") return {
+    type: "info",
+    title: "采集已暂停：会话已就绪",
+    description: "固定 Mac 会话已经恢复，系统确认后会自动续跑，无需重新入队。"
+  };
+  if (state === "LOGIN_REQUIRED") return {
+    type: "warning",
+    title: "采集已暂停：需要登录",
+    description: "只需在固定 Mac 上恢复一次淘宝登录，系统确认后会自动续跑，无需重新入队。"
+  };
+  if (state === "CHALLENGE_REQUIRED") return {
+    type: "error",
+    title: "采集已暂停：需要人工验证",
+    description: "请在固定 Mac 上按平台要求完成一次人工验证；系统确认后会自动续跑，无需重新入队。"
+  };
+  return {
+    type: "warning",
+    title: "采集已暂停：固定 Mac 不可用",
+    description: "请确认固定 Mac 上的淘宝桌面版已启动、屏幕已解锁且系统权限正常；恢复后系统会自动续跑。"
+  };
 }
 
 function priceText(value: number | null): string {
@@ -113,7 +150,6 @@ export function CollectionRunDetailPage() {
   const [positionPage, setPositionPage] = useState(1);
   const [issuePage, setIssuePage] = useState(1);
   const [skuPage, setSkuPage] = useState(1);
-  const [requeueing, setRequeueing] = useState(false);
   const [notificationPreviewOpen, setNotificationPreviewOpen] = useState(false);
   const [notificationPreview, setNotificationPreview] = useState<RunAlertNotificationPreview | null>(null);
   const [notificationPreviewLoading, setNotificationPreviewLoading] = useState(false);
@@ -144,26 +180,14 @@ export function CollectionRunDetailPage() {
     </>;
   }
 
-  const guidance = pauseGuidance(report.status);
+  const sessionState = report.collector?.sessionState ?? "UNAVAILABLE";
+  const guidance = pauseGuidance(report.status, sessionState);
   const changeFilter = <K extends keyof CollectionRunReportFilters>(
     key: K,
     value: CollectionRunReportFilters[K] | undefined
   ) => {
     setSkuPage(1);
     setFilters((current) => replaceFilter(current, key, value));
-  };
-
-  const requeue = async () => {
-    setRequeueing(true);
-    try {
-      await requeueCollectionRun(report.id);
-      await refresh();
-      messageApi.success("运行已重新入队，等待已登记采集器领取。");
-    } catch (requeueError) {
-      messageApi.error(requeueError instanceof Error ? requeueError.message : "重新入队失败");
-    } finally {
-      setRequeueing(false);
-    }
   };
 
   const loadNotificationPreview = async (): Promise<void> => {
@@ -297,11 +321,10 @@ export function CollectionRunDetailPage() {
     {error ? <Alert className="data-warning" type="warning" showIcon title="采集报告刷新失败，当前显示上次成功数据。" description={error} /> : null}
     {guidance ? <Alert
       className="data-warning"
-      type="warning"
+      type={guidance.type}
       showIcon
-      title={report.status === "PAUSED_LOGIN" ? "采集已因登录暂停" : "采集已因平台验证暂停"}
-      description={guidance}
-      action={<Button type="primary" icon={<ReloadOutlined />} loading={requeueing} onClick={() => void requeue()}>重新入队</Button>}
+      title={guidance.title}
+      description={guidance.description}
     /> : null}
 
     <section className="panel run-overview">
@@ -320,6 +343,12 @@ export function CollectionRunDetailPage() {
         <Descriptions.Item label="匹配 / 失败">{report.completion.matchedCount} / {report.completion.failedCount}</Descriptions.Item>
         <Descriptions.Item label="通知"><Tag>{report.notification.state}</Tag> {report.notification.attempts} 次</Descriptions.Item>
         <Descriptions.Item label="采集器">{report.collector ? `${report.collector.name} · ${report.collector.appVersion ?? "版本未知"}` : "未分配"}</Descriptions.Item>
+        <Descriptions.Item label="会话状态">
+          <Tag color={collectorSessionColor(sessionState)}>采集会话：{collectorSessionLabels[sessionState]}</Tag>
+        </Descriptions.Item>
+        <Descriptions.Item label="会话观测">
+          {report.collector?.sessionObservedAt ? formatDateTime(report.collector.sessionObservedAt) : "--"}
+        </Descriptions.Item>
         <Descriptions.Item label="计划时间">{formatDateTime(report.scheduledFor)}</Descriptions.Item>
         <Descriptions.Item label="开始 / 结束">{report.startedAt ? formatDateTime(report.startedAt) : "--"} / {report.finishedAt ? formatDateTime(report.finishedAt) : "--"}</Descriptions.Item>
         <Descriptions.Item label="未完成">{report.completion.incompleteCount} 项</Descriptions.Item>

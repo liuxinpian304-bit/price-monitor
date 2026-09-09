@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "playwright/test";
+import type { CollectionRunReportDetail } from "../../apps/web/src/api/types.ts";
 
 const adminToken = "fixture-admin-token";
 const runId = "run-fixture-001";
@@ -22,7 +23,10 @@ const summary = {
     id: "agent-fixture-001",
     name: "registered-mac-fixture",
     platform: "MACOS",
-    appVersion: "0.0.0-fixture"
+    appVersion: "0.0.0-fixture",
+    sessionState: "READY",
+    sessionObservedAt: capturedAt,
+    sessionChangedAt: capturedAt
   },
   completion: {
     positionsCaptured: 47,
@@ -87,6 +91,23 @@ const detailFixture = {
     capturedAt
   }],
   filters: {},
+  businessSummary: {
+    distinctShopCount: 1,
+    distinctItemCount: 1,
+    skuCount: 2,
+    matchedSkuCount: 1,
+    confirmedLowCount: 1,
+    missingCombinationCount: 0,
+    reviewCount: 0,
+    excludedCount: 0,
+    ownConfiguredListingCount: 1,
+    ownCollectedListingCount: 1,
+    ownCatalogComplete: true
+  },
+  priceBoard: { shops: [] },
+  confirmedLows: [],
+  missingOwnGroups: [],
+  reviewRows: [],
   totalSkuCount: 2,
   pagination: {
     positions: pageMeta(1),
@@ -104,6 +125,11 @@ const detailFixture = {
       skuText: "标准版",
       url: "https://example.invalid/items/fixture-own-item",
       ranks: [1],
+      positions: [],
+      attributes: {},
+      components: null,
+      promotions: [],
+      gifts: [],
       prices: {
         listPriceFen: 69_800,
         activityPriceFen: 69_800,
@@ -123,6 +149,10 @@ const detailFixture = {
         confidenceBps: 10_000,
         reasons: ["fixture 型号一致"]
       },
+      combination: { state: "OWN", signature: "fixture-standard", label: "标准版", reasons: [] },
+      selectedOwnSnapshot: null,
+      alternativeOwnSnapshots: [],
+      differenceFen: null,
       comparison: { state: "OWN", ownPayableFen: 69_800, differenceFen: null },
       evidenceSha256: "a".repeat(64),
       capturedAt
@@ -137,6 +167,11 @@ const detailFixture = {
       skuText: "标准版",
       url: "https://example.invalid/items/fixture-item-001",
       ranks: [1],
+      positions: [],
+      attributes: {},
+      components: null,
+      promotions: [],
+      gifts: [],
       prices: {
         listPriceFen: 69_799,
         activityPriceFen: 69_799,
@@ -156,12 +191,16 @@ const detailFixture = {
         confidenceBps: 10_000,
         reasons: ["fixture 型号一致"]
       },
+      combination: { state: "MATCHED", signature: "fixture-standard", label: "标准版", reasons: [] },
+      selectedOwnSnapshot: null,
+      alternativeOwnSnapshots: [],
+      differenceFen: 1,
       comparison: { state: "LOWER", ownPayableFen: 69_800, differenceFen: 1 },
       evidenceSha256: null,
       capturedAt
     }
   ]
-};
+} satisfies CollectionRunReportDetail;
 
 async function expectContainedHorizontalScroll(wrapper: Locator): Promise<void> {
   await expect(wrapper).toBeVisible();

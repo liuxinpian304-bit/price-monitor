@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { CollectorJob, CollectorReport } from "@stau-price-monitor/contracts";
+import type {
+  CollectorClaimInput,
+  CollectorJob,
+  CollectorReport,
+  CollectorSessionObservation
+} from "@stau-price-monitor/contracts";
 
 import { CollectionInterruptedError } from "../core/collection-runner.ts";
 import {
@@ -93,6 +98,7 @@ function report(status: CollectorReport["status"] = "SUCCEEDED"): CollectorRepor
 class FakeApi implements CollectorWorkerApi {
   claims: Array<CollectorJob | null> = [job];
   claimCalls = 0;
+  claimInputs: CollectorClaimInput[] = [];
   heartbeatCalls = 0;
   lastHeartbeat: { runId: string; input: { discoveredCount: number; skuCount: number } } | null = null;
   pauseCalls: Array<{ runId: string; code: string; message: string }> = [];
@@ -102,8 +108,9 @@ class FakeApi implements CollectorWorkerApi {
   reportStatuses: CollectorReport["status"][] = [];
   reportFailure: Error | null = null;
 
-  async claim() {
+  async claim(input: CollectorClaimInput) {
     this.claimCalls += 1;
+    this.claimInputs.push(input);
     return this.claims.shift() ?? null;
   }
 
@@ -138,6 +145,24 @@ class FakeApi implements CollectorWorkerApi {
       ownSnapshotIds: inputReport.status === "SUCCEEDED" ? ["own-snapshot-1"] : [],
       competitorSnapshotIds: []
     };
+  }
+}
+
+class FakeSessionObserver {
+  observation: CollectorSessionObservation = {
+    state: "READY",
+    observedAt: "2026-09-09T01:30:00.000Z"
+  };
+  observeCalls = 0;
+  closeCalls = 0;
+
+  async observe(): Promise<CollectorSessionObservation> {
+    this.observeCalls += 1;
+    return this.observation;
+  }
+
+  close(): void {
+    this.closeCalls += 1;
   }
 }
 
@@ -231,14 +256,17 @@ function createWorker(overrides: {
   monotonicNow?: () => number;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   log?: (summary: Parameters<NonNullable<CollectorWorkerOptions["log"]>>[0]) => void;
+  sessionObserver?: FakeSessionObserver;
 } = {}) {
   const api = overrides.api ?? new FakeApi();
   const store = overrides.store ?? new FakeStore();
   const uploader = overrides.uploader ?? new FakeUploader();
   const scheduler = overrides.scheduler ?? new ManualScheduler();
+  const sessionObserver = overrides.sessionObserver ?? new FakeSessionObserver();
   const runner = overrides.runner ?? { run: async () => report() };
   const options: CollectorWorkerOptions = {
     api,
+    sessionObserver,
     checkpointStore: store,
     evidenceUploader: uploader,
     runnerFactory: () => runner,
@@ -250,7 +278,7 @@ function createWorker(overrides: {
   };
   if (overrides.monotonicNow) options.monotonicNow = overrides.monotonicNow;
   const worker = new CollectorWorker(options);
-  return { worker, api, store, uploader, scheduler };
+  return { worker, api, store, uploader, scheduler, sessionObserver };
 }
 
 test("once claims one job, runs it, uploads one validated report, and exits", async () => {
@@ -268,11 +296,67 @@ test("once claims one job, runs it, uploads one validated report, and exits", as
 
   assert.equal(await worker.once(), "processed");
   assert.equal(api.claimCalls, 1);
+  assert.deepEqual(api.claimInputs, [{
+    appVersion: "2.4.5",
+    capabilities: ["accessibility", "png-evidence"],
+    session: { state: "READY", observedAt: "2026-09-09T01:30:00.000Z" }
+  }]);
   assert.equal(runnerCalls, 1);
   assert.equal(uploader.uploadCalls, 1);
   assert.equal(api.reportCalls, 1);
   assert.equal(store.removeCalls, 1);
   assert.equal(uploader.clearCalls, 1);
+});
+
+test("observes a blocked Taobao session before claiming and never creates a runner", async () => {
+  const events: string[] = [];
+  const api = new FakeApi();
+  api.claims = [null];
+  api.claim = async (input) => {
+    events.push("claim");
+    api.claimCalls += 1;
+    api.claimInputs.push(input);
+    return null;
+  };
+  const sessionObserver = new FakeSessionObserver();
+  sessionObserver.observation = {
+    state: "LOGIN_REQUIRED",
+    observedAt: "2026-09-09T01:31:00.000Z"
+  };
+  sessionObserver.observe = async () => {
+    events.push("observe");
+    sessionObserver.observeCalls += 1;
+    return sessionObserver.observation;
+  };
+  let runnerCalls = 0;
+  const { worker } = createWorker({
+    api,
+    sessionObserver,
+    runner: {
+      async run() {
+        runnerCalls += 1;
+        return report();
+      }
+    }
+  });
+
+  assert.equal(await worker.once(), "idle");
+  assert.deepEqual(events, ["observe", "claim"]);
+  assert.deepEqual(api.claimInputs, [{
+    appVersion: "2.4.5",
+    capabilities: ["accessibility", "png-evidence"],
+    session: sessionObserver.observation
+  }]);
+  assert.equal(runnerCalls, 0);
+});
+
+test("stop closes the long-lived session observer exactly once", () => {
+  const { worker, sessionObserver } = createWorker();
+
+  worker.stop();
+  worker.stop();
+
+  assert.equal(sessionObserver.closeCalls, 1);
 });
 
 test("worker waits exactly 30 seconds after a 204-equivalent empty claim", async () => {
@@ -729,6 +813,7 @@ test("a runner-factory failure cannot leave a heartbeat timer behind", async () 
   const scheduler = new ManualScheduler();
   const worker = new CollectorWorker({
     api,
+    sessionObserver: new FakeSessionObserver(),
     checkpointStore: store,
     evidenceUploader: uploader,
     runnerFactory: () => { throw new Error("factory failed"); },

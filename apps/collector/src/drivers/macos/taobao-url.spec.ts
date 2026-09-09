@@ -6,6 +6,7 @@ import { isSupportedLiveShopUrl } from "./taobao-url.ts";
 test("recognizes only strict Taobao and Tmall shop host segments", () => {
   for (const url of [
     "https://shop.taobao.com/shop/view_shop.htm?user_number_id=fictional-a",
+    "https://shop295973379.taobao.com/category.htm",
     "https://shop.m.taobao.com/shop/shop_index.htm?shop_id=fictional-b",
     "https://store.tmall.com/",
     "http://seller.taobao.com/"
@@ -19,6 +20,7 @@ test("recognizes only strict Taobao and Tmall shop host segments", () => {
     "ftp://shop.taobao.com/shop/view_shop.htm",
     "https://shop.example.com/",
     "https://shopping.taobao.com/",
+    "https://shop295973379x.taobao.com/category.htm",
     "https://taobao.com.example.net/shop",
     "https://detail.tmall.com/item.htm?id=example-x1-a",
     "https://item.taobao.com/item.htm?id=example-x1-a"

@@ -10,7 +10,7 @@ import {
   type DriverSearchPosition
 } from "../../core/desktop-driver.ts";
 import type { AxHelperCommandFields, AxHelperCommandName, AxHelperDiagnosticPayload } from "./ax-helper-client.ts";
-import type { AxJsonValue, AxNode } from "./ax-node.ts";
+import { fingerprintFor, type AxJsonValue, type AxNode } from "./ax-node.ts";
 import {
   AppVersionUnsupportedError,
   MissingItemIdError,
@@ -63,6 +63,14 @@ class FakeClient implements TaobaoAxClient {
     const next = this.snapshotQueue.shift() ?? this.snapshotQueue.at(-1);
     if (!next) throw new Error("Fake snapshot queue is empty");
     return structuredClone(next);
+  }
+
+  async pressSkuOption(node: AxNode, expectedLabel: string): Promise<void> {
+    await this.command("pressSkuOption", {
+      nodePath: node.path,
+      value: expectedLabel,
+      fingerprint: fingerprintFor(node)
+    });
   }
 
   async command<T = AxJsonValue>(command: AxHelperCommandName, fields: AxHelperCommandFields = {}): Promise<T> {
@@ -170,6 +178,16 @@ test("rejects every version/build mismatch before any UI mutation", async () => 
     return true;
   });
   assert.deepEqual(client.commands, []);
+});
+
+test("diagnose reports the desktop login screen as logged out", async () => {
+  const client = new FakeClient();
+  client.snapshotQueue.push(await fixture("login-required.json"));
+
+  const diagnostic = await new TaobaoMacDriver({ client }).diagnose();
+
+  assert.equal(diagnostic.loginState, "LOGGED_OUT");
+  assert.deepEqual(client.commands.map(({ command }) => command), ["activate"]);
 });
 
 test("gates app presence and permissions before version without UI mutation", async () => {

@@ -3,6 +3,41 @@ import XCTest
 @testable import TaobaoAX
 
 final class AXNodeTests: XCTestCase {
+    func testSerializerSerializesSanitizedDOMClassList() throws {
+        let root = TestAXElement(attributes: [
+            AXAttribute.role: "AXGroup",
+            AXAttribute.domClassList: [
+                "valueItem--fixture",
+                "isSelected--fixture",
+                "valueItem--fixture",
+                "",
+                "token--fixture",
+            ],
+        ])
+
+        let node = try AXTreeSerializer().serialize(root: root, scope: .focusedWindow).node
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(node)) as? [String: Any]
+        )
+
+        XCTAssertEqual(node.domClassList, ["isSelected--fixture", "valueItem--fixture"])
+        XCTAssertEqual(object["domClassList"] as? [String], ["isSelected--fixture", "valueItem--fixture"])
+        XCTAssertEqual(Set(object.keys), Set([
+            "path", "role", "subrole", "identifier", "title", "description", "value", "url",
+            "enabled", "selected", "position", "size", "actions", "children", "domClassList",
+        ]))
+        XCTAssertEqual(Set(root.requestedAttributes), Set(AXAttribute.allowed))
+        XCTAssertFalse(root.requestedAttributes.contains("AXArbitraryAttribute"))
+    }
+
+    func testSerializerOmitsMalformedOrUnsafeDOMClassLists() throws {
+        let malformed = TestAXElement(attributes: [AXAttribute.domClassList: "valueItem--fixture"])
+        let unsafe = TestAXElement(attributes: [AXAttribute.domClassList: ["", "cookie--fixture"]])
+
+        XCTAssertNil(try AXTreeSerializer().serialize(root: malformed, scope: .focusedWindow).node.domClassList)
+        XCTAssertNil(try AXTreeSerializer().serialize(root: unsafe, scope: .focusedWindow).node.domClassList)
+    }
+
     func testNodeEncodesOnlyTheSemanticAllowlist() throws {
         let node = AXNode(
             path: [0, 2],

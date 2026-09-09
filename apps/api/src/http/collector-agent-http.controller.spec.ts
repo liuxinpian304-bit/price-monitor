@@ -8,7 +8,10 @@ import { NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import type { Request, Response } from "express";
 
-import type { CollectorReport } from "../../../../packages/contracts/src/index.ts";
+import type {
+  CollectorClaimInput,
+  CollectorReport
+} from "../../../../packages/contracts/src/index.ts";
 import { ROLES_METADATA_KEY } from "../auth/roles.guard.ts";
 import {
   EvidenceStorePayloadTooLargeError,
@@ -60,6 +63,12 @@ const claimedJob = {
     excludedTerms: []
   }
 } as const;
+
+const readyClaimInput: CollectorClaimInput = {
+  appVersion: "2.4.5",
+  capabilities: ["accessibility"],
+  session: { state: "READY", observedAt: "2026-09-09T01:30:00.000Z" }
+};
 
 function reportFixture(): CollectorReport {
   return {
@@ -123,6 +132,7 @@ class FakeCollectorAgentService {
   authenticationCalls = 0;
   registrationCalls = 0;
   claimCalls = 0;
+  claimInputs: CollectorClaimInput[] = [];
   heartbeatCalls = 0;
   pauseCalls = 0;
   releaseCalls = 0;
@@ -138,8 +148,9 @@ class FakeCollectorAgentService {
     if (this.invalidToken || this.disabledToken) throw new CollectorAgentAuthenticationError();
   }
 
-  async claimNext(_token: string, _input: { appVersion: string; capabilities: string[] }) {
+  async claimNext(_token: string, input: CollectorClaimInput) {
     this.claimCalls += 1;
+    this.claimInputs.push(input);
     if (this.invalidToken || this.disabledToken) throw new CollectorAgentAuthenticationError();
     return this.claimResult;
   }
@@ -644,14 +655,15 @@ test("claim returns a job with 200 and uses 204 when no job exists", async () =>
   const foundResponse = response();
 
   assert.equal(
-    (await controller.claim({ appVersion: "2.4.5", capabilities: ["accessibility"] }, authenticated, foundResponse))?.runId,
+    (await controller.claim(readyClaimInput, authenticated, foundResponse))?.runId,
     "run-1"
   );
   assert.equal(foundResponse.statusCode, 200);
+  assert.deepEqual(service.claimInputs, [readyClaimInput]);
 
   service.claimResult = null;
   const emptyResponse = response();
-  assert.equal(await controller.claim({ appVersion: "2.4.5", capabilities: [] }, authenticated, emptyResponse), undefined);
+  assert.equal(await controller.claim({ ...readyClaimInput, capabilities: [] }, authenticated, emptyResponse), undefined);
   assert.equal(emptyResponse.statusCode, 204);
 });
 
@@ -678,14 +690,21 @@ test("wrong run ownership maps to 409", async () => {
   );
 });
 
-test("invalid progress and pause bodies return 422 without invoking the service", async () => {
+test("invalid claim, progress, and pause bodies return 422 without invoking the service", async () => {
   const { controller, service } = createController();
   const authenticated = request({ authorization: "Bearer pmc_test" });
 
-  await assert.rejects(
-    () => controller.claim({ appVersion: "", capabilities: "invalid" }, authenticated, response()),
-    (error) => statusOf(error) === 422
-  );
+  for (const invalidClaim of [
+    { appVersion: "", capabilities: "invalid" },
+    { appVersion: "2.4.5", capabilities: [] },
+    { ...readyClaimInput, session: { ...readyClaimInput.session, state: "LOGGED_OUT" } },
+    { ...readyClaimInput, session: { ...readyClaimInput.session, unsafeExtra: true } }
+  ]) {
+    await assert.rejects(
+      () => controller.claim(invalidClaim, authenticated, response()),
+      (error) => statusOf(error) === 422
+    );
+  }
   await assert.rejects(
     () => controller.heartbeat("run-1", { discoveredCount: -1, skuCount: 2 }, authenticated),
     (error) => statusOf(error) === 422

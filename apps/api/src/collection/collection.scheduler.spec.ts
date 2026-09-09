@@ -13,7 +13,7 @@ class FakeScheduleQueue {
   async listScheduleIds() { return this.existing; }
 }
 
-test("scheduler registers the twelve slots only for enabled desktop collection", async () => {
+test("scheduler preserves configured custom slots only for enabled desktop collection", async () => {
   const queue = new FakeScheduleQueue();
   const desktop = new CollectionScheduler(queue, async () => ({
     enabled: true,

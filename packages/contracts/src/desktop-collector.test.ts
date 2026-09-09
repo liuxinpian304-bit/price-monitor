@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   SKU_COMPONENT_ROLES,
+  collectorClaimInputSchema,
   collectorJobSchema,
-  collectorReportSchema
+  collectorReportSchema,
+  collectorSessionStateSchema
 } from "./desktop-collector.ts";
 
 const job = {
@@ -29,6 +31,30 @@ const job = {
 } as const;
 
 const capturedAt = "2026-08-24T01:30:00.000Z";
+
+test("accepts the fixed collector session claim contract", () => {
+  assert.deepEqual(collectorClaimInputSchema.parse({
+    appVersion: "2.4.5",
+    capabilities: ["accessibility", "all-sku", "png-evidence"],
+    session: { state: "READY", observedAt: "2026-09-09T01:30:00.000Z" }
+  }), {
+    appVersion: "2.4.5",
+    capabilities: ["accessibility", "all-sku", "png-evidence"],
+    session: { state: "READY", observedAt: "2026-09-09T01:30:00.000Z" }
+  });
+
+  for (const state of ["READY", "LOGIN_REQUIRED", "CHALLENGE_REQUIRED", "UNAVAILABLE"]) {
+    assert.equal(collectorSessionStateSchema.parse(state), state);
+  }
+});
+
+test("rejects session states outside the collector claim contract", () => {
+  assert.equal(collectorClaimInputSchema.safeParse({
+    appVersion: "2.4.5",
+    capabilities: [],
+    session: { state: "LOGGED_OUT", observedAt: "2026-09-09T01:30:00.000Z" }
+  }).success, false);
+});
 
 function sku(itemId: string, skuId: string) {
   return {

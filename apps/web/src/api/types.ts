@@ -185,6 +185,9 @@ export interface CollectionRunReportSummary {
     name: string;
     platform: "MACOS" | "WINDOWS";
     appVersion: string | null;
+    sessionState: "READY" | "LOGIN_REQUIRED" | "CHALLENGE_REQUIRED" | "UNAVAILABLE";
+    sessionObservedAt: string | null;
+    sessionChangedAt: string | null;
   } | null;
   completion: CollectionRunCompletion;
   notification: {

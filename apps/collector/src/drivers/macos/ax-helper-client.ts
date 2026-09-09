@@ -1,10 +1,11 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import { DriverIssueError, UiContractChangedError } from "../../core/desktop-driver.ts";
-import type { AxJsonValue, AxNode, AxNodeFingerprint } from "./ax-node.ts";
+import { fingerprintFor, type AxJsonValue, type AxNode, type AxNodeFingerprint } from "./ax-node.ts";
 
 export const AX_HELPER_TIMEOUT_MS = 15_000;
 export const TAOBAO_BUNDLE_ID = "com.taobao.pcdesktop";
@@ -16,6 +17,7 @@ export type AxHelperCommandName =
   | "perform"
   | "setValue"
   | "replaceText"
+  | "pressSkuOption"
   | "keyPress"
   | "captureCopiedText"
   | "screenshot";
@@ -59,7 +61,7 @@ export interface AxHelperProcess {
   once(event: "error", listener: (error: Error) => void): this;
 }
 
-export type AxHelperSpawn = (path: string) => AxHelperProcess;
+export type AxHelperSpawn = (path: string, environment: NodeJS.ProcessEnv) => AxHelperProcess;
 
 interface AxHelperResponse {
   id: string;
@@ -90,6 +92,7 @@ export class AxHelperResponseError extends Error {
 
 export interface AxHelperClientOptions {
   helperPath?: string;
+  evidenceRoot?: string;
   timeoutMs?: number;
   spawn?: AxHelperSpawn;
   onDiagnostic?: (message: string) => void;
@@ -101,8 +104,8 @@ export function defaultAxHelperPath(): string {
   return fileURLToPath(new URL("../../../../collector-macos/.build/debug/taobao-ax-helper", import.meta.url));
 }
 
-function defaultSpawn(path: string): AxHelperProcess {
-  return nodeSpawn(path, [], { stdio: ["pipe", "pipe", "pipe"] });
+function defaultSpawn(path: string, environment: NodeJS.ProcessEnv): AxHelperProcess {
+  return nodeSpawn(path, [], { stdio: ["pipe", "pipe", "pipe"], env: environment });
 }
 
 function sanitizeCode(code: string): string {
@@ -147,8 +150,45 @@ function isResponse(value: unknown): value is AxHelperResponse {
   return typeof response.id === "string" && typeof response.ok === "boolean";
 }
 
+function normalizeSnapshotNode(value: unknown): AxNode {
+  if (typeof value !== "object" || value === null) {
+    throw new UiContractChangedError("Taobao Accessibility helper emitted an invalid snapshot.");
+  }
+  const node = value as AxNode;
+  if (!Array.isArray(node.children)) {
+    throw new UiContractChangedError("Taobao Accessibility helper emitted an invalid snapshot.");
+  }
+  return {
+    ...node,
+    role: node.role ?? null,
+    subrole: node.subrole ?? null,
+    identifier: node.identifier ?? null,
+    title: node.title ?? null,
+    description: node.description ?? null,
+    value: node.value ?? null,
+    url: node.url ?? null,
+    enabled: node.enabled ?? null,
+    selected: node.selected ?? null,
+    position: node.position ?? null,
+    size: node.size ?? null,
+    children: node.children.map(normalizeSnapshotNode)
+  };
+}
+
+function skuFingerprintFor(node: AxNode): AxNodeFingerprint {
+  const fingerprint = fingerprintFor(node);
+  const domClassList = fingerprint.domClassList;
+  const valueItemClassCount = domClassList?.filter((className) => className.startsWith("valueItem--")).length;
+  const hasDuplicateClass = domClassList !== undefined && new Set(domClassList).size !== domClassList.length;
+  if (fingerprint.role !== "AXGroup" || hasDuplicateClass || valueItemClassCount !== 1) {
+    throw new UiContractChangedError("Taobao Accessibility node lacks a strong SKU option fingerprint.");
+  }
+  return fingerprint;
+}
+
 export class AxHelperClient {
   private readonly helperPath: string;
+  private readonly helperEnvironment: NodeJS.ProcessEnv;
   private readonly timeoutMs: number;
   private readonly spawnHelper: AxHelperSpawn;
   private readonly onDiagnostic: (message: string) => void;
@@ -159,6 +199,10 @@ export class AxHelperClient {
 
   constructor(options: AxHelperClientOptions = {}) {
     this.helperPath = options.helperPath ?? defaultAxHelperPath();
+    const evidenceRoot = options.evidenceRoot ?? process.env.COLLECTOR_WORK_DIR;
+    this.helperEnvironment = evidenceRoot === undefined
+      ? process.env
+      : { ...process.env, COLLECTOR_WORK_DIR: resolve(evidenceRoot) };
     this.timeoutMs = options.timeoutMs ?? AX_HELPER_TIMEOUT_MS;
     this.spawnHelper = options.spawn ?? defaultSpawn;
     this.onDiagnostic = options.onDiagnostic ?? (() => undefined);
@@ -189,7 +233,24 @@ export class AxHelperClient {
   }
 
   async snapshot(): Promise<AxNode> {
-    return await this.command<AxNode>("snapshot");
+    return normalizeSnapshotNode(await this.command<AxNode>("snapshot"));
+  }
+
+  async pressSkuOption(node: AxNode, expectedLabel: string): Promise<void> {
+    const payload = await this.command("pressSkuOption", {
+      nodePath: node.path,
+      value: expectedLabel,
+      fingerprint: skuFingerprintFor(node)
+    });
+    if (
+      typeof payload !== "object"
+      || payload === null
+      || Array.isArray(payload)
+      || Object.keys(payload).length !== 1
+      || payload.performed !== true
+    ) {
+      throw new UiContractChangedError("Taobao Accessibility helper emitted an invalid SKU press acknowledgement.");
+    }
   }
 
   close(): void {
@@ -223,7 +284,7 @@ export class AxHelperClient {
 
   private ensureProcess(): AxHelperProcess {
     if (this.process) return this.process;
-    const process = this.spawnHelper(this.helperPath);
+    const process = this.spawnHelper(this.helperPath, this.helperEnvironment);
     this.process = process;
     this.stdoutBuffer = "";
     process.stdout.setEncoding("utf8");

@@ -15,9 +15,10 @@ enum AXAttribute {
     static let selected = "AXSelected"
     static let position = "AXPosition"
     static let size = "AXSize"
+    static let domClassList = "AXDOMClassList"
 
     static let allowed = [
-        role, subrole, identifier, title, description, value, url, enabled, selected, position, size,
+        role, subrole, identifier, title, description, value, url, enabled, selected, position, size, domClassList,
     ]
 }
 
@@ -259,13 +260,22 @@ struct AXTreeSerializer {
             actions: try element.actionNames()
                 .compactMap { AXAttributeSanitizer.text(attribute: "AXActions", value: $0) }
                 .sorted(),
-            children: children
+            children: children,
+            domClassList: safeDOMClassList(attributes[AXAttribute.domClassList])
         )
     }
 
     private func safeString(_ value: Any?, attribute: String) -> String? {
         guard let value = value as? String else { return nil }
         return AXAttributeSanitizer.text(attribute: attribute, value: value)
+    }
+
+    private func safeDOMClassList(_ value: Any?) -> [String]? {
+        guard let values = value as? [String] else { return nil }
+        let safeValues = Set(values.compactMap {
+            AXAttributeSanitizer.text(attribute: AXAttribute.domClassList, value: $0)
+        }.filter { !$0.isEmpty })
+        return safeValues.isEmpty ? nil : safeValues.sorted()
     }
 
     private func safeURL(_ value: Any?) -> String? {

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { CollectorJob } from "../../../../packages/contracts/src/index.ts";
+import type {
+  CollectorClaimInput,
+  CollectorJob
+} from "../../../../packages/contracts/src/index.ts";
 
 import {
   CollectorAgentAuthenticationError,
@@ -56,10 +59,17 @@ const modelJob = {
   }
 } satisfies CollectorJob;
 
+const readyClaimInput: CollectorClaimInput = {
+  appVersion: "2.4.5",
+  capabilities: ["accessibility"],
+  session: { state: "READY", observedAt: "2026-09-09T01:30:00.000Z" }
+};
+
 class InMemoryCollectorAgentRepository implements CollectorAgentRepository {
   readonly agents: AgentRecord[] = [];
   readonly runs: RunRecord[] = [];
   lastRegistrationActorId: string | null = null;
+  readonly claimInputs: Array<{ agentId: string; input: CollectorClaimInput }> = [];
   private nextAgentId = 1;
 
   addAgent(input: Omit<AgentRecord, "id"> & { id?: string }): AgentRecord {
@@ -111,8 +121,9 @@ class InMemoryCollectorAgentRepository implements CollectorAgentRepository {
 
   async claimNext(
     agentId: string,
-    _input: { appVersion: string; capabilities: string[] }
+    input: CollectorClaimInput
   ): Promise<CollectorJob | null> {
+    this.claimInputs.push({ agentId, input });
     const run = this.runs
       .filter((entry) => entry.status === "QUEUED"
         && (entry.collectorAgentId === null || entry.collectorAgentId === agentId))
@@ -176,6 +187,16 @@ class InMemoryCollectorAgentRepository implements CollectorAgentRepository {
   }
 }
 
+class RecordingSessionNotifier {
+  readonly agentIds: string[] = [];
+  failure: Error | null = null;
+
+  async notifyPending(agentId: string): Promise<void> {
+    this.agentIds.push(agentId);
+    if (this.failure) throw this.failure;
+  }
+}
+
 async function registerAgent(
   service: CollectorAgentService,
   name: string,
@@ -207,7 +228,7 @@ test("disabled agents cannot claim jobs", async () => {
   repository.addRun({ id: "run-disabled" });
 
   await assert.rejects(
-    () => service.claimNext(registered.token, { appVersion: "2.4.5", capabilities: ["macos"] }),
+    () => service.claimNext(registered.token, { ...readyClaimInput, capabilities: ["macos"] }),
     CollectorAgentAuthenticationError
   );
   assert.equal(repository.runs[0]!.status, "QUEUED");
@@ -239,8 +260,8 @@ test("concurrent agents cannot claim the same run", async () => {
   repository.addRun({ id: "oldest-run", scheduledFor: 1 });
 
   const claims = await Promise.all([
-    service.claimNext(first.token, { appVersion: "2.4.5", capabilities: ["accessibility"] }),
-    service.claimNext(second.token, { appVersion: "2.4.5", capabilities: ["accessibility"] })
+    service.claimNext(first.token, readyClaimInput),
+    service.claimNext(second.token, readyClaimInput)
   ]);
 
   assert.equal(claims.filter(Boolean).length, 1);
@@ -253,16 +274,61 @@ test("claimed jobs contain the model rule and every active own listing", async (
   const registered = await registerAgent(service, "mac-job-shape");
   repository.addRun({ id: "run-job-shape" });
 
-  const job = await service.claimNext(registered.token, {
-    appVersion: "2.4.5",
-    capabilities: ["accessibility"]
-  });
+  const job = await service.claimNext(registered.token, readyClaimInput);
 
   assert.equal(job?.rule.standardModel, "MDR-7506");
   assert.equal(job?.rule.colorComparable, false);
   assert.deepEqual(job?.rule.effectiveAliases, ["7506"]);
   assert.deepEqual(job?.ownListings.map((listing) => listing.id), ["own-active-1", "own-active-2"]);
   assert.equal(job?.collectorId, repository.agents[0]?.id);
+  assert.deepEqual(repository.claimInputs, [{
+    agentId: repository.agents[0]!.id,
+    input: readyClaimInput
+  }]);
+});
+
+test("a blocked claim triggers notification after the repository transaction", async () => {
+  const repository = new InMemoryCollectorAgentRepository();
+  const notifier = new RecordingSessionNotifier();
+  const now = new Date("2026-09-09T01:31:00.000Z");
+  const service = new CollectorAgentService(repository, notifier, () => now);
+  const registered = await registerAgent(service, "fixed-collector-mac");
+
+  await service.claimNext(registered.token, {
+    ...readyClaimInput,
+    session: { state: "LOGIN_REQUIRED", observedAt: "2026-09-09T01:30:00.000Z" }
+  });
+  await service.claimNext(registered.token, readyClaimInput);
+
+  assert.deepEqual(notifier.agentIds, [repository.agents[0]!.id]);
+});
+
+test("pausing an active run immediately notifies the atomically recorded blocked episode", async () => {
+  const repository = new InMemoryCollectorAgentRepository();
+  const notifier = new RecordingSessionNotifier();
+  const now = new Date("2026-09-09T01:31:00.000Z");
+  const service = new CollectorAgentService(repository, notifier, () => now);
+  const registered = await registerAgent(service, "fixed-collector-mac-pause");
+  repository.addRun({ id: "run-login-loss" });
+  await service.claimNext(registered.token, readyClaimInput);
+
+  await service.pause(registered.token, "run-login-loss", "PLATFORM_CHALLENGE", "operator action required");
+
+  assert.deepEqual(notifier.agentIds, [repository.agents[0]!.id]);
+});
+
+test("notification failures never break the repository claim result", async () => {
+  const repository = new InMemoryCollectorAgentRepository();
+  const notifier = new RecordingSessionNotifier();
+  notifier.failure = new Error("notification unavailable");
+  const service = new CollectorAgentService(repository, notifier);
+  const registered = await registerAgent(service, "fixed-collector-mac-failure");
+  repository.addRun({ id: "run-still-claimed" });
+
+  assert.equal((await service.claimNext(registered.token, {
+    ...readyClaimInput,
+    session: { state: "LOGIN_REQUIRED", observedAt: "2026-09-09T01:30:00.000Z" }
+  }))?.runId, "run-still-claimed");
 });
 
 test("heartbeat updates only the owning agent's running job", async () => {
@@ -271,7 +337,7 @@ test("heartbeat updates only the owning agent's running job", async () => {
   const owner = await registerAgent(service, "owner-mac");
   const other = await registerAgent(service, "other-mac");
   const run = repository.addRun({ id: "run-heartbeat" });
-  await service.claimNext(owner.token, { appVersion: "2.4.5", capabilities: [] });
+  await service.claimNext(owner.token, { ...readyClaimInput, capabilities: [] });
 
   await assert.rejects(
     () => service.heartbeat(other.token, run.id, { discoveredCount: 4, skuCount: 12 }),
@@ -298,19 +364,19 @@ test("pause codes map to paused statuses and require explicit requeue", async ()
     const service = new CollectorAgentService(repository);
     const registered = await registerAgent(service, `mac-${code.toLowerCase()}`);
     const run = repository.addRun({ id: `run-${code.toLowerCase()}` });
-    await service.claimNext(registered.token, { appVersion: "2.4.5", capabilities: [] });
+    await service.claimNext(registered.token, { ...readyClaimInput, capabilities: [] });
 
     await service.pause(registered.token, run.id, code, "operator action required");
     assert.equal(run.status, status);
     assert.equal(run.errorCode, code);
     assert.equal(
-      await service.claimNext(registered.token, { appVersion: "2.4.5", capabilities: [] }),
+      await service.claimNext(registered.token, { ...readyClaimInput, capabilities: [] }),
       null
     );
 
     repository.requeue(run.id);
     assert.equal(
-      (await service.claimNext(registered.token, { appVersion: "2.4.5", capabilities: [] }))?.runId,
+      (await service.claimNext(registered.token, { ...readyClaimInput, capabilities: [] }))?.runId,
       run.id
     );
   }
@@ -322,7 +388,7 @@ test("graceful release requeues only the owning agent's running job", async () =
   const owner = await registerAgent(service, "owner-release");
   const other = await registerAgent(service, "other-release");
   const run = repository.addRun({ id: "run-release" });
-  await service.claimNext(owner.token, { appVersion: "2.4.5", capabilities: [] });
+  await service.claimNext(owner.token, { ...readyClaimInput, capabilities: [] });
 
   await assert.rejects(
     () => service.release(other.token, run.id),
@@ -333,7 +399,7 @@ test("graceful release requeues only the owning agent's running job", async () =
   await service.release(owner.token, run.id);
   assert.equal(run.status, "QUEUED");
   assert.equal(
-    (await service.claimNext(owner.token, { appVersion: "2.4.5", capabilities: [] }))?.runId,
+    (await service.claimNext(owner.token, { ...readyClaimInput, capabilities: [] }))?.runId,
     run.id
   );
 });
@@ -343,7 +409,7 @@ test("checkpoint quarantine reaches the repository as a terminal release", async
   const service = new CollectorAgentService(repository);
   const owner = await registerAgent(service, "owner-quarantine");
   const run = repository.addRun({ id: "run-quarantine" });
-  await service.claimNext(owner.token, { appVersion: "2.4.5", capabilities: [] });
+  await service.claimNext(owner.token, { ...readyClaimInput, capabilities: [] });
 
   await service.release(owner.token, run.id, {
     disposition: "QUARANTINE",

@@ -9,22 +9,38 @@ import { axNodeText, findAxNode, walkAxNodes, type AxNode } from "./ax-node.ts";
 import {
   liveAssertNoStopState,
   liveFindBackAction,
+  liveFindClipboardLinkPromptDismissAction,
   liveFindSearchField,
+  liveFindSearchSubmitButton,
   liveFindSearchResultContainer,
   liveFindSkuOption,
   liveHasSearchEndMarker,
   liveReadDetailPage,
   liveReadSearchAdvance,
   liveReadSearchCards,
+  liveReadSearchPaginationState,
   liveReadSearchResultQuery,
+  liveReadSearchRetreat,
   liveReadSelectedLabels,
   liveReadSkuDimensions
 } from "./taobao-live-selectors.ts";
-import type { SearchAdvance, SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
+import type {
+  SearchAdvance,
+  SearchPaginationState,
+  SearchRetreat,
+  SelectedDetailPage,
+  SelectedSearchCard
+} from "./taobao-selector-contract.ts";
 import { taobaoSelectorProfile } from "./taobao-selector-profile.ts";
 import { canonicalItemIdentity } from "./taobao-url.ts";
 
-export type { SearchAdvance, SelectedDetailPage, SelectedSearchCard } from "./taobao-selector-contract.ts";
+export type {
+  SearchAdvance,
+  SearchPaginationState,
+  SearchRetreat,
+  SelectedDetailPage,
+  SelectedSearchCard
+} from "./taobao-selector-contract.ts";
 export { canonicalItemIdentity } from "./taobao-url.ts";
 
 const PROFILE_ERROR = "Taobao Accessibility tree does not match the approved 2.4.5 build 15 profile";
@@ -73,9 +89,19 @@ export function findSearchField(root: AxNode): AxNode {
   return taobaoSelectorProfile(root) === "SYNTHETIC" ? syntheticFindSearchField(root) : liveFindSearchField(root);
 }
 
+export function findClipboardLinkPromptDismissAction(root: AxNode): AxNode | null {
+  assertNoStopState(root);
+  return liveFindClipboardLinkPromptDismissAction(root);
+}
+
 export interface SyntheticSearchConfirmAction {
   node: AxNode;
   action: "AXConfirm";
+}
+
+export interface SearchSubmitAction {
+  node: AxNode;
+  action: "AXConfirm" | "AXPress";
 }
 
 export function findSyntheticSearchConfirmAction(root: AxNode): SyntheticSearchConfirmAction {
@@ -84,6 +110,12 @@ export function findSyntheticSearchConfirmAction(root: AxNode): SyntheticSearchC
   const field = syntheticFindSearchField(root);
   if (field.enabled !== true || !field.actions.includes("AXConfirm")) return profileError();
   return { node: field, action: "AXConfirm" };
+}
+
+export function findSearchSubmitAction(root: AxNode): SearchSubmitAction {
+  assertNoStopState(root);
+  if (taobaoSelectorProfile(root) === "SYNTHETIC") return findSyntheticSearchConfirmAction(root);
+  return { node: liveFindSearchSubmitButton(root), action: "AXPress" };
 }
 
 function syntheticFindSearchResultContainer(root: AxNode): AxNode {
@@ -111,6 +143,18 @@ export function readSearchAdvance(root: AxNode): SearchAdvance {
   return taobaoSelectorProfile(root) === "SYNTHETIC"
     ? syntheticReadSearchAdvance(root)
     : liveReadSearchAdvance(root);
+}
+
+export function readSearchPaginationState(root: AxNode): SearchPaginationState | null {
+  assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC" ? null : liveReadSearchPaginationState(root);
+}
+
+export function readSearchRetreat(root: AxNode): SearchRetreat {
+  assertNoStopState(root);
+  return taobaoSelectorProfile(root) === "SYNTHETIC"
+    ? { kind: "KEY", keyCode: 115 }
+    : liveReadSearchRetreat(root);
 }
 
 function syntheticReadSearchResultQuery(root: AxNode): string {

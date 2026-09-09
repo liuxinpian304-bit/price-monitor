@@ -134,6 +134,28 @@ function addUnique(values: string[], value: string): void {
   if (!values.includes(value)) values.push(value);
 }
 
+function ownListingSearchQuery(job: CollectorJob): string {
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const value of [
+    job.searchQuery,
+    job.rule.brand,
+    job.rule.standardModel,
+    job.rule.version,
+    job.ownShopName
+  ]) {
+    if (!value) continue;
+    for (const token of value.normalize("NFKC").trim().split(/\s+/)) {
+      if (!token) continue;
+      const key = token.toLocaleLowerCase("zh-CN");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      tokens.push(token);
+    }
+  }
+  return tokens.join(" ");
+}
+
 function persistIdentityAlias(
   checkpoint: CollectorCheckpoint,
   fallbackIdentity: string,
@@ -252,15 +274,27 @@ export class CollectionRunner {
     const checkpoint = existing ?? this.newCheckpoint(job, collectorId, jobHash);
     checkpoint.report.issues = checkpoint.report.issues.filter((entry) =>
       entry.code !== "LOGIN_REQUIRED" && entry.code !== "PLATFORM_CHALLENGE"
-      && entry.code !== "MISSING_ITEM_ID"
+      && entry.code !== "MISSING_ITEM_ID" && entry.code !== "TAOBAO_NOT_FRONTMOST"
       && entry.message !== PAUSE_INCOMPLETE_MESSAGE);
+    checkpoint.report.ownItems = checkpoint.report.ownItems.filter((item) =>
+      item.skus.length > 0 || checkpoint.completedOwnListingIds.includes(item.ownListingId));
+    checkpoint.report.competitorItems = checkpoint.report.competitorItems.filter((item) =>
+      item.skus.length > 0 || checkpoint.completedPlatformItemIds.includes(item.platformItemId));
+    if (checkpoint.report.status === "PAUSED_LOGIN" || checkpoint.report.status === "PAUSED_CHALLENGE") {
+      checkpoint.report.status = "FAILED";
+    }
 
     try {
-      if (!existing) {
-        const diagnostic = await this.driver.diagnose();
-        checkpoint.report.appVersion = diagnostic.appVersion ?? "unknown";
-        await this.checkpointStore.save(job.runId, checkpoint);
+      const diagnostic = await this.driver.diagnose();
+      checkpoint.report.appVersion = diagnostic.appVersion ?? "unknown";
+      if (!diagnostic.hasFrontWindow) {
+        throw new DriverIssueError("TAOBAO_NOT_FRONTMOST", "Taobao Desktop is not frontmost.");
       }
+      if (diagnostic.loginState !== "LOGGED_IN") {
+        throw new LoginRequiredError("Taobao login could not be confirmed.");
+      }
+      assertCheckpointSemanticCoherence(checkpoint, job);
+      await this.checkpointStore.save(job.runId, checkpoint);
       throwIfInterrupted(signal);
 
       if (checkpoint.phase === "OWN_LISTINGS") {
@@ -375,7 +409,7 @@ export class CollectionRunner {
       if (checkpoint.completedOwnListingIds.includes(listing.id)) continue;
       throwIfInterrupted(signal);
 
-      const page = await this.driver.openOwnListing(listing.url);
+      const page = await this.driver.openOwnListing(listing.url, ownListingSearchQuery(job));
       const claimedIdentity = resolvedItemIdentity(null, listing.url);
       const pageIdentity = resolvedItemIdentity(page.platformItemId, page.url);
       if (claimedIdentity.platformItemId === null || pageIdentity.platformItemId === null

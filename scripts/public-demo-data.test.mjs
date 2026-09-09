@@ -5,7 +5,7 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { inflateRawSync } from "node:zlib";
 
-import { alerts, comparisons, models } from "../apps/web/src/data/demo-data.ts";
+import { alerts, comparisons, models, schedule } from "../apps/web/src/data/demo-data.ts";
 import {
   fallbackAlerts,
   fallbackCatalog,
@@ -24,6 +24,13 @@ const FIXTURE_DIRECTORY = "tests/fixtures/providers";
 const DOCS_DIRECTORY = "docs";
 const ALLOWED_OWNERS = new Set(["运营A", "运营B", "运营C"]);
 const ALLOWED_COMPETITOR_SHOPS = new Set(["示例同行店A", "示例同行店B", "示例同行店C"]);
+
+test("demo schedule shows the ten daytime default slots", () => {
+  assert.deepEqual(schedule.map((item) => item.time), [
+    "09:30", "10:30", "11:30", "12:30", "13:30",
+    "14:30", "15:30", "16:30", "17:30", "18:30"
+  ]);
+});
 
 // One-way fingerprints prevent the regression test itself from publishing legacy demo values.
 const LEGACY_FINGERPRINTS = {

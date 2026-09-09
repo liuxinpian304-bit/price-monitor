@@ -7,7 +7,7 @@
 - 采集器只采集、报告和触发受控通知批次；价格调整始终由运营人员在电商后台人工完成。
 - 首次真实淘宝采集必须有运营人员在场。登录失效、平台挑战、页面异常或选择器变化时立刻停止，不得绕过验证。
 - 首次真实企业微信 Webhook 发送必须在发送前重新取得运营确认。
-- 当前仅接受 macOS 桌面采集器。Windows 采集器和三机生产分片尚未验收。
+- 当前这台 Mac 是唯一固定采集机，只在这里运行桌面采集器 Worker。另一台 Mac 和 Windows 电脑仅用于打开管理后台、查看报告和人工处理价格，不登记或运行采集器。
 
 ## 2. 前置条件与权限
 
@@ -20,7 +20,7 @@
 
 ## 3. 登记 Mac 与保存一次性 token
 
-`POST /api/collector-agents` 只允许来自 API 主机的 loopback 请求并要求管理员权限。请在运行 API 的本机管理员会话中登记每一台 Mac，登记返回的一次性 token 只显示一次。
+`POST /api/collector-agents` 只允许来自 API 主机的 loopback 请求并要求管理员权限。只登记当前固定采集 Mac；不要为另一台 Mac 或 Windows 电脑创建生产采集 token。登记返回的一次性 token 只显示一次。
 
 把 [`.env.collector.example`](../../.env.collector.example) 复制为仓库根目录的本地 `.env.collector`，再填写下列字段：
 
@@ -48,15 +48,15 @@ pnpm collector:worker
 
 - `diagnose` 检查 helper 可执行性、API 可达性、配对 token、辅助功能、淘宝进程、版本/build、前台窗口和登录状态；它不会领取任务。
 - `once` 最多领取一个排队任务，完成或暂停后退出。
-- `worker` 持续领取任务；仅在经过现场批准的 Mac 上启动，并通过 `Ctrl+C` 正常停止。
+- `worker` 持续领取任务；只在固定采集 Mac 上启动，并通过 `Ctrl+C` 正常停止。其他电脑不得运行该命令。
 
-## 5. 登录、挑战与重新入队
+## 5. 登录、挑战与自动续跑
 
-当报告状态为 `PAUSED_LOGIN`：在原登记 Mac 上手动恢复淘宝登录，确认搜索结果页已可用，再由管理员在“采集报告”中点击“重新入队”。
+当报告状态为 `PAUSED_LOGIN`：只在固定采集 Mac 上手动恢复一次淘宝登录。采集器会在下一次被动会话探测中确认 `READY`，并自动继续原任务，无需人工重新入队。
 
-当报告状态为 `PAUSED_CHALLENGE`：在原登记 Mac 上按平台要求完成验证，确认已回到搜索结果页，再由管理员重新入队。
+当报告状态为 `PAUSED_CHALLENGE`：只在固定采集 Mac 上按平台要求完成一次人工验证。确认回到搜索结果页后，采集器会自动确认状态并继续原任务。
 
-只有这两个暂停状态提供重新入队。`RUNNING`、`SUCCEEDED`、`PARTIAL_FAILED` 和 `FAILED` 没有该按钮；不得通过脚本模拟登录、验证码或平台挑战。重新入队保留该任务的受控恢复语义，不会跳过平台步骤。
+页面会显示 `READY`、`LOGIN_REQUIRED`、`CHALLENGE_REQUIRED` 或 `UNAVAILABLE` 的持久化会话状态。系统不会自动登录，也不得通过脚本模拟账号登录、验证码或平台挑战；自动续跑只发生在固定采集 Mac 已由人工恢复、且被动探测确认 `READY` 之后。
 
 ## 6. 查看完整报告与证据
 
@@ -99,7 +99,7 @@ pnpm collector:worker
 | `TAOBAO_LOGIN_REQUIRED` | 在应用中手动登录，不要把账号密码交给采集器。 |
 | `TAOBAO_WINDOW_UNAVAILABLE` | 将淘宝主窗口置前且保持屏幕解锁。 |
 | `TAOBAO_VERSION_UNSUPPORTED` | 停止 worker，回到批准的 `2.4.5` build `15` 或更新经过验收的选择器配置。 |
-| `PAUSED_LOGIN` 或 `PAUSED_CHALLENGE` | 按第 5 节手动恢复，再由管理员重新入队。 |
+| `PAUSED_LOGIN` 或 `PAUSED_CHALLENGE` | 按第 5 节只在固定采集 Mac 上手动恢复，等待系统确认后自动续跑。 |
 | API/配对失败 | 检查 API、PostgreSQL、Redis 和本地 token；不得在错误反馈中粘贴 token。 |
 
 ### AX 快照限制恢复

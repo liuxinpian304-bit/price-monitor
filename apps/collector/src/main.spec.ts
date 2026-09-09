@@ -196,9 +196,10 @@ test("once and worker dispatch exactly one lifecycle mode and clean signal handl
   for (const command of ["once", "worker"] as const) {
     let onceCalls = 0;
     let runCalls = 0;
+    let stopCalls = 0;
     let cleanupCalls = 0;
     const worker: CollectorCliWorker = {
-      stop: () => undefined,
+      stop: () => { stopCalls += 1; },
       once: async () => { onceCalls += 1; return "idle"; },
       run: async () => { runCalls += 1; }
     };
@@ -215,6 +216,7 @@ test("once and worker dispatch exactly one lifecycle mode and clean signal handl
 
     assert.equal(onceCalls, command === "once" ? 1 : 0);
     assert.equal(runCalls, command === "worker" ? 1 : 0);
+    assert.equal(stopCalls, 1);
     assert.equal(cleanupCalls, 1);
   }
 });

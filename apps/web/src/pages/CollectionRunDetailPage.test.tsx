@@ -113,6 +113,11 @@ const missingBusinessSku = {
 };
 
 function report(status: string): CollectionRunReportDetail {
+  const sessionState = status === "PAUSED_LOGIN"
+    ? "LOGIN_REQUIRED"
+    : status === "PAUSED_CHALLENGE"
+      ? "CHALLENGE_REQUIRED"
+      : "READY";
   return {
     id: "run-1",
     status,
@@ -121,7 +126,15 @@ function report(status: string): CollectionRunReportDetail {
     startedAt: "2026-08-25T01:30:10.000Z",
     finishedAt: null,
     model: { id: "model-1", monitorCode: "SONY-7506", label: "Sony MDR-7506", comparisonType: "BARE", owner: "运营A" },
-    collector: { id: "agent-1", name: "mac-studio-1", platform: "MACOS", appVersion: "2.4.5" },
+    collector: {
+      id: "agent-1",
+      name: "固定采集 Mac",
+      platform: "MACOS",
+      appVersion: "2.4.5",
+      sessionState,
+      sessionObservedAt: "2026-09-09T01:30:00.000Z",
+      sessionChangedAt: "2026-09-09T01:30:00.000Z"
+    },
     completion: { positionsCaptured: 47, requestedPositions: 50, discoveredCount: 47, fetchedCount: 47, matchedCount: 2, failedCount: 3, uniqueItemCount: 47, skuCount: 2, incompleteCount: 3, terminationReason: null, complete: false, label: "47 / 50，未完成" },
     notification: { state: "FAILED", attempts: 2, notifiedAt: null, lastError: "WECOM_DELIVERY_FAILED" },
     error: { code: "LOGIN_REQUIRED", message: "淘宝登录已失效" },
@@ -211,7 +224,7 @@ describe("CollectionRunDetailPage", () => {
     expect(popup.opener).toBeNull();
   });
 
-  it("shows all SKU price components and gives a paused login run an operator-only recovery action", async () => {
+  it("shows all SKU price components and explains automatic login recovery", async () => {
     vi.mocked(useApiData).mockReturnValue({ data: report("PAUSED_LOGIN"), loading: false, error: null, errorStatus: null, hasSuccessfulData: true, refresh: vi.fn(), setData: vi.fn() });
     renderPage();
 
@@ -221,10 +234,35 @@ describe("CollectionRunDetailPage", () => {
     expect(within(screen.getByTestId("collection-run-positions-scroll")).getByText("排名 1")).toBeInTheDocument();
     expect(screen.getByTestId("collection-run-positions-scroll")).toHaveClass("collection-runs-scroll");
     expect(screen.getByTestId("collection-run-skus-scroll")).toHaveClass("collection-runs-scroll");
-    expect(screen.getByText("请在已登记的 Mac 上打开淘宝桌面版，恢复登录后再重新入队。"))
-      .toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /重新入队/ }));
-    expect(requeueCollectionRun).toHaveBeenCalledWith("run-1");
+    expect(screen.getByText("采集会话：需要登录")).toBeInTheDocument();
+    expect(screen.getByText(/只需在固定 Mac 上恢复一次淘宝登录/)).toBeInTheDocument();
+    expect(screen.getByText(/系统确认后会自动续跑/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /重新入队/ })).not.toBeInTheDocument();
+    expect(requeueCollectionRun).not.toHaveBeenCalled();
+  });
+
+  it("renders every persisted collector session state with an operator label", () => {
+    for (const [sessionState, label] of [
+      ["READY", "采集会话：已就绪"],
+      ["LOGIN_REQUIRED", "采集会话：需要登录"],
+      ["CHALLENGE_REQUIRED", "采集会话：需要人工验证"],
+      ["UNAVAILABLE", "采集会话：不可用"]
+    ] as const) {
+      const input = report("RUNNING");
+      input.collector!.sessionState = sessionState;
+      vi.mocked(useApiData).mockReturnValue({
+        data: input,
+        loading: false,
+        error: null,
+        errorStatus: null,
+        hasSuccessfulData: true,
+        refresh: vi.fn(),
+        setData: vi.fn()
+      });
+      const rendered = renderPage();
+      expect(screen.getByText(label)).toBeInTheDocument();
+      rendered.unmount();
+    }
   });
 
   it("renders authoritative business sections and expands a shop into full item and SKU facts", () => {

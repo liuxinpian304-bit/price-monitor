@@ -52,9 +52,12 @@ function runFixture(overrides: Partial<CollectionReportRawRun> = {}): Collection
     },
     collectorAgent: {
       id: "agent-mac-1",
-      name: "mac-studio-1",
+      name: "固定采集 Mac",
       platform: "MACOS",
-      appVersion: "2.4.5"
+      appVersion: "2.4.5",
+      sessionState: "LOGIN_REQUIRED",
+      sessionObservedAt: new Date("2026-09-09T01:30:00.000Z"),
+      sessionChangedAt: new Date("2026-09-09T01:30:00.000Z")
     },
     alertNotificationBatch: {
       state: "PENDING",
@@ -471,6 +474,15 @@ test("lists collection runs with bounded pagination and aggregate completion fac
   assert.equal(result.runs[0]?.completion.positionsCaptured, 47);
   assert.equal(result.runs[0]?.completion.uniqueItemCount, 46);
   assert.equal(result.runs[0]?.completion.skuCount, 120);
+  assert.deepEqual(result.runs[0]?.collector, {
+    id: "agent-mac-1",
+    name: "固定采集 Mac",
+    platform: "MACOS",
+    appVersion: "2.4.5",
+    sessionState: "LOGIN_REQUIRED",
+    sessionObservedAt: "2026-09-09T01:30:00.000Z",
+    sessionChangedAt: "2026-09-09T01:30:00.000Z"
+  });
   assert.deepEqual(repo.calls.map((call) => call.method), ["listRuns"]);
 });
 
@@ -519,6 +531,23 @@ test("presents a verified early page end as complete but leaves an interrupted s
   result = await new CollectionReportQueryService(repo).listRuns();
   assert.equal(result.runs[0]?.completion.complete, false);
   assert.equal(result.runs[0]?.completion.terminationReason, null);
+});
+
+test("does not mark failed or paused runs complete despite verified position coverage", async () => {
+  for (const status of ["FAILED", "PAUSED_LOGIN", "PAUSED_CHALLENGE"] as const) {
+    const repo = repository();
+    repo.runs[0] = runFixture({
+      status,
+      searchTerminationReason: "END_MARKER",
+      positionCount: 2,
+      incompleteCount: 0
+    });
+
+    const result = await new CollectionReportQueryService(repo).listRuns();
+
+    assert.equal(result.runs[0]?.completion.complete, false, status);
+    assert.equal(result.runs[0]?.completion.label, "2 / 50，未完成", status);
+  }
 });
 
 test("bounds every detail collection and reports independent totals", async () => {

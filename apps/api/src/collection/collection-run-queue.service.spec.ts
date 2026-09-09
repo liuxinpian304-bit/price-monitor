@@ -13,6 +13,7 @@ class MemoryQueueRepository implements CollectionRunQueueRepository {
     { id: "model-disabled", enabled: false }
   ];
   readonly runs: QueuedCollectionRun[] = [];
+  collectorSessionState: "READY" | "LOGIN_REQUIRED" = "READY";
 
   async listEnabledModels() {
     return this.models.filter((model) => model.enabled);
@@ -52,7 +53,8 @@ class MemoryQueueRepository implements CollectionRunQueueRepository {
 
   async requeuePaused(runId: string) {
     const run = this.runs.find((entry) => entry.id === runId);
-    if (!run || (run.status !== "PAUSED_LOGIN" && run.status !== "PAUSED_CHALLENGE")) return null;
+    if (!run || this.collectorSessionState !== "READY"
+      || (run.status !== "PAUSED_LOGIN" && run.status !== "PAUSED_CHALLENGE")) return null;
     run.status = "QUEUED";
     return run;
   }
@@ -108,4 +110,15 @@ test("manual enqueue validates enabled models and requeues only paused runs", as
   assert.deepEqual(await service.requeuePausedRun(result.runId), { runId: result.runId });
   repository.runs[0]!.status = "SUCCEEDED";
   await assert.rejects(() => service.requeuePausedRun(result.runId));
+});
+
+test("manual requeue cannot restart a paused run while the fixed collector session is blocked", async () => {
+  const repository = new MemoryQueueRepository();
+  const service = new CollectionRunQueueService(repository);
+  const result = await service.enqueueModelNow("model-enabled", "admin-1");
+  repository.runs[0]!.status = "PAUSED_LOGIN";
+  repository.collectorSessionState = "LOGIN_REQUIRED";
+
+  await assert.rejects(() => service.requeuePausedRun(result.runId));
+  assert.equal(repository.runs[0]!.status, "PAUSED_LOGIN");
 });

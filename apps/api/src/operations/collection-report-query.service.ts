@@ -99,6 +99,9 @@ export interface CollectionReportRawRun {
     name: string;
     platform: "MACOS" | "WINDOWS";
     appVersion: string | null;
+    sessionState: "READY" | "LOGIN_REQUIRED" | "CHALLENGE_REQUIRED" | "UNAVAILABLE";
+    sessionObservedAt: Date | null;
+    sessionChangedAt: Date | null;
   } | null;
   alertNotificationBatch: {
     state: "PENDING" | "SENDING" | "NOTIFIED" | "AMBIGUOUS" | "FAILED";
@@ -186,6 +189,9 @@ export interface CollectionRunReportSummary {
     name: string;
     platform: "MACOS" | "WINDOWS";
     appVersion: string | null;
+    sessionState: "READY" | "LOGIN_REQUIRED" | "CHALLENGE_REQUIRED" | "UNAVAILABLE";
+    sessionObservedAt: string | null;
+    sessionChangedAt: string | null;
   } | null;
   completion: CollectionRunCompletion;
   notification: {
@@ -375,7 +381,7 @@ function completion(run: CollectionReportRawRun): CollectionRunCompletion {
   const verifiedCoverage = run.searchTerminationReason === "END_MARKER"
     || run.searchTerminationReason === "LIMIT_REACHED"
     || (run.searchTerminationReason === null && positionsCaptured >= requestedPositions);
-  const complete = verifiedCoverage && incompleteCount === 0;
+  const complete = run.status === "SUCCEEDED" && verifiedCoverage && incompleteCount === 0;
   return {
     positionsCaptured,
     requestedPositions,
@@ -417,7 +423,10 @@ function summary(run: CollectionReportRawRun): CollectionRunReportSummary {
       id: run.collectorAgent.id,
       name: run.collectorAgent.name,
       platform: run.collectorAgent.platform,
-      appVersion: run.collectorAgent.appVersion
+      appVersion: run.collectorAgent.appVersion,
+      sessionState: run.collectorAgent.sessionState,
+      sessionObservedAt: run.collectorAgent.sessionObservedAt?.toISOString() ?? null,
+      sessionChangedAt: run.collectorAgent.sessionChangedAt?.toISOString() ?? null
     } : null,
     completion: completion(run),
     notification: run.alertNotificationBatch ? {
@@ -473,7 +482,17 @@ const reportRunSummarySelect = {
       owner: true
     }
   },
-  collectorAgent: { select: { id: true, name: true, platform: true, appVersion: true } },
+  collectorAgent: {
+    select: {
+      id: true,
+      name: true,
+      platform: true,
+      appVersion: true,
+      sessionState: true,
+      sessionObservedAt: true,
+      sessionChangedAt: true
+    }
+  },
   alertNotificationBatch: {
     select: { state: true, notificationAttempts: true, notifiedAt: true, lastNotificationError: true }
   },

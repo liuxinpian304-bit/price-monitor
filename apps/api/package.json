@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --tsconfig tsconfig.json src/main.ts",
-    "start": "tsx --tsconfig tsconfig.json src/main.ts",
-    "seed:demo": "tsx --tsconfig tsconfig.json src/database/seed-demo.ts",
+    "dev": "node --env-file=../../.env --import=tsx --watch src/main.ts",
+    "start": "node --env-file=../../.env --import=tsx src/main.ts",
+    "seed:demo": "node --env-file=../../.env --import=tsx src/database/seed-demo.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
